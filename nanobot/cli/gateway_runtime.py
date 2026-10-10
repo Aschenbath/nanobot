@@ -347,6 +347,7 @@ def _run_gateway(
     config: Config,
     *,
     port: int | None = None,
+    verbose: bool = False,
     open_browser_url: str | None = None,
     open_browser_ready_url: str | None = None,
     webui_static_dist: bool = True,
@@ -367,9 +368,9 @@ def _run_gateway(
     gateway_runtime = GatewayRuntime(paths=instance.paths)
     with (
         installation_access(),
-        gateway_runtime.foreground_instance(instance.start_options(port=port)),
+        gateway_runtime.foreground_instance(instance.start_options(port=port, verbose=verbose)),
         record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(),
-                               workspace=config.workspace_path, port=port),
+                               workspace=config.workspace_path, port=port, verbose=verbose),
     ):
         _run_claimed_gateway(
             config, port=port, gateway_instance=instance, gateway_runtime=gateway_runtime,

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager, nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -135,6 +136,20 @@ def test_missing_process_identity_cannot_become_pid_only_confirmation(private_ho
         path.write_text(json.dumps(payload))
         with pytest.raises(ValueError, match="different installation"):
             inspect_profiles(str(environment))
+
+
+def test_older_receipt_keeps_inventory_without_inventing_launch_options(private_home, tmp_path):
+    environment = tmp_path / "environment"
+    with gateway(tmp_path / "profile", environment):
+        observed = inspect_profiles(str(environment))[0]
+        path = installation_state_dir(environment) / "profiles" / f"{observed.receipt.id}.json"
+        payload = json.loads(path.read_text())
+        payload.pop("launch")
+        path.write_text(json.dumps(payload))
+        legacy = inspect_profiles(str(environment))[0]
+        assert legacy.state == "running"
+        assert legacy.receipt.config == observed.receipt.config
+        assert legacy.receipt.launch is None
 
 
 def test_separate_profile_and_environment_cannot_hide_a_shared_workspace_writer(private_home, tmp_path):
@@ -349,6 +364,103 @@ with installation_access():
         if process.poll() is None:
             process.terminate()
             process.communicate(timeout=15)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Native Windows graceful lifecycle needs its own execution evidence")
+@pytest.mark.parametrize("selected_home,explicit_workspace", [(False, False), (True, False), (True, True)])
+def test_recorded_launch_restarts_same_actual_gateway(private_home, tmp_path, monkeypatch,
+                                                     selected_home, explicit_workspace):
+    from nanobot.config.home import set_home_path
+    from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
+
+    profile = tmp_path / "gateway home" if selected_home else private_home / ".nanobot"
+    workspace = tmp_path / "中文 user project"
+    config_path = profile / "config data/config.json" if selected_home else profile / "config.json"
+    working_directory = tmp_path / "original working directory"
+    config_path.parent.mkdir(parents=True)
+    working_directory.mkdir()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    config_path.write_text(json.dumps({
+        "agents": {"defaults": {"workspace": str(workspace), "dream": {"enabled": False},
+                                "provider": "custom", "model": "lifecycle-fixture"}},
+        "providers": {"custom": {"apiKey": "fixture-not-a-secret", "apiBase": "http://127.0.0.1:1/v1"}},
+        "gateway": {"host": "127.0.0.1", "port": port, "heartbeat": {"enabled": False}},
+        "channels": {"websocket": {"enabled": False}},
+    }))
+    monkeypatch.setattr("nanobot.config.home._home_path", None)
+    if selected_home:
+        set_home_path(profile)
+    instance = GatewayInstance.resolve(config_path=config_path,
+                                       workspace=str(workspace) if explicit_workspace else None)
+    # Use the actual CLI/runtime from this checkout, even when restarting from a
+    # different cwd. Only tokenizer warmup is disabled (no network download).
+    source_root = str(Path(__file__).resolve().parents[1])
+    bootstrap = (
+        f"import sys; sys.path.insert(0, {source_root!r})\n"
+        "from nanobot.cli import gateway_runtime\n"
+        "gateway_runtime.warmup_token_encoding = lambda: None\n"
+        "from nanobot.cli.entry import main\nmain()\n"
+    )
+    processes = []
+    launch_directory = working_directory
+
+    def launch(command, **kwargs):
+        child = subprocess.Popen([command[0], "-c", bootstrap, *command[3:]],
+                                 cwd=launch_directory, **kwargs)
+        processes.append(child)
+        return child
+
+    runtime = GatewayRuntime(paths=instance.paths, python_executable=sys.executable, popen=launch)
+
+    def ready_profile():
+        deadline = time.monotonic() + 20
+        while True:
+            assert processes[-1].poll() is None, "\n".join(runtime.read_log_tail(tail=20))
+            observed = inspect_profiles(sys.prefix)
+            if runtime.status().ready and observed and observed[0].state == "running":
+                return observed[0].receipt
+            assert time.monotonic() < deadline, "Isolated gateway did not become ready"
+            time.sleep(0.05)
+
+    try:
+        assert runtime.start_background(instance.start_options(port=port, verbose=True)).ok
+        before = ready_profile()
+        assert before.launch is not None
+        assert before.launch.home == (str(profile) if selected_home else None)
+        assert before.launch.config_path == (str(config_path) if selected_home else None)
+        assert before.launch.workspace == (str(workspace) if explicit_workspace else None)
+        assert before.launch.working_directory == str(working_directory)
+        assert before.launch.verbose
+        assert before.launch_mode == "background" and before.launch.lifetime == "explicit"
+        assert "fixture-not-a-secret" not in before.model_dump_json()
+        assert runtime.stop(timeout_s=10).ok
+        assert processes[-1].wait(timeout=10) == 0
+        stopped = inspect_profiles(sys.prefix)[0].receipt
+        assert stopped.launch == before.launch and not stopped.active
+
+        # No --workspace must remain no --workspace, even though config resolves
+        # the same final workspace. Guessing that flag changes the instance key.
+        monkeypatch.chdir(tmp_path)
+        launch_directory = Path(before.launch.working_directory)
+        assert runtime.start_background(before.launch.options(port=before.port)).ok
+        after = ready_profile()
+        assert after.run_id != before.run_id and after.pid != before.pid
+        assert after.launch == before.launch
+        for field in ("id", "environment", "python", "package", "version", "home", "data_dir",
+                      "config", "workspace", "state_path", "log_path", "port", "launch_mode"):
+            assert getattr(after, field) == getattr(before, field), field
+        assert runtime.stop(timeout_s=10).ok
+        assert processes[-1].wait(timeout=10) == 0
+        assert inspect_profiles(sys.prefix)[0].state == "stopped"
+    finally:
+        if runtime.status().running:
+            runtime.stop(timeout_s=10)
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
 
 
 @pytest.mark.asyncio

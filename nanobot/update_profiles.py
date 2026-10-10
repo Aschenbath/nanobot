@@ -23,9 +23,38 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import nanobot
 from nanobot.config.home import get_home_path
 from nanobot.data_access import data_access, profile_data_paths
-from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime, GatewayRuntimePaths
+from nanobot.gateway.runtime import (
+    GatewayInstance,
+    GatewayRuntime,
+    GatewayRuntimePaths,
+    GatewayStartOptions,
+)
 from nanobot.installation_lock import installation_state_dir
 from nanobot.utils.atomic_file import atomic_write_lines
+
+
+class ProfileLaunch(BaseModel):
+    """Original selectors, not inferred arguments or an executable shell command."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    home: str | None
+    config_path: str | None
+    workspace: str | None
+    working_directory: str
+    verbose: bool
+    lifetime: Literal["explicit", "on_demand"]
+
+    @field_validator("home", "config_path", "workspace", "working_directory")
+    @classmethod
+    def bounded_path(cls, value: str | None) -> str | None:
+        if value is not None and (not Path(value).is_absolute() or len(value) > 4096 or "\0" in value):
+            raise ValueError("Launch selectors must be bounded absolute paths")
+        return value
+
+    def options(self, *, port: int) -> GatewayStartOptions:
+        return GatewayStartOptions(home=self.home, config_path=self.config_path,
+                                   workspace=self.workspace, port=port, verbose=self.verbose)
 
 
 class ProfileReceipt(BaseModel):
@@ -49,6 +78,8 @@ class ProfileReceipt(BaseModel):
     pid: int = Field(gt=0)
     process_identity: str | int | None
     active: bool
+    # Older receipts remain useful data inventory, but cannot prove launch intent.
+    launch: ProfileLaunch | None = None
 
     @field_validator("environment", "python", "package", "home", "data_dir", "config", "workspace", "state_path", "log_path")
     @classmethod
@@ -123,7 +154,8 @@ def _save(directory: Path, receipt: ProfileReceipt) -> None:
 
 @contextmanager
 def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *,
-                           data_dir: Path, workspace: Path, port: int) -> Generator[None]:
+                           data_dir: Path, workspace: Path, port: int,
+                           verbose: bool = False) -> Generator[None]:
     """Record an already-claimed gateway and retain its profile after shutdown."""
     state_path = str(instance.paths.state_path.resolve())
     directory = installation_state_dir() / "profiles"
@@ -131,6 +163,7 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
     status = runtime.status()
     if not status.running or status.pid != os.getpid():
         raise ValueError("Only the gateway that claimed this runtime may record its profile")
+    options = instance.start_options(port=port, verbose=verbose)
     receipt = ProfileReceipt(
         id=_profile_id(state_path), run_id=uuid4().hex,
         environment=str(Path(sys.prefix).resolve()), python=str(Path(sys.executable).absolute()),
@@ -140,6 +173,9 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
         state_path=state_path, log_path=str(instance.paths.log_path.resolve()), port=port,
         launch_mode=status.launch_mode, pid=os.getpid(),
         process_identity=runtime.process_identity(os.getpid()), active=True,
+        launch=ProfileLaunch(home=options.home, config_path=options.config_path,
+                             workspace=options.workspace, working_directory=str(Path.cwd().resolve()),
+                             verbose=options.verbose, lifetime=status.lifetime),
     )
     paths = profile_data_paths(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
                                config=Path(receipt.config), workspace=Path(receipt.workspace))
