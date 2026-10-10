@@ -24,6 +24,7 @@ import nanobot
 from nanobot.installation_lock import installation_access, installation_id, installation_state_dir
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
+from nanobot.update_profiles import ObservedProfile, inspect_profiles, validate_profiles
 from nanobot.utils.helpers import atomic_write_lines
 
 Owner = Literal["venv", "uv", "pipx", "source", "container", "system"]
@@ -107,6 +108,7 @@ class UpdatePlan(ReleaseRecord):
     channel: Channel
     target: ReleaseTarget
     extras: list[str] | None = None
+    profiles: list[ObservedProfile] = Field(default_factory=list, max_length=1024)
     created_at: int = Field(ge=0)
     expires_at: int = Field(gt=0)
 
@@ -164,6 +166,9 @@ class UpdatePlans:
         self.directory = directory
 
     def save(self, plan: UpdatePlan) -> UpdatePlan:
+        encoded = plan.model_dump_json()
+        if len(encoded.encode("utf-8")) + 1 > 1024 * 1024:
+            raise ValueError("Update plan exceeds its size limit")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = self.directory / f"{plan.id}.json"
         with FileLock(str(self.directory / "plans.lock"), timeout=5):
@@ -171,14 +176,14 @@ class UpdatePlans:
                 if self.load(plan.id) != plan:
                     raise ValueError("An approved update plan cannot be replaced")
                 return plan
-            atomic_write_lines(path, [plan.model_dump_json()])
+            atomic_write_lines(path, [encoded])
             path.chmod(0o600)
         return plan
 
     def load(self, plan_id: str) -> UpdatePlan:
         UpdatePlan.canonical_id(plan_id)
         path = self.directory / f"{plan_id}.json"
-        if path.is_symlink() or path.stat().st_size > 64 * 1024:
+        if path.is_symlink() or path.stat().st_size > 1024 * 1024:
             raise ValueError("Invalid saved update plan")
         plan = UpdatePlan.model_validate_json(path.read_bytes())
         if plan.id != plan_id:
@@ -189,7 +194,8 @@ class UpdatePlans:
                       *, now: int | None = None) -> UpdatePlan:
         target = await feed.latest(channel)
         created_at = int(time.time()) if now is None else now
-        plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target,
+        profiles = inspect_profiles(installation.environment)
+        plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, profiles=profiles,
                           created_at=created_at, expires_at=created_at + 15 * 60)
         return self.save(plan)
 
@@ -197,7 +203,11 @@ class UpdatePlans:
                          *, now: int | None = None) -> UpdatePlan:
         plan = self.load(plan_id)
         plan.validate_for(installation, now=now)
+        validate_profiles(plan.profiles, installation.environment)
         await feed.revalidate(plan.target)
+        # Release discovery can yield to a profile restart or a long network wait.
+        plan.validate_for(installation, now=now)
+        validate_profiles(plan.profiles, installation.environment)
         return plan
 
 
@@ -215,5 +225,6 @@ def describe_plan(plan: UpdatePlan) -> str:
     return json.dumps({
         **plan.model_dump(mode="json"), "action": plan.action,
         "installation_id": plan.installation.installation_id,
+        "profile_notice": "Known profiles only; this does not prove all runtimes or supervisors are accounted for.",
         "notice": "Plan only. No packages were changed or processes restarted.",
     }, indent=2)

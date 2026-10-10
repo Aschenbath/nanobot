@@ -27,6 +27,7 @@ from nanobot.installation_lock import file_access, installation_access, installa
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Sha256
 from nanobot.update_plan import UpdatePlan
+from nanobot.update_profiles import require_stopped_profiles, validate_profiles
 from nanobot.update_worker import (
     JobStatus,
     Phase,
@@ -175,6 +176,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
             plan.installation.records.get("pyvenv.cfg"),
         ) or any(plan.installation.records.get(name) != digest for name, digest in baseline.app_records.items()):
             raise ValueError("The installation changed since this plan was prepared")
+        validate_profiles(plan.profiles, plan.installation.environment)
         app_wheel = await feed.download(plan.target, root / "downloads")
         preparing = asyncio.create_task(asyncio.to_thread(_prepare_wheels, plan, app_wheel, directory))
         try:
@@ -228,6 +230,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
             if repair and not state.mutation_started:
                 raise ValueError("Repair is only available after this job began replacing files")
             check_environment(spec, repairing=state.mutation_started)
+            require_stopped_profiles(plan.profiles, spec.baseline.environment)
             for wheel in spec.wheels:
                 wheel.verify(directory / "wheels")
             now = int(time.time())

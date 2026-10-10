@@ -32,7 +32,7 @@ from nanobot.cli.webui_support import (
     _webui_display_url,
     _webui_endpoint_reachable,
 )
-from nanobot.config.paths import is_default_workspace
+from nanobot.config.paths import get_data_dir, is_default_workspace
 from nanobot.config.schema import Config
 from nanobot.gateway.runtime import GatewayInstance
 from nanobot.security.network import is_loopback_host
@@ -387,6 +387,7 @@ def _run_gateway(
     )
     from nanobot.triggers.local_runner import run_local_trigger_queue
     from nanobot.triggers.local_store import LocalTriggerStore
+    from nanobot.update_profiles import record_gateway_profile
 
     port = port if port is not None else config.gateway.port
     webui_url = _webui_browser_url(config)
@@ -1035,6 +1036,7 @@ def _run_gateway(
 
     with (
         gateway_runtime.foreground_instance(gateway_start_options),
+        record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(), workspace=config.workspace_path, port=port),
         webui_turn_coordinator.connected(),
     ):
         agent.subagents.recover_interrupted()

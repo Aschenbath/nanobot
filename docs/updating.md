@@ -64,6 +64,26 @@ older runtimes without this mechanism, arbitrary Python imports, another OS user
 processes or unrecognized supervisors. Such installations must not be advertised
 as eligible for unattended/coordinated updates merely because a lease is available.
 
+### Known gateway profiles
+
+Gateway startup now records an installation-scoped profile receipt outside the package
+being replaced. It identifies the exact interpreter/package version, selected home,
+actual data directory, config and workspace paths, instance state/log paths, launch mode
+and process identity. Config contents,
+credentials and arbitrary environment variables are not copied into that record.
+Receipts remain after exit so stopped profiles are included when planning future backups.
+
+`--plan` includes these known profiles. A PID by itself is not liveness evidence: the
+existing native process identity and runtime claim must match. A profile reused by another
+installation is unconfirmed, not idle. A new or restarted profile invalidates the plan.
+The executor may accept the reviewed gateways having stopped, but not a replacement
+instance or an unconfirmed owner. Recording a foreground launch does not identify its
+external supervisor or authorize terminating it.
+
+This is an inventory of cooperating gateways, not discovery of all processes or a backup.
+It does not authorize copying whole user workspaces. Older installations, other accounts,
+external supervisors and standalone imports still require their own ownership checks.
+
 ## Exact offline executor (internal, not enabled in the UI)
 
 `update_jobs.prepare_job` now prepares an immutable plain-venv transaction. It requires
