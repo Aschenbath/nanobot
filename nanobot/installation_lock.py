@@ -32,6 +32,10 @@ def installation_state_dir(environment: str | Path | None = None) -> Path:
     return Path.home() / ".nanobot" / "updates" / installation_id(environment)
 
 
+def pending_update_path(environment: str | Path | None = None) -> Path:
+    return Path.home() / ".nanobot" / "run" / f"update-{installation_id(environment)[:16]}.pending"
+
+
 def _lock_windows(handle: BinaryIO, *, exclusive: bool) -> None:
     import ctypes
     import msvcrt
@@ -60,7 +64,28 @@ def _lock_windows(handle: BinaryIO, *, exclusive: bool) -> None:
 
 
 @contextmanager
-def installation_access(*, updating: bool = False, allow_incomplete: bool = False) -> Generator[None]:
+def file_access(path: Path, *, exclusive: bool) -> Generator[None]:
+    """Hold a nonblocking OS lease; never replace or delete its file."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(descriptor, "a+b") as handle:
+        try:
+            if sys.platform == "win32":
+                _lock_windows(handle, exclusive=exclusive)
+            else:
+                import fcntl
+
+                fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EAGAIN, errno.EACCES}:
+                raise BlockingIOError(errno.EAGAIN, "The file lease is held") from exc
+            raise
+        yield
+
+
+@contextmanager
+def installation_access(*, updating: bool = False, allow_incomplete: bool = False,
+                        environment: str | Path | None = None) -> Generator[None]:
     """Hold a shared runtime lease, or refuse an update until all runtimes exit.
 
     This protects cooperating entrypoints in this account, not arbitrary Python
@@ -68,21 +93,19 @@ def installation_access(*, updating: bool = False, allow_incomplete: bool = Fals
     still required before enabling an in-app installation handoff. Diagnostics and
     stop commands may allow an incomplete install; they still cannot race a writer.
     """
-    directory = installation_state_dir()
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = directory / "runtime.lock"
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(descriptor, "a+b") as handle:
-        try:
-            if sys.platform == "win32":
-                _lock_windows(handle, exclusive=updating)
-            else:
-                import fcntl
-
-                fcntl.flock(handle, (fcntl.LOCK_EX if updating else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno not in {errno.EAGAIN, errno.EACCES}:
-                raise
+    acquired = False
+    try:
+        with file_access(installation_state_dir(environment) / "runtime.lock", exclusive=updating):
+            acquired = True
+            if not updating and not allow_incomplete and pending_update_path(environment).exists():
+                raise InstallationBusyError(
+                    "A previous update did not finish. Check its saved update state at "
+                    f"{installation_state_dir(environment)} before repairing this installation. "
+                    "Do not start a different update. No automatic rollback was performed."
+                )
+            yield
+    except BlockingIOError as exc:
+        if not acquired:
             message = (
                 "This installation is in use. Stop its nanobot gateways and clients before updating; "
                 "no processes were stopped and no package files were changed."
@@ -90,12 +113,4 @@ def installation_access(*, updating: bool = False, allow_incomplete: bool = Fals
                 "This installation is being updated. Wait for the update to finish before starting nanobot."
             )
             raise InstallationBusyError(message) from exc
-        # Closing the descriptor releases both flock and LockFileEx leases.
-        if not updating and not allow_incomplete:
-            pending = Path.home() / ".nanobot" / "run" / f"update-{installation_id()[:16]}.pending"
-            if pending.exists():
-                raise InstallationBusyError(
-                    "A previous update did not finish. Repair this installation with "
-                    "`python -m nanobot update` before starting nanobot. No automatic rollback was performed."
-                )
-        yield
+        raise

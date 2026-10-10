@@ -342,6 +342,17 @@ def test_failed_install_survives_gateway_restart_and_success_clears_marker(isola
     assert not update.incomplete_update()
 
 
+def test_legacy_retry_cannot_replace_an_exact_worker_job(isolated_update):
+    marker = update._journal_path()
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"schema_version":2,"job_id":"an-exact-job","version":"0.3.5"}')
+    with pytest.raises(update.UpdateError, match="saved update job") as error:
+        update.update_installation()
+    assert error.value.needs_repair
+    isolated_update.assert_not_called()
+    assert marker.exists()
+
+
 def test_source_preflight_failure_does_not_mark_installation_modified(checkout, isolated_update, monkeypatch):
     root, _ = checkout
     (root / "file").write_text("my edits", encoding="utf-8")

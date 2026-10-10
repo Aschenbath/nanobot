@@ -106,6 +106,7 @@ class UpdatePlan(ReleaseRecord):
     installation: InstallationSnapshot
     channel: Channel
     target: ReleaseTarget
+    extras: list[str] | None = None
     created_at: int = Field(ge=0)
     expires_at: int = Field(gt=0)
 
@@ -114,6 +115,17 @@ class UpdatePlan(ReleaseRecord):
     def canonical_id(cls, value: str) -> str:
         if str(UUID(value)) != value:
             raise ValueError("Invalid update plan identifier")
+        return value
+
+    @field_validator("extras")
+    @classmethod
+    def explicit_extras(cls, value: list[str] | None) -> list[str] | None:
+        import re
+
+        if value is not None and (len(value) > 50 or len(value) != len(set(value)) or any(
+            not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extra) for extra in value
+        )):
+            raise ValueError("Extras must be explicit, unique normalized names")
         return value
 
     @model_validator(mode="after")

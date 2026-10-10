@@ -63,3 +63,43 @@ Leases protect cooperating entrypoints in the same account. They do not discover
 older runtimes without this mechanism, arbitrary Python imports, another OS user's
 processes or unrecognized supervisors. Such installations must not be advertised
 as eligible for unattended/coordinated updates merely because a lease is available.
+
+## Exact offline executor (internal, not enabled in the UI)
+
+`update_jobs.prepare_job` now prepares an immutable plain-venv transaction. It requires
+explicitly confirmed extras (including an explicit empty list for the base package),
+refuses unsupported installation owners, and compares fresh interpreter and installed
+metadata with the approved plan. It asks pip for a dry-run report, fetches the exact
+required dependency wheels with hashes, and stages those alongside the verified
+nanobot wheel. There is no source build or global package-manager fallback. Pip's
+configured package sources remain its trust policy during preparation; sensitive
+resolver URLs stay in a private temporary directory and are not put in the journal.
+
+Staging alone does not authorize execution. Starting a job revalidates the same release,
+checks the current environment and writes a short-lived approval bound to the exact
+request. The immutable worker zipapp uses only Python's standard library and lives
+outside the files being replaced. Its coordinator runs with the base interpreter;
+its dedicated pip CLI child holds the installation lease itself. Killing the coordinator
+therefore cannot unlock a still-running installer. Installation is offline, from only
+the staged wheels, with pip's destination/configuration overrides disabled.
+
+The journal records the attempt, phase, whether mutation began, and a bounded message.
+After pip exits, a fresh interpreter must import the target from the correct environment;
+application files, including bundled WebUI/TUI assets, must match the approved wheel,
+and `pip check` must pass. The resulting state is **installed**, not “gateway updated”:
+no restarted gateway has been verified by this executor.
+
+A stopped job can be cancelled only before mutation. Failed/interrupted mutation keeps
+its startup fence and exact inputs. Explicit repair rechecks eligibility and cannot
+overwrite a different version installed by another updater. Within a valid approval,
+the copied worker can retry or show `--status <job-directory>` without importing a
+broken nanobot installation. After expiry it refuses execution: a control-plane approval
+must be renewed for the same reviewed job. There is not yet a finished public recovery
+CLI for the case where that control plane is itself unavailable.
+
+This internal executor is verified with actual pip processes and disposable application
+wheels, including dependency upgrades, coordinator loss and repair. It is not full
+product E2E or native verification on every OS. The caller still needs installation
+receipts, supported process-owner discovery, task shutdown, scoped data backup,
+restart/reconnection verification and authenticated UI/CLI integration. Until those
+are connected, no public button or CLI flag starts this executor.

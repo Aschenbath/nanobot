@@ -266,6 +266,14 @@ def update_installation(
     lock_dir.mkdir(parents=True, exist_ok=True)
     try:
         with installation_access(updating=True), FileLock(str(lock_dir / f"update-{_installation_key()}.lock"), timeout=0):
+            if incomplete_update():
+                with _journal_path().open("rb") as marker:
+                    legacy_marker = marker.read(31).startswith(b"Installation may be incomplete.")
+                if not legacy_marker:
+                    raise UpdateError(
+                        "A saved update job owns this installation. Resume that exact job; "
+                        "the legacy updater cannot replace it with a new target.", needs_repair=True,
+                    )
             if dev:
                 bun = ensure_bun(output=output)
                 root = _prepare_source(output, before_change=_mark_installing)
