@@ -34,7 +34,8 @@ from nanobot.cli.webui_support import (
 )
 from nanobot.config.paths import get_data_dir, is_default_workspace
 from nanobot.config.schema import Config
-from nanobot.gateway.runtime import GatewayInstance
+from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
+from nanobot.installation_lock import installation_access
 from nanobot.security.network import is_loopback_host
 from nanobot.session.keys import (
     HEARTBEAT_SESSION_KEY,
@@ -357,7 +358,48 @@ def _run_gateway(
     webui_dev_server: WebUIDevServer | None = None,
     gateway_instance: GatewayInstance | None = None,
 ) -> None:
-    """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
+    """Claim the installation and profile before initializing any runtime writers."""
+    from nanobot.config.loader import get_config_path
+    from nanobot.update_profiles import record_gateway_profile
+
+    port = port if port is not None else config.gateway.port
+    instance = gateway_instance or GatewayInstance.resolve(config_path=get_config_path())
+    gateway_runtime = GatewayRuntime(paths=instance.paths)
+    with (
+        installation_access(),
+        gateway_runtime.foreground_instance(instance.start_options(port=port)),
+        record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(),
+                               workspace=config.workspace_path, port=port),
+    ):
+        _run_claimed_gateway(
+            config, port=port, gateway_instance=instance, gateway_runtime=gateway_runtime,
+            open_browser_url=open_browser_url, open_browser_ready_url=open_browser_ready_url,
+            webui_static_dist=webui_static_dist, webui_bundle_mode=webui_bundle_mode,
+            webui_runtime_surface=webui_runtime_surface,
+            webui_runtime_capabilities=webui_runtime_capabilities,
+            health_server_enabled=health_server_enabled,
+            unconfigured_provider_error=unconfigured_provider_error,
+            webui_dev_server=webui_dev_server,
+        )
+
+
+def _run_claimed_gateway(
+    config: Config,
+    *,
+    port: int,
+    gateway_instance: GatewayInstance,
+    gateway_runtime: GatewayRuntime,
+    open_browser_url: str | None,
+    open_browser_ready_url: str | None,
+    webui_static_dist: bool,
+    webui_bundle_mode: BuildMode,
+    webui_runtime_surface: str,
+    webui_runtime_capabilities: dict[str, Any] | None,
+    health_server_enabled: bool,
+    unconfigured_provider_error: str | None,
+    webui_dev_server: WebUIDevServer | None,
+) -> None:
+    """Initialize and run only while the caller holds the gateway lifecycle claim."""
     from nanobot.agent.model_presets import load_model_preset_catalog
     from nanobot.agent.tools.message import MessageTool
     from nanobot.agent.turn_delivery import TurnDeliveryFactory
@@ -387,9 +429,7 @@ def _run_gateway(
     )
     from nanobot.triggers.local_runner import run_local_trigger_queue
     from nanobot.triggers.local_store import LocalTriggerStore
-    from nanobot.update_profiles import record_gateway_profile
 
-    port = port if port is not None else config.gateway.port
     webui_url = _webui_browser_url(config)
     gateway_host_for_browser = _host_for_local_browser(config.gateway.host)
     if health_server_enabled and _tcp_endpoint_reachable(gateway_host_for_browser, port):
@@ -448,19 +488,12 @@ def _run_gateway(
     session_manager = SessionManager(config.workspace_path)
 
     # Use the same runtime identity for foreground and managed gateway processes.
-    from nanobot.config.loader import get_config_path
     from nanobot.gateway.runtime import (
         GatewayClientLease,
-        GatewayRuntime,
         monitor_gateway_clients,
     )
 
-    instance = gateway_instance or GatewayInstance.resolve(
-        config_path=get_config_path(),
-    )
-    config_path = str(instance.config_path)
-    gateway_runtime = GatewayRuntime(paths=instance.paths)
-    gateway_start_options = instance.start_options(port=port)
+    config_path = str(gateway_instance.config_path)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
@@ -1034,11 +1067,7 @@ def _run_gateway(
             finally:
                 restore_shutdown_handlers()
 
-    with (
-        gateway_runtime.foreground_instance(gateway_start_options),
-        record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(), workspace=config.workspace_path, port=port),
-        webui_turn_coordinator.connected(),
-    ):
+    with webui_turn_coordinator.connected():
         agent.subagents.recover_interrupted()
         if health_server_enabled:
             gateway_runtime.publish_health_host(config.gateway.host)

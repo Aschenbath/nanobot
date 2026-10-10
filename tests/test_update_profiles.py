@@ -7,13 +7,18 @@ import socket
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from nanobot.installation_lock import installation_state_dir
+from nanobot.installation_lock import (
+    InstallationBusyError,
+    installation_access,
+    installation_state_dir,
+    pending_update_path,
+)
 from nanobot.release_feed import ReleaseTarget
 from nanobot.releases import ReleaseArtifact
 from nanobot.update_plan import InstallationSnapshot, UpdatePlans, describe_plan
@@ -128,6 +133,89 @@ def test_missing_process_identity_cannot_become_pid_only_confirmation(private_ho
         path.write_text(json.dumps(payload))
         with pytest.raises(ValueError, match="different installation"):
             inspect_profiles(str(environment))
+
+
+@pytest.fixture
+def startup_profile(private_home, tmp_path, monkeypatch):
+    from nanobot.config.schema import Config
+
+    profile = tmp_path / "startup profile"
+    monkeypatch.setattr("nanobot.config.home._home_path", profile)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", profile / "config.json")
+    config = Config.model_validate({
+        "agents": {"defaults": {"workspace": str(profile / "workspace"),
+                                "dream": {"enabled": False}}},
+        "gateway": {"heartbeat": {"enabled": False}},
+    })
+    return profile, config
+
+
+def test_startup_is_visible_and_protected_before_workspace_writes(startup_profile, monkeypatch):
+    from nanobot.cli import gateway_runtime
+    from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
+
+    profile, config = startup_profile
+    seen = []
+
+    def fail_initialization(workspace):
+        observed = inspect_profiles(sys.prefix)
+        assert len(observed) == 1 and observed[0].state == "running"
+        assert observed[0].receipt.workspace == str(workspace)
+        assert observed[0].receipt.pid == os.getpid()
+        with pytest.raises(InstallationBusyError, match="installation is in use"):
+            with installation_access(updating=True):
+                pytest.fail("An update entered while gateway initialization was writing")
+        seen.append(observed[0].receipt.run_id)
+        raise RuntimeError("workspace initialization failed")
+
+    monkeypatch.setattr(gateway_runtime, "sync_workspace_templates", fail_initialization)
+    # The same public runtime entrypoint can be retried after initialization fails.
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="workspace initialization failed"):
+            gateway_runtime._run_gateway(config, health_server_enabled=False,
+                                         webui_static_dist=False)
+        observed = inspect_profiles(sys.prefix)
+        assert len(observed) == 1 and observed[0].state == "stopped"
+        assert not observed[0].receipt.active
+        instance = GatewayInstance.resolve(config_path=profile / "config.json")
+        assert not GatewayRuntime(paths=instance.paths).status().running
+        with installation_access(updating=True):
+            pass
+    assert seen[0] != seen[1]
+
+
+def test_duplicate_gateway_cannot_initialize_workspace_before_claim(startup_profile, monkeypatch):
+    from nanobot.cli import gateway_runtime
+    from nanobot.gateway.runtime import GatewayAlreadyRunningError
+
+    profile, config = startup_profile
+    monkeypatch.setattr(gateway_runtime, "sync_workspace_templates",
+                        lambda _path: pytest.fail("Duplicate startup touched the workspace"))
+    with gateway(profile, sys.prefix):
+        original = inspect_profiles(sys.prefix)
+        with pytest.raises(GatewayAlreadyRunningError):
+            gateway_runtime._run_gateway(config, health_server_enabled=False,
+                                         webui_static_dist=False)
+        assert inspect_profiles(sys.prefix) == original
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_gateway_entrypoint_refuses_installation_before_initialization(startup_profile, monkeypatch, interrupted):
+    from nanobot.cli import gateway_runtime
+
+    profile, config = startup_profile
+    monkeypatch.setattr(gateway_runtime, "sync_workspace_templates",
+                        lambda _path: pytest.fail("Blocked startup touched the workspace"))
+    if interrupted:
+        pending = pending_update_path()
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text("interrupted")
+    with nullcontext() if interrupted else installation_access(updating=True):
+        with pytest.raises(InstallationBusyError):
+            gateway_runtime._run_gateway(config, health_server_enabled=False,
+                                         webui_static_dist=False)
+    assert inspect_profiles(sys.prefix) == []
+    assert not (profile / "workspace").exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Graceful SIGTERM proof uses the POSIX gateway handler")
