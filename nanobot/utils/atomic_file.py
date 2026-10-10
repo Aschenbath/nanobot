@@ -19,7 +19,9 @@ def atomic_write_lines(path: Path, lines: Iterable[str], *, fsync: bool = True) 
     """
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with open(tmp, "x", encoding="utf-8") as handle:
+        # Stable bytes across platforms: callers hash records and bound their
+        # encoded size, so Windows newline translation would break the contract.
+        with open(tmp, "x", encoding="utf-8", newline="\n") as handle:
             for line in lines:
                 handle.write(line if line.endswith("\n") else f"{line}\n")
             if fsync:

@@ -1,6 +1,6 @@
 """Standalone, offline pip worker for an already prepared plain-venv update.
 
-This file and its two stdlib-only helpers are copied to an immutable zipapp outside
+This file and its stdlib-only helpers are copied to an immutable zipapp outside
 site-packages before mutation. The coordinator uses the base Python. Its pip child
 owns the runtime lease itself, so killing the coordinator cannot release that lease
 while pip is still changing files. Nothing in this module imports the nanobot runtime.
@@ -31,7 +31,11 @@ from nanobot.installation_lock import (
     installation_state_dir,
     pending_update_path,
 )
+from nanobot.update_backup import BackupSource, ensure_backup, verify_backup
 from nanobot.utils.atomic_file import atomic_write_lines
+
+_REQUEST_SCHEMA_VERSION = 2
+_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 _PROBE = """
 import hashlib, json, re, sys
@@ -93,14 +97,21 @@ def _integer(value: object) -> int:
     return value
 
 
-def read_record(path: Path) -> dict[str, object]:
-    if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+def read_record(path: Path, *, max_bytes: int = 1024 * 1024) -> dict[str, object]:
+    if path.is_symlink():
         raise ValueError("Invalid update record")
-    return _object(json.loads(path.read_bytes()))
+    with path.open("rb") as stream:
+        data = stream.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError("Update record exceeds its size limit")
+    return _object(json.loads(data))
 
 
-def write_record(path: Path, record: object) -> None:
-    atomic_write_lines(path, [json.dumps(record, sort_keys=True, separators=(",", ":"))])
+def write_record(path: Path, record: object, *, max_bytes: int = 1024 * 1024) -> None:
+    encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) + 1 > max_bytes:
+        raise ValueError("Update record exceeds its size limit")
+    atomic_write_lines(path, [encoded])
     path.chmod(0o600)
 
 
@@ -182,11 +193,12 @@ class WorkerSpec:
     baseline: EnvironmentSnapshot
     version: str
     wheels: tuple[StagedWheel, ...]
+    backup_sources: tuple[BackupSource, ...]
 
     @classmethod
     def read(cls, directory: Path) -> WorkerSpec:
-        data = read_record(directory / "request.json")
-        if data.get("schema_version") != 1:
+        data = read_record(directory / "request.json", max_bytes=_MAX_REQUEST_BYTES)
+        if data.get("schema_version") != _REQUEST_SCHEMA_VERSION:
             raise ValueError("Unsupported update worker request")
         plan_id = _text(data["plan_id"])
         if str(UUID(plan_id)) != plan_id or directory.name != plan_id:
@@ -198,8 +210,15 @@ class WorkerSpec:
         if not 1 <= len(wheel_values) <= 500:
             raise ValueError("Invalid update wheel set")
         wheels = tuple(StagedWheel.parse(value) for value in wheel_values)
+        raw_sources = data.get("backup_sources")
+        if not isinstance(raw_sources, list):
+            raise ValueError("Invalid backup scope")
+        source_values = cast(list[object], raw_sources)
+        if not 1 <= len(source_values) <= 40_000:
+            raise ValueError("Invalid backup scope")
+        sources = tuple(BackupSource.parse(value) for value in source_values)
         spec = cls(plan_id, _sha(data["plan_sha256"]), _sha(data["worker_sha256"]), EnvironmentSnapshot.parse(data["baseline"]),
-                   _text(data["version"]), wheels)
+                   _text(data["version"]), wheels, sources)
         if directory.resolve() != (installation_state_dir(spec.baseline.environment) / "jobs" / plan_id).resolve():
             raise ValueError("Update job is outside its installation state directory")
         if len({wheel.name for wheel in wheels}) != len(wheels):
@@ -212,9 +231,16 @@ class WorkerSpec:
             raise ValueError("The staged update worker changed")
         return spec
 
+    def save(self, directory: Path) -> None:
+        # Expanded profile stores may exceed the small journal/approval limit.
+        # Keep the writer and standalone reader on the same bounded contract.
+        write_record(directory / "request.json", {"schema_version": _REQUEST_SCHEMA_VERSION, **asdict(self)},
+                     max_bytes=_MAX_REQUEST_BYTES)
+
 
 class Phase(str, Enum):
     READY = "ready"
+    BACKING_UP = "backing_up"
     INSTALLING = "installing"
     VERIFYING = "verifying"
     INSTALLED = "installed"
@@ -290,6 +316,8 @@ def _pip_child(directory: Path) -> None:
         _pending_owner(spec)
         check_environment(spec, repairing=status.mutation_started)
         wheels = [str(wheel.verify(directory / "wheels")) for wheel in spec.wheels]
+        verify_backup(directory, spec.backup_sources, hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+                      unchanged=not status.mutation_started)
         pending = pending_update_path()
         pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
@@ -359,6 +387,11 @@ def run_job(directory: Path) -> JobStatus:
                 check_environment(spec, repairing=status.mutation_started)
                 for wheel in spec.wheels:
                     wheel.verify(directory / "wheels")
+                JobStatus(spec.plan_id, Phase.BACKING_UP, status.attempt, status.mutation_started,
+                          "Preserving the original scoped data backup", int(time.time())).save(directory)
+                ensure_backup(directory, spec.backup_sources,
+                              hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+                              mutated=status.mutation_started)
                 # Block new runtimes across the coordinator -> pip child gap.
                 pending = pending_update_path(spec.baseline.environment)
                 pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

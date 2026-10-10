@@ -1,7 +1,8 @@
 """Prepare exact offline jobs and hand them to the standalone pip worker.
 
 This is the executor's internal Interface, not an authenticated WebUI mutation.
-The caller still owns task shutdown, data backup and supervisor/restart handoff.
+The caller still owns task shutdown and supervisor/restart handoff. The worker
+backs up the reviewed, scoped data before any package mutation.
 Until that caller is integrated, CLI/UI cannot start these jobs.
 """
 
@@ -14,7 +15,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict
 from email.parser import BytesParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from nanobot.installation_lock import file_access, installation_access, installation_state_dir
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Sha256
+from nanobot.update_backup import BackupSource, profile_sources, unique_sources
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
 from nanobot.update_worker import (
@@ -83,7 +84,7 @@ def _worker_archive(path: Path) -> str:
     with ZipFile(path, "x") as bundle:
         files = {"__main__.py": b"from nanobot.update_worker import main\nmain()\n",
                  "nanobot/__init__.py": b"", "nanobot/utils/__init__.py": b""}
-        for name in ("update_worker.py", "installation_lock.py", "utils/atomic_file.py"):
+        for name in ("update_worker.py", "update_backup.py", "installation_lock.py", "utils/atomic_file.py"):
             files[f"nanobot/{name}"] = (sources / name).read_bytes()
         for name, data in files.items():
             bundle.writestr(ZipInfo(name), data)
@@ -198,8 +199,14 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
         archive = directory / "worker.pyz"
         if archive.exists():
             archive.unlink()  # Only uncommitted staging: no request/approval exists yet.
+        sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
+        for profile in plan.profiles:
+            receipt = profile.receipt
+            sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
+                                           config=Path(receipt.config), workspace=Path(receipt.workspace)))
+            sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
         spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
-                          baseline, plan.target.version, records)
+                          baseline, plan.target.version, records, unique_sources(sources))
         for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
             path.chmod(0o600)
             with path.open("r+b") as stream:
@@ -207,7 +214,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
         JobStatus(plan.id, Phase.READY, 0, False, "Files prepared; not installed", int(time.time())).save(directory)
         # The immutable request is the commit record: its presence means every
         # input and the initial status were flushed successfully.
-        write_record(directory / "request.json", {"schema_version": 1, **asdict(spec)})
+        spec.save(directory)
         return directory
 
 
@@ -215,7 +222,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     """Approve the exact staged job and start its detached worker.
 
     Not called by a client route yet. Runtime quiescence is enforced again in the
-    worker; this call never stops gateways or establishes backup/restart approval.
+    worker; this call never stops gateways or establishes supervisor/restart authority.
     """
     spec = WorkerSpec.read(directory)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())

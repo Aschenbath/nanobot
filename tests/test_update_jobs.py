@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import venv
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 from zipfile import ZipFile
@@ -17,6 +19,8 @@ import httpx
 import pytest
 from packaging.tags import sys_tags
 
+from nanobot.config.home import get_selected_home_path, set_home_path
+from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import (
     InstallationBusyError,
     installation_access,
@@ -24,14 +28,17 @@ from nanobot.installation_lock import (
 )
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
+from nanobot.update_backup import BackupSource
 from nanobot.update_jobs import prepare_job, start_job
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan
+from nanobot.update_profiles import inspect_profiles, record_gateway_profile
 from nanobot.update_worker import (
     JobStatus,
     Phase,
     WorkerSpec,
     cancel_job,
     inspect_environment,
+    read_record,
     write_record,
 )
 
@@ -91,12 +98,33 @@ def installation(tmp_path, monkeypatch, request):
         package_path=str(site / "nanobot/__init__.py"), running_package=str(site / "nanobot/__init__.py"),
         owner="venv", records={"pyvenv.cfg": baseline.receipt_sha, **baseline.app_records},
     )
+    profile, workspace = tmp_path / "gateway data", tmp_path / "user project"
+    (profile / "sessions").mkdir(parents=True)
+    workspace.mkdir()
+    (profile / "config.json").write_text('{"fixture":"private credential"}')
+    (profile / "sessions/chat.jsonl").write_text('{"content":"original conversation"}\n')
+    (workspace / "private-project.py").write_text("not nanobot state")
+    selected_home = get_selected_home_path()
+    try:
+        set_home_path(profile)
+        instance = GatewayInstance.resolve(config_path=profile / "config.json", workspace=str(workspace))
+        runtime = GatewayRuntime(paths=instance.paths)
+        # Synthetic package fixture, real runtime receipt lifetime. Full gateway
+        # registration is independently tested in test_update_profiles.py.
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, "prefix", str(environment))
+            with runtime.foreground_instance(instance.start_options(port=18790)):
+                with record_gateway_profile(instance, runtime, data_dir=profile, workspace=workspace, port=18790):
+                    pass
+    finally:
+        set_home_path(selected_home)
     target = ReleaseTarget(version="0.3.5", source="pypi",
                            url=f"https://files.pythonhosted.org/packages/{candidate.name}",
                            artifact=ReleaseArtifact(filename=candidate.name, size=candidate.stat().st_size,
                                                     sha256=hashlib.sha256(candidate.read_bytes()).hexdigest()))
     now = int(time.time())
     plan = UpdatePlan(id=str(uuid4()), installation=snapshot, target=target, extras=[], channel="stable",
+                      profiles=inspect_profiles(str(environment)),
                       created_at=now, expires_at=now + 900)
     requests = []
 
@@ -122,6 +150,49 @@ async def wait_worker(process):
     assert code == 0
 
 
+def test_update_record_size_is_bounded_before_replacement(tmp_path):
+    path = tmp_path / "record.json"
+    record = {"message": "配置实例"}
+    write_record(path, record)
+    original = path.read_bytes()
+    assert read_record(path, max_bytes=len(original)) == record
+    write_record(path, record, max_bytes=len(original))
+    with pytest.raises(ValueError, match="size limit"):
+        write_record(path, record, max_bytes=len(original) - 1)
+    assert path.read_bytes() == original
+    with pytest.raises(ValueError, match="size limit"):
+        read_record(path, max_bytes=len(original) - 1)
+
+
+@pytest.mark.asyncio
+async def test_expanded_profile_request_is_readable_by_the_standalone_worker(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    spec = WorkerSpec.read(directory)
+    # A multi-profile inventory expands into many explicit named stores. It may
+    # outgrow the journal limit even when the saved plan is comfortably bounded.
+    sources = tuple(BackupSource(str(tmp_path / f"profile-{i}" / ("nested-" * 16) / "sessions")) for i in range(8192))
+    expanded = replace(spec, backup_sources=sources)
+    expanded.save(directory)
+    assert (directory / "request.json").stat().st_size > 1024 * 1024
+    assert WorkerSpec.read(directory) == expanded
+    result = subprocess.run([spec.baseline.base_python, "-I", str(directory / "worker.pyz"), "--status", str(directory)],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["phase"] == "ready"
+    # Earlier saved requests had no backup contract. Reject them explicitly;
+    # their own immutable worker remains available for inspection/recovery.
+    spec.save(directory)
+    legacy = read_record(directory / "request.json")
+    legacy["schema_version"] = 1
+    legacy.pop("backup_sources")
+    write_record(directory / "request.json", legacy)
+    with pytest.raises(ValueError, match="Unsupported update worker request"):
+        WorkerSpec.read(directory)
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
 @pytest.mark.asyncio
 async def test_real_job_stages_then_installs_exact_app_and_dependency(installation, monkeypatch, tmp_path):
     plan, _, site, requests, transport = installation
@@ -144,6 +215,12 @@ async def test_real_job_stages_then_installs_exact_app_and_dependency(installati
     assert inspect_environment(plan.installation.python).app_version == "0.3.5"
     assert (site / "nanobot/web/dist/index.html").read_text() == "verified UI 0.3.5"
     assert not unintended.exists()
+    with ZipFile(directory / "backup/data.zip") as archive:
+        entries = json.loads(archive.read("manifest.json"))["entries"]
+        configs = [item for item in entries if item["path"] == plan.profiles[0].receipt.config]
+        assert len(configs) == 1
+        assert archive.read(configs[0]["member"]) == b'{"fixture":"private credential"}'
+        assert not any(item["path"].endswith("private-project.py") for item in entries)
     assert not pending_update_path(plan.installation.environment).exists()
     # Recover the reachable crash gap between saving INSTALLED and clearing the
     # startup fence. The completed job must verify/clear it, not install again.
@@ -235,11 +312,25 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
         else:
             pytest.fail("Pip did not release its lease")
         assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+        backup = (directory / "backup/data.zip").read_bytes()
+        # A repair must retain the original data even if a migration or an
+        # operator changed the live profile after the interrupted installation.
+        Path(plan.profiles[0].receipt.config).write_text('{"fixture":"changed after install"}')
         pip_entry.write_text(original)
+        retained = directory / "retained-original-backup"
+        (directory / "backup").rename(retained)
+        refused = await start_job(directory, feed, repair=True)
+        assert await asyncio.to_thread(refused.wait, 30) != 0
+        assert JobStatus.read(directory).mutation_started
+        assert JobStatus.read(directory).attempt == 1
+        assert "original pre-update backup is missing" in JobStatus.read(directory).message
+        assert not (directory / "backup").exists()
+        retained.rename(directory / "backup")
         (site / "nanobot/web/dist/index.html").unlink()
         with pytest.raises(ValueError, match="explicit repair"):
             await start_job(directory, feed)
         await wait_worker(await start_job(directory, feed, repair=True))
+        assert (directory / "backup/data.zip").read_bytes() == backup
     assert JobStatus.read(directory).attempt == 2
     assert JobStatus.read(directory).phase == Phase.INSTALLED
     assert (site / "nanobot/web/dist/index.html").read_text() == "verified UI 0.3.5"
@@ -275,6 +366,29 @@ async def test_prepared_worker_has_no_execution_authority(installation, tmp_path
                             capture_output=True, timeout=20)
     assert result.returncode != 0
     assert JobStatus.read(directory).phase == Phase.CANCELLED
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Symlink creation requires separate Windows privileges")
+async def test_real_worker_refuses_installation_when_scoped_backup_fails(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        external = tmp_path / "external-secret"
+        external.write_text("outside the approved stores")
+        link = Path(plan.profiles[0].receipt.data_dir) / "sessions/external"
+        link.symlink_to(external)
+        process = await start_job(directory, feed)
+        assert await asyncio.to_thread(process.wait, 30) != 0
+        status = JobStatus.read(directory)
+        assert status.phase == Phase.FAILED and not status.mutation_started
+        assert "symlink" in status.message
+        assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+        assert not pending_update_path(plan.installation.environment).exists()
+        assert not (directory / "backup").exists()
+        link.unlink()
+        await wait_worker(await start_job(directory, feed))
+    assert JobStatus.read(directory).phase == Phase.INSTALLED
 
 
 @pytest.mark.asyncio

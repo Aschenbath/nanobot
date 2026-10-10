@@ -198,6 +198,7 @@ def test_atomic_write_lines_round_trip_replaces_target(tmp_path: Path) -> None:
     atomic_write_lines(target, ['{"a": 1}', "café"])
 
     assert target.read_text(encoding="utf-8") == '{"a": 1}\ncafé\n'
+    assert target.read_bytes() == '{"a": 1}\ncafé\n'.encode("utf-8")
     assert list(tmp_path.glob("*.tmp")) == []
 
 
