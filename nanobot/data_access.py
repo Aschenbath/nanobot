@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from nanobot.installation_lock import InstallationBusyError, file_access
+from nanobot.installation_lock import FileLease, InstallationBusyError, file_access
 from nanobot.utils.atomic_file import atomic_write_lines
 
 _DATA_STORES = (
@@ -144,6 +144,15 @@ class DataLease:
     reservation_path: Path
     job_id: str | None
     exclusive: bool
+    _files: tuple[FileLease, ...] = field(default=(), repr=False, compare=False)
+
+    @contextmanager
+    def inherit_for_exec(self) -> Generator[None]:
+        """Retain all store leases in a dedicated POSIX installer's exec handoff."""
+        with ExitStack() as stack:
+            for lease in self._files:
+                stack.enter_context(lease.inherit_for_exec())
+            yield
 
     def reserve(self) -> None:
         """Keep participating writers out through handoff, crash and repair."""
@@ -269,16 +278,17 @@ def data_access(paths: Iterable[str | Path], *, updating: bool = False,
                 leases.add((namespace, str(item).casefold()))
     directory = Path.home() / ".nanobot" / "updates" / "data-locks"
     with ExitStack() as stack:
+        held: list[FileLease] = []
         try:
             if updating or job_id is not None:
                 # One reservation per account, including Windows stores on
                 # different drives that have no shared filesystem ancestor.
-                stack.enter_context(file_access(directory / "maintenance.lock", exclusive=True))
+                held.append(stack.enter_context(file_access(directory / "maintenance.lock", exclusive=True)))
             if grant is not None:
-                stack.enter_context(file_access(directory / f"startup-{grant.participant}.lock", exclusive=True))
+                held.append(stack.enter_context(file_access(directory / f"startup-{grant.participant}.lock", exclusive=True)))
             for namespace, key in sorted(leases):
                 name = hashlib.sha256(os.fsencode(key)).hexdigest()
-                stack.enter_context(file_access(directory / f"{namespace}-{name}.lock", exclusive=updating))
+                held.append(stack.enter_context(file_access(directory / f"{namespace}-{name}.lock", exclusive=updating)))
         except BlockingIOError as exc:
             raise InstallationBusyError(
                 "Nanobot data is in use by another runtime or update. Stop its writers "
@@ -302,4 +312,4 @@ def data_access(paths: Iterable[str | Path], *, updating: bool = False,
                 if any(root in ancestors or any(parent in requested for parent in root.parents)
                        for root in map(Path, reserved)):
                     raise InstallationBusyError("Nanobot data is reserved by an unfinished update; check its saved job before restarting")
-        yield DataLease(canonical, path, job_id, updating)
+        yield DataLease(canonical, path, job_id, updating, tuple(held))

@@ -360,7 +360,7 @@ def _pip_child(directory: Path) -> None:
     spec = WorkerSpec.read(directory)
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
         raise ValueError("Installer child is using the wrong environment")
-    with (installation_access(updating=True),
+    with (installation_access(updating=True) as installation,
           data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
         status = JobStatus.read(directory)
         if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
@@ -378,13 +378,21 @@ def _pip_child(directory: Path) -> None:
         write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
         JobStatus(spec.plan_id, Phase.INSTALLING, status.attempt + 1, True,
                   "Installing the verified package files", int(time.time())).save(directory)
-        # This is a dedicated CLI process, not pip's internal Python API. It ends
-        # with pip's SystemExit; no application or second pip call runs afterwards.
-        # Only verified local wheels are accepted, so no build subprocess can outlive
-        # this process's lease. The coordinator performs verification separately.
-        sys.argv = ["pip", "--disable-pip-version-check", "--no-input", "install",
-                    "--no-index", "--no-deps", "--only-binary=:all:", "--no-compile",
-                    "--force-reinstall", *wheels]
+        # The installer itself must own the leases, not a wrapper which can die
+        # while a child keeps writing. POSIX exec retains the worker's PID and
+        # leases. Windows stays in this lease-owning process instead of spawning
+        # a child: inherited Windows handles do not transfer byte-range locks.
+        # Only verified local wheels are accepted, so no build child can outlive
+        # the installer. The coordinator performs verification separately.
+        arguments = ["--disable-pip-version-check", "--no-input", "install",
+                     "--no-index", "--no-deps", "--only-binary=:all:", "--no-compile",
+                     "--force-reinstall", *wheels]
+        if os.name == "posix":
+            with installation.inherit_for_exec(), data.inherit_for_exec():
+                os.execve(sys.executable, [sys.executable, "-I", "-m", "pip", *arguments], os.environ)
+        # A dedicated CLI, ending in pip's SystemExit; no application or second
+        # pip call runs afterwards. This is not pip's internal Python API.
+        sys.argv = ["pip", *arguments]
         runpy.run_module("pip", run_name="__main__")
 
 

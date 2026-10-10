@@ -156,6 +156,14 @@ its dedicated pip CLI child holds the installation lease itself. Killing the coo
 therefore cannot unlock a still-running installer. Installation is offline, from only
 the staged wheels, with pip's destination/configuration overrides disabled.
 
+On POSIX, the dedicated installer replaces itself with pip's CLI through `exec`,
+retaining the same PID and all installation/data lease descriptors. A failed exec
+restores their non-inheritable flags; an unrelated later child cannot keep the locks.
+On Windows, pip's CLI remains in the lease-owning Python process: inherited handles
+are not a transfer of Windows byte-range lock ownership. Native uv/pipx execution
+still requires its own verified preparation, lifecycle and recovery path; this
+handoff alone does not enable it.
+
 The journal records the attempt, phase, whether mutation began, and a bounded message.
 After pip exits, a fresh interpreter must import the target from the correct environment;
 application files, including bundled WebUI/TUI assets, must match the approved wheel,
