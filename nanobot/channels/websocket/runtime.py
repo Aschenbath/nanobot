@@ -703,10 +703,10 @@ class WebSocketChannel(BaseChannel):
 
         async def handle_binary(request: web.BaseRequest) -> web.StreamResponse:
             try:
-                self.bus.admission.check()
+                with self.bus.admission.activity():
+                    return await self._uploads.handle(request)
             except RuntimeMaintenanceError:
                 return web.json_response({"error": "Gateway update is being verified"}, status=503)
-            return await self._uploads.handle(request)
 
         bridge = BinaryHTTPBridge(handle_binary)
 

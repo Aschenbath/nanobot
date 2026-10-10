@@ -32,6 +32,7 @@ from nanobot.command.builtin import builtin_command_palette
 from nanobot.cron.binding import CronBindingError, binding_revision
 from nanobot.cron.session_turns import is_bound_cron_job
 from nanobot.cron.types import CronJob, CronSchedule
+from nanobot.runtime_admission import RuntimeMaintenanceError
 from nanobot.security.workspace_access import WorkspaceScope, WorkspaceScopeError
 from nanobot.session.manager import SessionManager
 from nanobot.session.recovery import RecoveryActionError
@@ -493,8 +494,11 @@ class GatewayHTTPHandler:
                     405,
                     "WebUI mutations require an authenticated WebSocket",
                 )
-            response = await self._dispatch_resolved(connection, request, got)
+            with self.bus.admission.activity():
+                response = await self._dispatch_resolved(connection, request, got)
             return response
+        except RuntimeMaintenanceError:
+            return _http_error(503, "Gateway update is being verified. Retry shortly.")
         finally:
             self._log_slow_http(got, response, started)
 
@@ -505,12 +509,6 @@ class GatewayHTTPHandler:
         payload: dict[str, Any],
     ) -> Response:
         """Run one explicitly allowlisted mutation for an authenticated WebUI socket."""
-        from nanobot.runtime_admission import RuntimeMaintenanceError
-
-        try:
-            self.bus.admission.check()
-        except RuntimeMaintenanceError:
-            return _http_error(503, "Gateway update is being verified. Retry shortly.")
         path = self._webui_mutation_path(action, payload)
         if isinstance(path, Response):
             return path
@@ -531,7 +529,13 @@ class GatewayHTTPHandler:
         setattr(request, "_nanobot_trusted_proxy_authenticated", True)
         setattr(request, _WEBUI_MUTATION_REQUEST_ATTR, True)
         setattr(request, _WEBUI_MUTATION_PAYLOAD_ATTR, dict(payload))
-        response = await self._dispatch_resolved(connection, request, path)
+        try:
+            # WebUI mutation tasks already survive a disconnected browser. Keep
+            # their async/threaded writes busy until that operation really ends.
+            with self.bus.admission.activity():
+                response = await self._dispatch_resolved(connection, request, path)
+        except RuntimeMaintenanceError:
+            return _http_error(503, "Gateway update is being verified. Retry shortly.")
         if isinstance(response, Response):
             return response
         return _http_error(404, "WebUI mutation action not found")
