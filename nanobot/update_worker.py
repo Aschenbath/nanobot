@@ -310,7 +310,7 @@ def _pip_child(directory: Path) -> None:
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
         raise ValueError("Installer child is using the wrong environment")
     with (installation_access(updating=True),
-          data_access((source.path for source in spec.backup_sources), updating=True)):
+          data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
         status = JobStatus.read(directory)
         if status.phase in {Phase.INSTALLED, Phase.CANCELLED}:
             raise ValueError("This update job is already finished")
@@ -322,6 +322,7 @@ def _pip_child(directory: Path) -> None:
                       unchanged=not status.mutation_started)
         pending = pending_update_path()
         pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        data.reserve()
         write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
         JobStatus(spec.plan_id, Phase.INSTALLING, status.attempt + 1, True,
                   "Installing the verified package files", int(time.time())).save(directory)
@@ -377,7 +378,7 @@ def run_job(directory: Path) -> JobStatus:
             raise ValueError("This update job was cancelled")
         try:
             with (installation_access(updating=True, environment=spec.baseline.environment),
-                  data_access((source.path for source in spec.backup_sources), updating=True)):
+                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                 _pending_owner(spec)
                 if status.phase == Phase.INSTALLED:
                     # Recover a crash after persisting the result but before removing
@@ -385,6 +386,7 @@ def run_job(directory: Path) -> JobStatus:
                     if pending_update_path(spec.baseline.environment).exists():
                         _verify(spec, directory)
                         pending_update_path(spec.baseline.environment).unlink()
+                    data.release_reservation()
                     return status
                 _check_approval(directory, spec)
                 check_environment(spec, repairing=status.mutation_started)
@@ -395,7 +397,9 @@ def run_job(directory: Path) -> JobStatus:
                 ensure_backup(directory, spec.backup_sources,
                               hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
                               mutated=status.mutation_started)
-                # Block new runtimes across the coordinator -> pip child gap.
+                # Block shared-data writers too, including a different Python
+                # installation, across handoff and interrupted-job recovery.
+                data.reserve()
                 pending = pending_update_path(spec.baseline.environment)
                 pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
@@ -405,7 +409,7 @@ def run_job(directory: Path) -> JobStatus:
                             "--pip", str(directory)], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             with (installation_access(updating=True, environment=spec.baseline.environment),
-                  data_access((source.path for source in spec.backup_sources), updating=True)):
+                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                 status = JobStatus.read(directory)
                 JobStatus(spec.plan_id, Phase.VERIFYING, status.attempt, True,
                           "Checking the installed package and dependencies", int(time.time())).save(directory)
@@ -414,6 +418,7 @@ def run_job(directory: Path) -> JobStatus:
                                    "Files installed and checked; running gateway not yet verified", int(time.time()))
                 status.save(directory)
                 pending_update_path(spec.baseline.environment).unlink()
+                data.release_reservation()
                 return status
         except InstallationBusyError:
             # An orphan pip child may still be alive. Do not turn its ongoing
@@ -426,10 +431,12 @@ def run_job(directory: Path) -> JobStatus:
             failed = JobStatus(spec.plan_id, Phase.FAILED, status.attempt, status.mutation_started,
                                message[:1000], int(time.time()))
             failed.save(directory)
-            if not status.mutation_started and pending_update_path(spec.baseline.environment).exists():
-                with installation_access(updating=True, environment=spec.baseline.environment):
+            if not status.mutation_started:
+                with (installation_access(updating=True, environment=spec.baseline.environment),
+                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                     _pending_owner(spec)
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
+                    data.release_reservation()
             raise
 
 
@@ -437,12 +444,14 @@ def cancel_job(directory: Path) -> JobStatus:
     """Cancel only a stopped, unmodified job; never terminate an installer."""
     spec = WorkerSpec.read(directory)
     with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
-        with installation_access(updating=True, environment=spec.baseline.environment):
+        with (installation_access(updating=True, environment=spec.baseline.environment),
+              data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
             status = JobStatus.read(directory)
             if status.mutation_started:
                 raise ValueError("Installation has begun; this job needs verification or repair, not cancellation")
             _pending_owner(spec)
             pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
+            data.release_reservation()
             status = JobStatus(spec.plan_id, Phase.CANCELLED, status.attempt, False,
                                "Cancelled; installed files were not changed", int(time.time()))
             status.save(directory)

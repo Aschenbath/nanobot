@@ -316,6 +316,9 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
         else:
             pytest.fail("Pip did not release its lease")
         assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+        with pytest.raises(InstallationBusyError, match="reserved"):
+            with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+                pytest.fail("Pip exit lifted the interrupted coordinator's data reservation")
         backup = (directory / "backup/data.zip").read_bytes()
         # A repair must retain the original data even if a migration or an
         # operator changed the live profile after the interrupted installation.
@@ -338,6 +341,8 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
     assert JobStatus.read(directory).attempt == 2
     assert JobStatus.read(directory).phase == Phase.INSTALLED
     assert (site / "nanobot/web/dist/index.html").read_text() == "verified UI 0.3.5"
+    with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+        pass  # Successful repair releases both the live lease and persistent fence.
 
 
 @pytest.mark.asyncio
@@ -355,6 +360,65 @@ async def test_other_installation_writer_refuses_job_before_approval_or_backup(i
         assert inspect_environment(plan.installation.python).app_version == "0.3.4"
         await wait_worker(await start_job(directory, feed))
         assert JobStatus.read(directory).phase == Phase.INSTALLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_interrupted_handoff_releases_data_without_installing(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    ready = tmp_path / "coordinator-ready"
+    original_popen = subprocess.Popen
+    wrapper = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from nanobot import update_worker
+original_run = update_worker.subprocess.run
+def run(command, *args, **kwargs):
+    if '--pip' in command:
+        Path(sys.argv[3]).write_text('ready')
+        time.sleep(15)
+        raise RuntimeError('Handoff test deadline exceeded')
+    return original_run(command, *args, **kwargs)
+update_worker.subprocess.run = run
+update_worker.run_job(Path(sys.argv[2]))
+"""
+
+    def launch(command, **kwargs):
+        if len(command) == 4 and str(command[2]).endswith("worker.pyz"):
+            command = [command[0], "-I", "-c", wrapper, command[2], command[3], str(ready)]
+        return original_popen(command, **kwargs)
+
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        monkeypatch.setattr(update_jobs.subprocess, "Popen", launch)
+        process = await start_job(directory, feed)
+        try:
+            for _ in range(200):
+                if ready.exists():
+                    break
+                assert process.poll() is None, JobStatus.read(directory)
+                await asyncio.sleep(0.025)
+            assert ready.exists()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+        status = JobStatus.read(directory)
+        assert status.phase == Phase.BACKING_UP and not status.mutation_started
+        assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+        store = Path(plan.profiles[0].receipt.data_dir) / "sessions"
+        with pytest.raises(InstallationBusyError, match="reserved"):
+            with data_access([store]):
+                pytest.fail("A dead coordinator lost its maintenance reservation")
+        cancel_job(directory)
+        assert JobStatus.read(directory).phase == Phase.CANCELLED
+        assert not pending_update_path(plan.installation.environment).exists()
+        with data_access([store]):
+            pass
+        with pytest.raises(ValueError, match="already finished"):
+            await start_job(directory, feed)
 
 
 @pytest.mark.asyncio

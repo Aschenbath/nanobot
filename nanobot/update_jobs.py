@@ -230,7 +230,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     await feed.revalidate(plan.target)
     with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
         with (installation_access(updating=True, environment=spec.baseline.environment),
-              data_access((source.path for source in spec.backup_sources), updating=True)):
+              data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
             state = JobStatus.read(directory)
             if state.phase in {Phase.INSTALLED, Phase.CANCELLED}:
                 raise ValueError("This job is already finished; it cannot be started again")

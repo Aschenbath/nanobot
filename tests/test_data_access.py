@@ -3,6 +3,7 @@
 import subprocess
 import sys
 from contextlib import contextmanager
+from uuid import uuid4
 
 import pytest
 
@@ -13,7 +14,9 @@ _CHILD = """
 import sys
 from nanobot.data_access import data_access
 sys.prefix = sys.argv[1]
-with data_access(sys.argv[3:], updating=sys.argv[2] == 'update'):
+with data_access(sys.argv[4:], updating=sys.argv[2] == 'update', job_id=sys.argv[3] or None) as lease:
+    if sys.argv[3]:
+        lease.reserve()
     print('ready', flush=True)
     sys.stdin.read(1)
 """
@@ -29,9 +32,9 @@ def private_home(tmp_path, monkeypatch):
 
 
 @contextmanager
-def process_access(environment, paths, *, updating=False):
+def process_access(environment, paths, *, updating=False, job_id=None):
     process = subprocess.Popen(
-        [sys.executable, "-c", _CHILD, str(environment), "update" if updating else "runtime", *map(str, paths)],
+        [sys.executable, "-c", _CHILD, str(environment), "update" if updating else "runtime", job_id or "", *map(str, paths)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -90,3 +93,29 @@ def test_alias_and_partial_acquisition_do_not_bypass_or_leak_leases(private_home
         writer.wait(timeout=10)
         with data_access([store], updating=True):
             pass
+
+
+def test_job_reservation_survives_process_exit_until_same_scope_is_recovered(private_home, tmp_path):
+    store, sibling = tmp_path / "sessions", tmp_path / "unrelated sessions"
+    job_id = str(uuid4())
+    with process_access(tmp_path / "update environment", [store], updating=True, job_id=job_id) as worker:
+        worker.kill()
+        worker.wait(timeout=10)
+    # No process holds the leases now. The durable reservation still excludes
+    # overlapping readers/writers from other installations, but not unrelated data.
+    for path in (store, store / "chat.jsonl", store.parent):
+        with pytest.raises(InstallationBusyError, match="reserved"):
+            with data_access([path]):
+                pytest.fail("A runtime entered an interrupted maintenance scope")
+    with data_access([sibling]):
+        pass
+    with pytest.raises(InstallationBusyError, match="unfinished update"):
+        with data_access([store], updating=True, job_id=str(uuid4())):
+            pytest.fail("Another job took over the interrupted update")
+    with pytest.raises(InstallationBusyError, match="unfinished update"):
+        with data_access([sibling], updating=True, job_id=job_id):
+            pytest.fail("The same ID changed the approved data scope")
+    with data_access([store], updating=True, job_id=job_id) as recovered:
+        recovered.release_reservation()
+    with data_access([store]):
+        pass
