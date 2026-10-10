@@ -256,7 +256,7 @@ class WebUISettingsRouter:
         self._restart_sections: set[str] = set()
         self._restart_baselines: dict[str, dict[str, Any]] = {}
         self._restart_changes: dict[str, str] = {}
-        self._models = model_domain.ModelSettingsHandler(settings, logger)
+        self._models = model_domain.ModelSettingsHandler(settings, logger, bus.admission)
         self._capabilities = capability_domain.CapabilitySettingsHandler(
             settings,
             logger,
@@ -266,6 +266,7 @@ class WebUISettingsRouter:
     async def close(self) -> None:
         """Release state owned by settings domains."""
         await self._mcp_oauth.close()
+        await self._models.close()
         await self._system.close()
 
     async def dispatch(

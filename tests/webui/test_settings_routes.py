@@ -125,6 +125,95 @@ async def test_close_releases_channel_connectors() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["cancel", "logout", "shutdown"])
+async def test_provider_login_keeps_maintenance_busy_until_worker_exits(tmp_path, monkeypatch, finish):
+    router = _router(config_path=tmp_path / "config.json")
+    stopping, release = threading.Event(), threading.Event()
+    saved = []
+
+    def login(*, on_authorization, cancelled, persist, **_kwargs):
+        assert persist is False
+        on_authorization("https://github.com/login/device", "FIXTURE", 60)
+        assert cancelled.wait(3)
+        stopping.set()
+        assert release.wait(3)
+        return SimpleNamespace(access="late-fixture-token")
+
+    monkeypatch.setattr("nanobot.providers.github_copilot_oauth.login_github_copilot", login)
+    monkeypatch.setattr("nanobot.providers.github_copilot_provider.get_storage", lambda: SimpleNamespace(
+        get_token_path=lambda: tmp_path / "copilot.json", save=saved.append,
+    ))
+    monkeypatch.setattr("nanobot.webui.settings_api.settings_payload", lambda **_: {})
+    path = "/api/settings/provider/oauth-login"
+    response = await router.dispatch(None, _mutation_request(path, {"provider": "github_copilot"}), path)
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+        pytest.fail("The authorization prompt still has a live worker")
+    try:
+        if finish == "shutdown":
+            shutdown = asyncio.create_task(router.close())
+            assert await asyncio.to_thread(stopping.wait, 1)
+            shutdown.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await shutdown
+        else:
+            path = (
+                "/api/settings/provider/oauth-logout" if finish == "logout"
+                else "/api/settings/provider/oauth-login/complete"
+            )
+            response = await router.dispatch(None, _mutation_request(path, {
+                "provider": "github_copilot", "flow_id": payload["flow_id"], "cancel": "true",
+            }), path)
+            assert response.status_code == 200
+            assert await asyncio.to_thread(stopping.wait, 1)
+        assert router.settings.oauth_flows.get("github_copilot", payload["flow_id"]) is None
+        with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+            pytest.fail("Removing a login or cancelling its close awaiter cannot forget the thread")
+    finally:
+        release.set()
+        await router.close()
+    assert saved == []
+    assert not router.settings.oauth_flows.has_pending_work
+    with router.bus.admission.pause_if_idle(lambda: False):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_failed_codex_login_start_still_owns_late_worker(tmp_path, monkeypatch):
+    import nanobot.providers.openai_codex_oauth as oauth
+
+    router = _router(config_path=tmp_path / "config.json")
+    entered, release = threading.Event(), threading.Event()
+    target = tmp_path / "codex.json"
+    monkeypatch.setenv("OAUTH_CLI_KIT_TOKEN_PATH", str(target))
+    monkeypatch.setattr(oauth, "_AUTHORIZATION_URL_TIMEOUT_S", 0.02)
+
+    def login(*, storage, **_kwargs):
+        entered.set()
+        assert release.wait(3)
+        # The actual SDK can finish its token exchange after start() timed out.
+        storage.save(SimpleNamespace(access="late-fixture-token"))
+
+    monkeypatch.setattr(oauth, "login_oauth_interactive", login)
+    path = "/api/settings/provider/oauth-login"
+    try:
+        response = await router.dispatch(None, _mutation_request(path, {
+            "provider": "openai_codex", "remote_browser": "true",
+        }), path)
+        assert response.status_code == 502
+        assert entered.is_set()
+        with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+            pytest.fail("A failed start must retain its background worker")
+    finally:
+        release.set()
+        await router.close()
+    assert not target.exists()
+    with router.bus.admission.pause_if_idle(lambda: False):
+        pass
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("close_fails", [False, True])
 async def test_channel_setup_blocks_maintenance_until_confirmed_cleanup(
     tmp_path, monkeypatch, close_fails,

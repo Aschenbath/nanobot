@@ -82,9 +82,22 @@ writes, finish. Abandoned WhatsApp and Linear setup sessions initiate cleanup at
 expiry without requiring another browser poll. Expiry or a cleanup timeout alone
 does not establish that a remaining writer stopped.
 
+### Model provider sign-in
+
+The settings registry owns OpenAI Codex, GitHub Copilot and xAI sign-in workers
+before starting them. Cancelling, expiring or replacing a sign-in removes its public
+flow, but keeps it busy until its workers actually exit. A failed sign-in start
+also retains ownership of any late worker. Shutdown signals cancellation and waits
+for workers, callback requests and expiry timers to finish; cancelling the shutdown
+awaiter does not release their ownership. Native network timeouts may delay exit.
+
+Codex uses the SDK's public token-storage interface to reject saves after cancellation
+or expiry, without moving existing credentials. This is not a new authorization
+method and does not require existing users to sign in again.
+
 These guards complement settings-request activity and actual gateway process exit.
-They do not prove that provider OAuth threads or every external integration writer
-are accounted for, and do not enable the internal updater in the UI.
+They do not establish that every external integration writer is accounted for,
+and do not enable the internal updater in the UI.
 
 ### Known gateway profiles
 
