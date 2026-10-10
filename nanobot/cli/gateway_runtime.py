@@ -51,6 +51,7 @@ from nanobot.webui.dev import WebUIDevError, WebUIDevServer
 from nanobot.webui.sidebar_state import read_webui_sidebar_state
 
 if TYPE_CHECKING:
+    from nanobot.update_profiles import ProfileReceipt
     from nanobot.update_restart import GatewayStartup
 
 __all__ = ["_run_gateway"]
@@ -378,13 +379,15 @@ def _run_gateway(
             gateway_runtime.foreground_instance(instance.start_options(port=port, verbose=verbose)),
             record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(),
                                    workspace=config.workspace_path, port=port, verbose=verbose,
-                                   grant=update_startup.grant if update_startup else None) as profile,
+                                   grant=update_startup.grant if update_startup else None,
+                                   cooperative_stop=True) as profile,
         ):
             if update_startup is not None:
                 update_startup.validate_profile(profile)
             _run_claimed_gateway(
                 config, port=port, gateway_instance=instance, gateway_runtime=gateway_runtime,
                 health_identity=profile.health_identity, update_startup=update_startup,
+                update_profile=profile,
                 open_browser_url=open_browser_url, open_browser_ready_url=open_browser_ready_url,
                 webui_static_dist=webui_static_dist, webui_bundle_mode=webui_bundle_mode,
                 webui_runtime_surface=webui_runtime_surface,
@@ -412,6 +415,7 @@ def _run_claimed_gateway(
     unconfigured_provider_error: str | None,
     webui_dev_server: WebUIDevServer | None,
     update_startup: "GatewayStartup | None" = None,
+    update_profile: "ProfileReceipt | None" = None,
 ) -> None:
     """Initialize and run only while the caller holds the gateway lifecycle claim."""
     from nanobot.agent.model_presets import load_model_preset_catalog
@@ -1023,6 +1027,13 @@ def _run_claimed_gateway(
                     startup_gate.close()
 
                 tasks.append(asyncio.create_task(activate(update_startup), name="nanobot-update-activation"))
+            if update_profile is not None:
+                from nanobot.update_stop import watch_gateway_stop
+
+                tasks.append(asyncio.create_task(
+                    watch_gateway_stop(update_profile, agent.maintenance, shutdown_event, startup_gate),
+                    name="nanobot-update-stop",
+                ))
             if health_server_enabled:
                 tasks.append(asyncio.create_task(
                     _health_server(config.gateway.host, port),

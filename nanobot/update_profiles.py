@@ -81,6 +81,7 @@ class ProfileReceipt(BaseModel):
     active: bool
     # Older receipts remain useful data inventory, but cannot prove launch intent.
     launch: ProfileLaunch | None = None
+    stop_protocol: Literal[1] | None = None
     update_job_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 
     @field_validator("environment", "python", "package", "home", "data_dir", "config", "workspace", "state_path", "log_path")
@@ -162,7 +163,8 @@ def _save(directory: Path, receipt: ProfileReceipt) -> None:
 def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *,
                            data_dir: Path, workspace: Path, port: int,
                            verbose: bool = False,
-                           grant: DataStartupGrant | None = None) -> Generator[ProfileReceipt]:
+                           grant: DataStartupGrant | None = None,
+                           cooperative_stop: bool = False) -> Generator[ProfileReceipt]:
     """Record an already-claimed gateway and retain its profile after shutdown."""
     state_path = str(instance.paths.state_path.resolve())
     directory = installation_state_dir() / "profiles"
@@ -181,6 +183,7 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
         launch_mode=status.launch_mode, pid=os.getpid(),
         process_identity=runtime.process_identity(os.getpid()), active=True,
         update_job_id=grant.job_id if grant else None,
+        stop_protocol=1 if cooperative_stop else None,
         launch=ProfileLaunch(home=options.home, config_path=options.config_path,
                              workspace=options.workspace, working_directory=str(Path.cwd().resolve()),
                              verbose=options.verbose, lifetime=status.lifetime),
@@ -243,7 +246,7 @@ def validate_restart_identity(previous: ProfileReceipt, current: ProfileReceipt,
     """Validate a new claim without mistaking it for running/healthy evidence."""
     if previous.launch is None:
         raise ValueError("The original gateway launch identity is unknown")
-    changing = {"run_id", "pid", "process_identity", "version", "active", "update_job_id"}
+    changing = {"run_id", "pid", "process_identity", "version", "active", "update_job_id", "stop_protocol"}
     if (current.model_dump(exclude=changing) != previous.model_dump(exclude=changing)
             or current.version != version or current.run_id == previous.run_id
             or current.process_identity == previous.process_identity or current.update_job_id != job_id):

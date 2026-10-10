@@ -109,6 +109,8 @@ class UpdatePlan(ReleaseRecord):
     target: ReleaseTarget
     extras: list[str] | None = None
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=1024)
+    # Explicit consent to stop exact running instances, separate from restart.
+    stop_profiles: list[str] = Field(default_factory=list, max_length=1024)
     # Inventory alone is not authority to start a previously stopped instance.
     restart_profiles: list[str] = Field(default_factory=list, max_length=1024)
     created_at: int = Field(ge=0)
@@ -139,6 +141,15 @@ class UpdatePlan(ReleaseRecord):
         if self.channel == "stable" and Version(self.target.version).is_prerelease:
             raise ValueError("A stable plan cannot install a preview")
         profiles = {item.receipt.id: item.receipt for item in self.profiles}
+        if len(set(self.stop_profiles)) != len(self.stop_profiles):
+            raise ValueError("Shutdown participants must be unique")
+        for participant in self.stop_profiles:
+            profile = profiles.get(participant)
+            if (profile is None or profile.environment != self.installation.environment
+                    or profile.launch_mode != "background" or profile.launch is None
+                    or profile.launch.lifetime != "explicit" or profile.stop_protocol != 1
+                    or not any(item.receipt.id == participant and item.state == "running" for item in self.profiles)):
+                raise ValueError("Shutdown requires a reviewed running gateway with cooperative stop support")
         if len(set(self.restart_profiles)) != len(self.restart_profiles):
             raise ValueError("Restart participants must be unique")
         for participant in self.restart_profiles:
