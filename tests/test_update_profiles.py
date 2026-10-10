@@ -232,6 +232,12 @@ from nanobot.config.loader import set_config_path
 from nanobot.config.schema import Config
 from nanobot.installation_lock import installation_access
 from nanobot.cli import gateway_runtime
+from nanobot.agent.loop import AgentLoop
+original_from_config = AgentLoop.from_config
+def create_agent(config, bus, **kwargs):
+    assert kwargs['cron_service'].admission is bus.admission
+    return original_from_config(config, bus, **kwargs)
+AgentLoop.from_config = create_agent
 profile, port = Path(sys.argv[1]), int(sys.argv[2])
 set_home_path(profile)
 set_config_path(profile / 'config data' / 'config.json')

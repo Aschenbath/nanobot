@@ -501,7 +501,7 @@ def _run_claimed_gateway(
 
     # Create cron service with workspace-scoped store
     cron_store_path = config.workspace_path / "cron" / "jobs.json"
-    cron = CronService(cron_store_path)
+    cron = CronService(cron_store_path, admission=bus.admission)
     trigger_store = LocalTriggerStore(config.workspace_path)
 
     turn_delivery_factory = TurnDeliveryFactory(
@@ -986,6 +986,7 @@ def _run_claimed_gateway(
                         store=trigger_store,
                         submit_turn=agent.submit_local_trigger_turn,
                         is_channel_enabled=lambda name: channels.get_channel(name) is not None,
+                        admission=bus.admission,
                     ),
                     name="nanobot-local-triggers",
                 ),

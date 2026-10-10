@@ -152,6 +152,18 @@ class _ExecSession:
         self._stderr_task = asyncio.create_task(self._read_stream(process.stderr, self._stderr))
         self._timeout_task = asyncio.create_task(self._watch_timeout()) if timeout else None
 
+    @property
+    def has_pending_work(self) -> bool:
+        """Include pipe draining and failed/in-flight process-tree cleanup."""
+        cleanup = self._kill_task
+        return (
+            self.process.returncode is None
+            or not self._stdout_task.done() or not self._stderr_task.done()
+            or (cleanup is not None and (
+                not cleanup.done() or cleanup.cancelled() or cleanup.exception() is not None
+            ))
+        )
+
     async def _watch_timeout(self) -> None:
         """Enforce the hard deadline even when nobody polls this session."""
         try:
@@ -272,7 +284,10 @@ class _ExecSession:
     async def kill(self) -> None:
         # A cancelled poll must not cancel the session's process-tree cleanup.
         if self._kill_task is None or (
-            self._kill_task.done() and self.process.returncode is None
+            self._kill_task.done() and (
+                self._kill_task.cancelled() or self._kill_task.exception() is not None
+                or self.process.returncode is None
+            )
         ):
             self._kill_task = asyncio.create_task(self._kill())
             self._kill_task.add_done_callback(self._on_kill_done)
@@ -284,8 +299,8 @@ class _ExecSession:
             logger.opt(exception=error if tool_log_content_allowed() else False).error(
                 "Failed to terminate exec session {}", self.session_id,
             )
-        if (task.cancelled() or error is not None) and self._kill_task is task:
-            self._kill_task = None
+        # Retain failed cleanup as unsettled work, even if the parent exited.
+        # kill() replaces it on an explicit retry.
 
     async def _kill(self) -> None:
         from nanobot.agent.tools.shell import ExecTool
@@ -322,6 +337,11 @@ class ExecSessionManager:
         self._sessions: dict[str, _ExecSession] = {}
         self._lock = asyncio.Lock()
         self._closed = False
+
+    @property
+    def has_pending_work(self) -> bool:
+        """Inspect owned work without polling, terminating or removing sessions."""
+        return self._lock.locked() or any(s.has_pending_work for s in self._sessions.values())
 
     async def start(
         self,
@@ -427,7 +447,6 @@ class ExecSessionManager:
         async with self._lock:
             self._closed = True
             sessions: list[_ExecSession] = list(self._sessions.values())
-            self._sessions.clear()
         results: list[None | BaseException] = list(await asyncio.gather(
             *(session.kill() for session in sessions),
             return_exceptions=True,
@@ -437,10 +456,11 @@ class ExecSessionManager:
             for session, result in zip(sessions, results, strict=True)
             if isinstance(result, BaseException)
         ]
+        async with self._lock:
+            for session, result in zip(sessions, results, strict=True):
+                if not isinstance(result, BaseException):
+                    self._sessions.pop(session.session_id, None)
         if failures:
-            async with self._lock:
-                for session, _ in failures:
-                    self._sessions[session.session_id] = session
             if len(failures) == 1:
                 raise failures[0][1]
             raise BaseExceptionGroup(
@@ -452,10 +472,7 @@ class ExecSessionManager:
     async def terminate_by_owner(self, owner_session_key: str) -> int:
         """Terminate all sessions owned by owner_session_key. Returns count."""
         async with self._lock:
-            victims: list[_ExecSession] = []
-            for sid, s in list(self._sessions.items()):
-                if s.owner_session_key == owner_session_key:
-                    victims.append(self._sessions.pop(sid))
+            victims = [s for s in self._sessions.values() if s.owner_session_key == owner_session_key]
         results: list[None | BaseException] = list(await asyncio.gather(
             *(s.kill() for s in victims),
             return_exceptions=True,
@@ -465,10 +482,11 @@ class ExecSessionManager:
             for session, result in zip(victims, results, strict=True)
             if isinstance(result, BaseException)
         ]
+        async with self._lock:
+            for session, result in zip(victims, results, strict=True):
+                if not isinstance(result, BaseException):
+                    self._sessions.pop(session.session_id, None)
         if failures:
-            async with self._lock:
-                for session, _ in failures:
-                    self._sessions[session.session_id] = session
             if len(failures) == 1:
                 raise failures[0][1]
             raise BaseExceptionGroup(

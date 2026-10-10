@@ -58,6 +58,7 @@ from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.llm_usage.context import source_from_request
 from nanobot.providers.base import LLMProvider, LLMUsage, ProviderConversationState
 from nanobot.providers.factory import ProviderSnapshot
+from nanobot.runtime_admission import RuntimeMaintenanceError
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
     RUNTIME_CONTEXT_MESSAGE_META,
@@ -917,13 +918,14 @@ class AgentLoop:
 
     async def discard_session(self, key: str) -> None:
         """Stop active work for *key* and forget its cached session."""
-        self._discarding_sessions.add(key)
-        try:
-            self.sessions.invalidate(key)
-            await self._cancel_active_tasks(key)
-        finally:
-            self.discard_session_file_state(key)
-            self._discarding_sessions.discard(key)
+        with self.bus.admission.activity():
+            self._discarding_sessions.add(key)
+            try:
+                self.sessions.invalidate(key)
+                await self._cancel_active_tasks(key)
+            finally:
+                self.discard_session_file_state(key)
+                self._discarding_sessions.discard(key)
 
     def discard_session_file_state(self, key: str) -> None:
         """Forget ephemeral file-read state for a reset or removed session."""
@@ -1327,6 +1329,8 @@ class AgentLoop:
 
     def _check_expired_sessions_if_due(self) -> None:
         """Scan idle sessions no more often than the configured interval."""
+        if self.bus.admission.paused:
+            return
         now = time.monotonic()
         if now < self._next_idle_compact_check_at:
             return
@@ -1345,7 +1349,10 @@ class AgentLoop:
 
             while self._running:
                 try:
-                    msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                    # Keep dequeue and admission in this task. wait_for would
+                    # dequeue in another task, leaving a false-idle handoff gap.
+                    async with asyncio.timeout(1.0):
+                        msg = await self.bus.consume_inbound()
                 except asyncio.TimeoutError:
                     self._check_expired_sessions_if_due()
                     continue
@@ -1362,53 +1369,61 @@ class AgentLoop:
                     logger.warning("Error consuming inbound message: {}, continuing...", e)
                     continue
 
-                raw = command_text(msg)
-                effective_key = self._effective_session_key(msg)
-                if await agent_context.handle_runtime_control(self, msg, self.tools):
-                    continue
-                if (
-                    msg.require_existing_session
-                    and self.sessions.get_existing(effective_key) is None
-                ):
-                    continue
-                if msg.is_user_input:
-                    await self.runtime_event_publisher.user_input_accepted(msg, effective_key)
-                if msg.channel != "system" and self.commands.is_priority(raw):
-                    await self._dispatch_command_inline(
-                        msg, effective_key, raw,
-                        self.commands.dispatch_priority,
-                    )
-                    continue
-                routed_msg = msg
-                if effective_key != msg.session_key:
-                    routed_msg = dataclasses.replace(
-                        msg,
-                        session_key_override=effective_key,
-                    )
-                # A newer WebUI message must supersede an explicit recovery
-                # before it is injected into that recovery's pending queue.
-                # Without this admission point, a recovered turn could finish
-                # first and only then observe the user's newer request.
-                if (
-                    effective_key in self._pending_queues
-                    and msg.channel == "websocket"
-                    and self._recovery_admission is not None
-                    and not await self._recovery_admission.admit(routed_msg)
-                ):
-                    continue
-                # If this session already has an active pending queue (i.e. a task
-                # is processing this session), route the message there for mid-turn
-                # injection instead of creating a competing task.
-                if effective_key in self._pending_queues:
-                    if msg.channel != "system" and self.commands.is_dispatchable_command(raw):
-                        await self._dispatch_command_inline(
-                            msg, effective_key, raw,
-                            self.commands.dispatch,
-                        )
-                        continue
-                self._enqueue_session_message(routed_msg)
+                with self.bus.admission.activity():
+                    await self._admit_inbound(msg)
         finally:
             await self.aclose()
+
+    async def _admit_inbound(self, msg: InboundMessage) -> None:
+        """Route accepted input while maintenance accounts for inline awaits."""
+        raw = command_text(msg)
+        effective_key = self._effective_session_key(msg)
+        if await agent_context.handle_runtime_control(self, msg, self.tools):
+            return
+        if msg.require_existing_session and self.sessions.get_existing(effective_key) is None:
+            return
+        if msg.is_user_input:
+            await self.runtime_event_publisher.user_input_accepted(msg, effective_key)
+        if msg.channel != "system" and self.commands.is_priority(raw):
+            await self._dispatch_command_inline(
+                msg, effective_key, raw, self.commands.dispatch_priority,
+            )
+            return
+        routed_msg = msg
+        if effective_key != msg.session_key:
+            routed_msg = dataclasses.replace(msg, session_key_override=effective_key)
+        # A newer WebUI message must supersede recovery before entering its inbox.
+        if (
+            effective_key in self._pending_queues
+            and msg.channel == "websocket"
+            and self._recovery_admission is not None
+            and not await self._recovery_admission.admit(routed_msg)
+        ):
+            return
+        if effective_key in self._pending_queues:
+            if msg.channel != "system" and self.commands.is_dispatchable_command(raw):
+                await self._dispatch_command_inline(
+                    msg, effective_key, raw, self.commands.dispatch,
+                )
+                return
+        self._enqueue_session_message(routed_msg)
+
+    def maintenance(self) -> AbstractContextManager[None]:
+        """Close task intake only when this runtime's accepted work is finished.
+
+        The gateway shares the bus gate with cron and local trigger intake.
+        This does not stop other processes or channel/configuration writes;
+        those must be shut down before an updater takes a data backup.
+        """
+        return self.bus.admission.pause_if_idle(self._has_pending_work)
+
+    def _has_pending_work(self) -> bool:
+        return bool(
+            self.bus.inbound_size or self._pending_queues or self._deferred_automation_turns
+            or self.bus.has_pending_events or self._active_tasks or self._background_tasks
+            or self._close_lock.locked()
+            or self.subagents.has_pending_work or self._exec_session_manager.has_pending_work
+        )
 
     def preserve_inflight_turns_on_shutdown(self) -> None:
         """Keep durable checkpoints when the owning gateway exits.
@@ -1444,6 +1459,7 @@ class AgentLoop:
 
     def _enqueue_session_message(self, msg: InboundMessage) -> None:
         """Admit session work without waiting for its execution or result."""
+        self.bus.admission.check()
         session_key = self._effective_session_key(msg)
         if not self.subagents.accepts_result(msg, session_key):
             return
@@ -1725,6 +1741,11 @@ class AgentLoop:
 
     def schedule_background(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""
+        try:
+            self.bus.admission.check()
+        except RuntimeMaintenanceError:
+            coro.close()
+            raise
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_task_done)
@@ -2552,46 +2573,47 @@ class AgentLoop:
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._get_session_lock(session_key)
-        try:
-            async with lock:
-                kwargs: dict[str, Any] = {
-                    "session_key": session_key,
-                    "on_progress": on_progress,
-                    "on_stream": on_stream,
-                    "on_stream_end": on_stream_end,
-                    "ephemeral": ephemeral,
-                }
-                if _session_policy is not None:
-                    # Isolate per-run state before any early save or checkpoint;
-                    # the cached conversation must survive a temporary SDK turn.
-                    session = deepcopy(self.sessions.get_or_create(session_key))
-                    session.policy = SessionPolicy(
-                        persist=session.policy.persist and _session_policy.persist,
-                        log_content=session.policy.log_content and _session_policy.log_content,
-                        disabled_tools=session.policy.disabled_tools | _session_policy.disabled_tools,
+        with self.bus.admission.activity():
+            try:
+                async with lock:
+                    kwargs: dict[str, Any] = {
+                        "session_key": session_key,
+                        "on_progress": on_progress,
+                        "on_stream": on_stream,
+                        "on_stream_end": on_stream_end,
+                        "ephemeral": ephemeral,
+                    }
+                    if _session_policy is not None:
+                        # Isolate per-run state before any early save or checkpoint;
+                        # the cached conversation must survive a temporary SDK turn.
+                        session = deepcopy(self.sessions.get_or_create(session_key))
+                        session.policy = SessionPolicy(
+                            persist=session.policy.persist and _session_policy.persist,
+                            log_content=session.policy.log_content and _session_policy.log_content,
+                            disabled_tools=session.policy.disabled_tools | _session_policy.disabled_tools,
+                        )
+                        kwargs["session"] = session
+                    if _run_extra_hooks_for_ephemeral:
+                        kwargs["run_extra_hooks_for_ephemeral"] = True
+                    if hooks is not None:
+                        kwargs["hooks"] = hooks
+                    if hook_factories is not None:
+                        kwargs["hook_factories"] = hook_factories
+                    if tools is not None:
+                        kwargs["tools"] = tools
+                    if runtime is not None:
+                        kwargs["runtime"] = runtime
+                    if on_runtime_admitted is not None:
+                        kwargs["on_runtime_admitted"] = on_runtime_admitted
+                    if attributes is not None:
+                        kwargs["attributes"] = dict(attributes)
+                    return await self._process_message(
+                        msg,
+                        **kwargs,
                     )
-                    kwargs["session"] = session
-                if _run_extra_hooks_for_ephemeral:
-                    kwargs["run_extra_hooks_for_ephemeral"] = True
-                if hooks is not None:
-                    kwargs["hooks"] = hooks
-                if hook_factories is not None:
-                    kwargs["hook_factories"] = hook_factories
-                if tools is not None:
-                    kwargs["tools"] = tools
-                if runtime is not None:
-                    kwargs["runtime"] = runtime
-                if on_runtime_admitted is not None:
-                    kwargs["on_runtime_admitted"] = on_runtime_admitted
-                if attributes is not None:
-                    kwargs["attributes"] = dict(attributes)
-                return await self._process_message(
-                    msg,
-                    **kwargs,
-                )
-        finally:
-            await self.runtime_event_publisher.run_status_changed(msg, session_key, "idle")
-            self.runtime_event_publisher.clear_turn(session_key)
+            finally:
+                await self.runtime_event_publisher.run_status_changed(msg, session_key, "idle")
+                self.runtime_event_publisher.clear_turn(session_key)
 
     def _get_session_lock(self, session_key: str) -> asyncio.Lock:
         """Return the shared lock while allowing idle session entries to expire."""
