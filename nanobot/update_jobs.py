@@ -82,11 +82,19 @@ def _pip(python: str, *arguments: str) -> None:
 
 def _worker_archive(path: Path) -> str:
     sources = Path(__file__).parent
+    # The frozen worker must not shadow the newly installed application when
+    # handing off to its runtime. Keep only the copied stdlib helpers in this
+    # private namespace; intentional application imports retain `nanobot`.
+    modules = ("update_worker", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
     with ZipFile(path, "x") as bundle:
-        files = {"__main__.py": b"from nanobot.update_worker import main\nmain()\n",
-                 "nanobot/__init__.py": b"", "nanobot/utils/__init__.py": b""}
-        for name in ("update_worker.py", "update_backup.py", "data_access.py", "installation_lock.py", "utils/atomic_file.py"):
-            files[f"nanobot/{name}"] = (sources / name).read_bytes()
+        files = {"__main__.py": b"from _nanobot_update.update_worker import main\nmain()\n",
+                 "_nanobot_update/__init__.py": b"", "_nanobot_update/utils/__init__.py": b""}
+        for module in modules:
+            name = module.replace(".", "/") + ".py"
+            source = (sources / name).read_text(encoding="utf-8")
+            for dependency in modules:
+                source = source.replace(f"from nanobot.{dependency} import", f"from _nanobot_update.{dependency} import")
+            files[f"_nanobot_update/{name}"] = source.encode("utf-8")
         for name, data in files.items():
             bundle.writestr(ZipInfo(name), data)
     path.chmod(0o600)

@@ -202,6 +202,25 @@ async def test_real_job_stages_then_installs_exact_app_and_dependency(installati
         assert inspect_environment(plan.installation.python).app_version == "0.3.4"
         assert not (directory / "approval.json").exists()
         spec = WorkerSpec.read(directory)
+        # The detached archive may load the target runtime only after acquiring
+        # its installation lease. Its frozen helpers must remain separate from
+        # the real installed nanobot package, not supply an empty __init__.
+        probe_command = [
+            plan.installation.python, "-I", "-c", """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from _nanobot_update.installation_lock import installation_access
+from _nanobot_update.update_worker import JobStatus
+with installation_access():
+    import nanobot
+    print(json.dumps([nanobot.__version__, nanobot.__file__, JobStatus.read(Path(sys.argv[2])).phase.value]))
+""", str(directory / "worker.pyz"), str(directory),
+        ]
+        probe = subprocess.run(probe_command, check=True, capture_output=True, text=True, timeout=20)
+        loaded_version, loaded_path, phase = json.loads(probe.stdout)
+        assert loaded_version == "0.3.4" and phase == "ready"
+        assert Path(loaded_path).resolve() == (site / "nanobot/__init__.py").resolve()
         assert {(item.name, item.version) for item in spec.wheels} == {
             ("nanobot-ai", "0.3.5"), ("fixture-update-dep", "2.0.0"),
         }
@@ -214,6 +233,10 @@ async def test_real_job_stages_then_installs_exact_app_and_dependency(installati
     assert status.phase == Phase.INSTALLED and status.attempt == 1 and status.mutation_started
     assert "not yet verified" in status.message
     assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+    probe = subprocess.run(probe_command, check=True, capture_output=True, text=True, timeout=20)
+    loaded_version, loaded_path, phase = json.loads(probe.stdout)
+    assert loaded_version == "0.3.5" and phase == "installed"
+    assert Path(loaded_path).resolve() == (site / "nanobot/__init__.py").resolve()
     assert (site / "nanobot/web/dist/index.html").read_text() == "verified UI 0.3.5"
     assert not unintended.exists()
     with ZipFile(directory / "backup/data.zip") as archive:
@@ -373,7 +396,7 @@ async def test_cancel_interrupted_handoff_releases_data_without_installing(insta
 import sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from nanobot import update_worker
+from _nanobot_update import update_worker
 original_run = update_worker.subprocess.run
 def run(command, *args, **kwargs):
     if '--pip' in command:
