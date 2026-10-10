@@ -24,7 +24,11 @@ from nanobot.installation_lock import (
 from nanobot.release_feed import ReleaseTarget
 from nanobot.releases import ReleaseArtifact
 from nanobot.update_plan import InstallationSnapshot, UpdatePlans, describe_plan
-from nanobot.update_profiles import inspect_profiles, require_stopped_profiles
+from nanobot.update_profiles import (
+    inspect_profiles,
+    require_stopped_profiles,
+    verify_restarted_profile,
+)
 
 _CHILD = """
 import sys
@@ -435,6 +439,8 @@ def test_recorded_launch_restarts_same_actual_gateway(private_home, tmp_path, mo
         assert before.launch.verbose
         assert before.launch_mode == "background" and before.launch.lifetime == "explicit"
         assert "fixture-not-a-secret" not in before.model_dump_json()
+        with pytest.raises(ValueError, match="reviewed instance"):
+            verify_restarted_profile(before, version=before.version)
         assert runtime.stop(timeout_s=10).ok
         assert processes[-1].wait(timeout=10) == 0
         stopped = inspect_profiles(sys.prefix)[0].receipt
@@ -446,6 +452,10 @@ def test_recorded_launch_restarts_same_actual_gateway(private_home, tmp_path, mo
         launch_directory = Path(before.launch.working_directory)
         assert runtime.start_background(before.launch.options(port=before.port)).ok
         after = ready_profile()
+        assert verify_restarted_profile(before, version=after.version) == after
+        assert not runtime.verify_ready(before.health_identity)
+        with pytest.raises(ValueError, match="target version"):
+            verify_restarted_profile(before, version="999.0.0")
         assert after.run_id != before.run_id and after.pid != before.pid
         assert after.launch == before.launch
         for field in ("id", "environment", "python", "package", "version", "home", "data_dir",
@@ -454,6 +464,8 @@ def test_recorded_launch_restarts_same_actual_gateway(private_home, tmp_path, mo
         assert runtime.stop(timeout_s=10).ok
         assert processes[-1].wait(timeout=10) == 0
         assert inspect_profiles(sys.prefix)[0].state == "stopped"
+        with pytest.raises(ValueError, match="not running"):
+            verify_restarted_profile(before, version=after.version)
     finally:
         if runtime.status().running:
             runtime.stop(timeout_s=10)

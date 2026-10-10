@@ -24,6 +24,7 @@ import nanobot
 from nanobot.config.home import get_home_path
 from nanobot.data_access import data_access, profile_data_paths
 from nanobot.gateway.runtime import (
+    GatewayHealthIdentity,
     GatewayInstance,
     GatewayRuntime,
     GatewayRuntimePaths,
@@ -87,6 +88,10 @@ class ProfileReceipt(BaseModel):
         if not Path(value).is_absolute() or len(value) > 4096 or "\0" in value:
             raise ValueError("Profile paths must be bounded absolute paths")
         return value
+
+    @property
+    def health_identity(self) -> GatewayHealthIdentity:
+        return GatewayHealthIdentity(self.id, self.run_id, self.version)
 
 
 class ObservedProfile(BaseModel):
@@ -155,7 +160,7 @@ def _save(directory: Path, receipt: ProfileReceipt) -> None:
 @contextmanager
 def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *,
                            data_dir: Path, workspace: Path, port: int,
-                           verbose: bool = False) -> Generator[None]:
+                           verbose: bool = False) -> Generator[ProfileReceipt]:
     """Record an already-claimed gateway and retain its profile after shutdown."""
     state_path = str(instance.paths.state_path.resolve())
     directory = installation_state_dir() / "profiles"
@@ -183,7 +188,7 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
         with FileLock(str(directory / "profiles.lock"), timeout=5):
             _save(directory, receipt)
         try:
-            yield
+            yield receipt
         finally:
             with FileLock(str(directory / "profiles.lock"), timeout=5):
                 # Persist the inactive receipt before releasing the data leases.
@@ -226,3 +231,35 @@ def require_stopped_profiles(expected: list[ObservedProfile], environment: str) 
         raise ValueError("Gateway profiles changed since this plan; check again before confirming")
     if any(item.state != "stopped" for item in current):
         raise ValueError("A reviewed gateway profile is still in use or its process owner is unconfirmed")
+
+
+def verify_restarted_profile(previous: ProfileReceipt, *, version: str) -> ProfileReceipt:
+    """Verify a fresh run of the reviewed local profile; never start/stop it.
+
+    Call under the update owner's lifecycle/maintenance handoff. A receipt or an
+    HTTP 200 alone is insufficient, and this does not grant restart authority.
+    """
+    observed = next((item for item in inspect_profiles(previous.environment)
+                     if item.receipt.id == previous.id), None)
+    if observed is None or observed.state != "running":
+        raise ValueError("The updated gateway is not running with a verified process identity")
+    current = observed.receipt
+    if previous.launch is None:
+        raise ValueError("The original gateway launch identity is unknown")
+    changing = {"run_id", "pid", "process_identity", "version", "active"}
+    if (current.model_dump(exclude=changing) != previous.model_dump(exclude=changing)
+            or current.version != version or current.run_id == previous.run_id
+            or current.process_identity == previous.process_identity):
+        raise ValueError("The restarted gateway differs from the reviewed instance or target version")
+    state_path, log_path = Path(current.state_path), Path(current.log_path)
+    runtime = GatewayRuntime(paths=GatewayRuntimePaths(
+        run_dir=state_path.parent, logs_dir=log_path.parent, state_path=state_path, log_path=log_path,
+    ))
+    if not runtime.verify_ready(current.health_identity):
+        raise ValueError("Gateway readiness did not confirm the updated instance, run and version")
+    # Re-read the receipt as well: a new claim can precede its new receipt.
+    final = next((item for item in inspect_profiles(previous.environment)
+                  if item.receipt.id == previous.id), None)
+    if final != observed:
+        raise ValueError("The gateway changed during restart verification")
+    return current

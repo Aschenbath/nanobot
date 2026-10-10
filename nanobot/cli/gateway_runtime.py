@@ -4,6 +4,7 @@ import asyncio
 import signal
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from contextlib import suppress
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,7 +35,7 @@ from nanobot.cli.webui_support import (
 )
 from nanobot.config.paths import get_data_dir, is_default_workspace
 from nanobot.config.schema import Config
-from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
+from nanobot.gateway.runtime import GatewayHealthIdentity, GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import installation_access
 from nanobot.security.network import is_loopback_host
 from nanobot.session.keys import (
@@ -370,10 +371,11 @@ def _run_gateway(
         installation_access(),
         gateway_runtime.foreground_instance(instance.start_options(port=port, verbose=verbose)),
         record_gateway_profile(instance, gateway_runtime, data_dir=get_data_dir(),
-                               workspace=config.workspace_path, port=port, verbose=verbose),
+                               workspace=config.workspace_path, port=port, verbose=verbose) as profile,
     ):
         _run_claimed_gateway(
             config, port=port, gateway_instance=instance, gateway_runtime=gateway_runtime,
+            health_identity=profile.health_identity,
             open_browser_url=open_browser_url, open_browser_ready_url=open_browser_ready_url,
             webui_static_dist=webui_static_dist, webui_bundle_mode=webui_bundle_mode,
             webui_runtime_surface=webui_runtime_surface,
@@ -390,6 +392,7 @@ def _run_claimed_gateway(
     port: int,
     gateway_instance: GatewayInstance,
     gateway_runtime: GatewayRuntime,
+    health_identity: GatewayHealthIdentity,
     open_browser_url: str | None,
     open_browser_ready_url: str | None,
     webui_static_dist: bool,
@@ -831,6 +834,7 @@ def _run_claimed_gateway(
 
                     if method == "GET" and path == "/health":
                         ready, payload = _gateway_readiness_payload(channels)
+                        payload["runtime"] = asdict(health_identity)
                         body = _json.dumps(payload)
                         status = "200 OK" if ready else "503 Service Unavailable"
                         content_type = "application/json"
