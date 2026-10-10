@@ -21,6 +21,7 @@ from packaging.version import Version
 from pydantic import Field, field_validator, model_validator
 
 import nanobot
+from nanobot.installation_lock import installation_access, installation_id, installation_state_dir
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.utils.helpers import atomic_write_lines
@@ -69,7 +70,7 @@ class InstallationSnapshot(_Probe):
 
     @property
     def installation_id(self) -> str:
-        return hashlib.sha256(os.fsencode(self.environment)).hexdigest()[:32]
+        return installation_id(self.environment)
 
     @property
     def fingerprint(self) -> str:
@@ -190,10 +191,11 @@ class UpdatePlans:
 
 async def preview_release_update(channel: Channel) -> UpdatePlan:
     """Build a read-only installation plan for CLI and future gateway handoff."""
-    installation = inspect_installation()
-    directory = Path.home() / ".nanobot" / "updates" / installation.installation_id
-    async with ReleaseFeed(directory / "releases") as feed:
-        return await UpdatePlans(directory / "plans").prepare(installation, channel, feed)
+    with installation_access():
+        installation = inspect_installation()
+        directory = installation_state_dir(installation.environment)
+        async with ReleaseFeed(directory / "releases") as feed:
+            return await UpdatePlans(directory / "plans").prepare(installation, channel, feed)
 
 
 def describe_plan(plan: UpdatePlan) -> str:

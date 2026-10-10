@@ -37,7 +37,10 @@ def update(
         raise typer.BadParameter("--check checks PyPI releases; use it without --dev.")
     try:
         if check:
-            typer.echo(f"Installed: {__version__}\nLatest release: {latest_release()}")
+            from nanobot.installation_lock import installation_access
+
+            with installation_access():
+                typer.echo(f"Installed: {__version__}\nLatest release: {latest_release()}")
             return
         result = update_installation(dev=dev, allow_downgrade=allow_downgrade, output=typer.echo)
     except (RuntimeError, OSError, ValueError) as exc:

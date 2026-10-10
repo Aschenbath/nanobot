@@ -7,8 +7,7 @@ import sys
 from contextlib import suppress
 
 from nanobot.cli.process_identity import set_cli_process_identity
-from nanobot.utils.log_config import configure_console_logging
-from nanobot.utils.rotating_output import configure_background_output_from_env
+from nanobot.installation_lock import InstallationBusyError, installation_access
 
 _ROOT_OPTIONS = frozenset(
     {
@@ -61,6 +60,8 @@ def _configure_windows_console() -> None:
 
 def _run_agent(args: list[str], *, prog_name: str) -> None:
     """Run the shared agent command without importing the complete CLI graph."""
+    from nanobot.utils.log_config import configure_console_logging
+
     configure_console_logging(sys.stderr)
     import typer
 
@@ -72,8 +73,43 @@ def _run_agent(args: list[str], *, prog_name: str) -> None:
     command.main(args=args, prog_name=prog_name)
 
 
+def _command_args(args: list[str]) -> list[str]:
+    """Skip only global home selectors, not arguments belonging to a subcommand."""
+    position = 0
+    while position < len(args):
+        argument = args[position]
+        if argument == "--home":
+            position += 2
+        elif argument.startswith("--home="):
+            position += 1
+        else:
+            return args[position:]
+    return []
+
+
 def main() -> None:
+    """Acquire a runtime lease before loading application code."""
+    args = _command_args(sys.argv[1:])
+    if args[:1] == ["update"]:
+        # The update entrypoint takes its own exclusive lease only for execution.
+        _dispatch()
+        return
+    try:
+        # Keep the repair/stop path usable after an interrupted older updater.
+        # These commands still take a lease and cannot run during a live install.
+        diagnostics = args[:1] in (["--help"], ["-h"], ["--version"], ["-v"])
+        stop_or_inspect = args[:2] in (["gateway", "stop"], ["gateway", "status"], ["gateway", "logs"])
+        with installation_access(allow_incomplete=diagnostics or stop_or_inspect):
+            _dispatch()
+    except InstallationBusyError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _dispatch() -> None:
     """Dispatch native TUI startup without importing the complete CLI graph."""
+    from nanobot.utils.rotating_output import configure_background_output_from_env
+
     configure_background_output_from_env()
     raw_args = sys.argv[1:]
     # Installed completion scripts call ``nanobot`` without positional arguments

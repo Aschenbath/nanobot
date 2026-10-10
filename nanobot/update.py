@@ -24,6 +24,7 @@ from packaging.version import Version
 
 from nanobot import __version__
 from nanobot.bun import bun_environment, ensure_bun
+from nanobot.installation_lock import InstallationBusyError, installation_access
 
 _SOURCE_URL = "https://github.com/HKUDS/nanobot.git"
 
@@ -264,7 +265,7 @@ def update_installation(
     lock_dir = Path.home() / ".nanobot" / "run"
     lock_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with FileLock(str(lock_dir / f"update-{_installation_key()}.lock"), timeout=0):
+        with installation_access(updating=True), FileLock(str(lock_dir / f"update-{_installation_key()}.lock"), timeout=0):
             if dev:
                 bun = ensure_bun(output=output)
                 root = _prepare_source(output, before_change=_mark_installing)
@@ -317,6 +318,8 @@ def update_installation(
             return {"version": expected, "source": source, "requires_restart": True}
     except Timeout as exc:
         raise UpdateError("Another nanobot update is already running in this environment.") from exc
+    except InstallationBusyError as exc:
+        raise UpdateError(str(exc), needs_repair=incomplete_update()) from exc
     except Exception as exc:
         if incomplete_update():
             raise UpdateError(

@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from nanobot import update
 from nanobot.cli.update import update as update_command
+from nanobot.installation_lock import installation_access
 from nanobot.optional_features import install_packages
 from nanobot.webui.update_service import UpdateService
 
@@ -112,6 +113,27 @@ def test_release_update_does_not_force_reinstall_wheel(isolated_update, monkeypa
     monkeypatch.setattr(update, "_is_editable", lambda: False)
     update.update_installation(output=lambda _: None)
     isolated_update.assert_called_once_with(["nanobot-ai==0.3.5"], upgrade=True)
+
+
+def test_release_update_does_not_modify_a_live_runtime(isolated_update):
+    with installation_access():
+        with pytest.raises(update.UpdateError, match="installation is in use"):
+            update.update_installation(output=lambda _: None)
+    isolated_update.assert_not_called()
+    assert not update.incomplete_update()
+
+
+@pytest.mark.asyncio
+async def test_webui_cannot_replace_the_gateway_under_its_runtime_lease(isolated_update):
+    with installation_access():
+        service = UpdateService()
+        service.start(dev=False)
+        await service.close()
+        status = service.status()
+    assert status["state"] == "failed"
+    assert "Stop its nanobot gateways" in status["message"]
+    assert not status["needs_repair"]
+    isolated_update.assert_not_called()
 
 
 def test_update_verifies_in_fresh_interpreter(isolated_update, monkeypatch):

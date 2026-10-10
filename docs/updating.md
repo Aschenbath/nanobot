@@ -42,3 +42,24 @@ as implementing exact-plan consent, durable jobs, coordinated runtime maintenanc
 backup or post-restart verification until the execution handoff is integrated and
 tested. A plan also does not authorize bypassing uv/pipx, Docker, Desktop or an
 external supervisor; the installation owner remains responsible for its files.
+
+## Runtime coordination in this draft
+
+The `nanobot` CLI entrypoint now holds a shared installation lease while running. Profiles using
+the same real Python environment and OS account share it, including when launched
+with different `--home` values or through a symlink. The updater requires an exclusive
+lease and refuses to change package files while these runtimes are still using them.
+Startup refuses while that lease is held or an interrupted-install marker remains.
+An OS lock, not a PID file, owns the lease; a process crash releases it without
+deleting or replacing the lock file.
+
+This is a prerequisite, not the complete maintenance handoff. In particular, the
+older in-process WebUI updater cannot replace its own live gateway: it now reports
+that the installation is in use instead of performing that unsafe operation. The
+external worker, scoped backup and supervised restart still need to be connected
+before enabling the finished in-app install flow. Updates do not kill active tasks.
+
+Leases protect cooperating entrypoints in the same account. They do not discover
+older runtimes without this mechanism, arbitrary Python imports, another OS user's
+processes or unrecognized supervisors. Such installations must not be advertised
+as eligible for unattended/coordinated updates merely because a lease is available.
