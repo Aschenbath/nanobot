@@ -1,8 +1,8 @@
 """Prepare exact offline jobs and hand them to the standalone pip worker.
 
 This is the executor's internal Interface, not an authenticated WebUI mutation.
-The caller still owns task shutdown and supervisor/restart handoff. The worker
-backs up the reviewed, scoped data before any package mutation.
+The caller still owns task shutdown and explicit restart selection. The worker
+backs up reviewed data, installs, then hands off to the selected background runtimes.
 Until that caller is integrated, CLI/UI cannot start these jobs.
 """
 
@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from contextlib import nullcontext
 from email.parser import BytesParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -111,6 +112,8 @@ def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple
         shutil.copyfile(app_wheel, destination)
     app.verify(wheels)
     with ZipFile(app_wheel) as archive:
+        if plan.restart_profiles and "nanobot/update_restart.py" not in archive.namelist():
+            raise ValueError("This target does not support protected gateway restart")
         metadata = BytesParser().parsebytes(archive.read(f"nanobot_ai-{app.version}.dist-info/METADATA"))
         available = {canonicalize_name(extra) for extra in metadata.get_all("Provides-Extra", [])}
         if not set(plan.extras or []).issubset(available):
@@ -215,7 +218,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
                                            config=Path(receipt.config), workspace=Path(receipt.workspace)))
             sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
         spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
-                          baseline, plan.target.version, records, unique_sources(sources))
+                          baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles))
         for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
             path.chmod(0o600)
             with path.open("r+b") as stream:
@@ -230,24 +233,31 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
 async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False) -> subprocess.Popen[bytes]:
     """Approve the exact staged job and start its detached worker.
 
-    Not called by a client route yet. Runtime quiescence is enforced again in the
-    worker; this call never stops gateways or establishes supervisor/restart authority.
+    Not called by a client route yet. The caller must quiesce/stop old runtimes;
+    the worker rechecks their leases before installation. Only explicitly saved
+    background participants may be restarted, never an external supervisor.
     """
     spec = WorkerSpec.read(directory)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
-    await feed.revalidate(plan.target)
+    runtime_phases = {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED}
+    if JobStatus.read(directory).phase not in runtime_phases:
+        await feed.revalidate(plan.target)
     with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
-        with (installation_access(updating=True, environment=spec.baseline.environment),
-              data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
-            state = JobStatus.read(directory)
-            if state.phase in {Phase.INSTALLED, Phase.CANCELLED}:
-                raise ValueError("This job is already finished; it cannot be started again")
+        state = JobStatus.read(directory)
+        if state.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.SUCCEEDED}:
+            raise ValueError("This job is already finished; it cannot be started again")
+        restarting = state.phase in runtime_phases
+        with (installation_access(updating=not restarting, allow_incomplete=restarting,
+                                  environment=spec.baseline.environment),
+              nullcontext() if state.phase == Phase.FINALIZING else
+              data_access((source.path for source in spec.backup_sources), updating=not restarting, job_id=spec.plan_id)):
             if state.mutation_started and not repair:
                 raise ValueError("This interrupted job requires an explicit repair confirmation")
             if repair and not state.mutation_started:
                 raise ValueError("Repair is only available after this job began replacing files")
             check_environment(spec, repairing=state.mutation_started)
-            require_stopped_profiles(plan.profiles, spec.baseline.environment)
+            if not restarting:
+                require_stopped_profiles(plan.profiles, spec.baseline.environment)
             for wheel in spec.wheels:
                 wheel.verify(directory / "wheels")
             now = int(time.time())

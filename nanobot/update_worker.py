@@ -35,7 +35,7 @@ from nanobot.installation_lock import (
 from nanobot.update_backup import BackupSource, ensure_backup, verify_backup
 from nanobot.utils.atomic_file import atomic_write_lines
 
-_REQUEST_SCHEMA_VERSION = 2
+_REQUEST_SCHEMA_VERSION = 3
 _MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 _PROBE = """
@@ -195,6 +195,7 @@ class WorkerSpec:
     version: str
     wheels: tuple[StagedWheel, ...]
     backup_sources: tuple[BackupSource, ...]
+    restart_profiles: tuple[str, ...] = ()
 
     @classmethod
     def read(cls, directory: Path) -> WorkerSpec:
@@ -218,8 +219,14 @@ class WorkerSpec:
         if not 1 <= len(source_values) <= 40_000:
             raise ValueError("Invalid backup scope")
         sources = tuple(BackupSource.parse(value) for value in source_values)
+        participants = data.get("restart_profiles")
+        if not isinstance(participants, list):
+            raise ValueError("Invalid restart participants")
+        restart_profiles = tuple(_sha(value) for value in cast(list[object], participants))
+        if len(restart_profiles) > 1024 or len(set(restart_profiles)) != len(restart_profiles):
+            raise ValueError("Invalid restart participants")
         spec = cls(plan_id, _sha(data["plan_sha256"]), _sha(data["worker_sha256"]), EnvironmentSnapshot.parse(data["baseline"]),
-                   _text(data["version"]), wheels, sources)
+                   _text(data["version"]), wheels, sources, restart_profiles)
         if directory.resolve() != (installation_state_dir(spec.baseline.environment) / "jobs" / plan_id).resolve():
             raise ValueError("Update job is outside its installation state directory")
         if len({wheel.name for wheel in wheels}) != len(wheels):
@@ -245,6 +252,11 @@ class Phase(str, Enum):
     INSTALLING = "installing"
     VERIFYING = "verifying"
     INSTALLED = "installed"
+    RESTARTING = "restarting"
+    ACTIVATING = "activating"
+    FINALIZING = "finalizing"
+    RESTART_FAILED = "restart_failed"
+    SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -312,7 +324,8 @@ def _pip_child(directory: Path) -> None:
     with (installation_access(updating=True),
           data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
         status = JobStatus.read(directory)
-        if status.phase in {Phase.INSTALLED, Phase.CANCELLED}:
+        if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
+                            Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
             raise ValueError("This update job is already finished")
         _check_approval(directory, spec)
         _pending_owner(spec)
@@ -377,6 +390,8 @@ def run_job(directory: Path) -> JobStatus:
         if status.phase == Phase.CANCELLED:
             raise ValueError("This update job was cancelled")
         try:
+            if status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
+                return _restart_runtime(directory, spec)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                 _pending_owner(spec)
@@ -414,21 +429,31 @@ def run_job(directory: Path) -> JobStatus:
                 JobStatus(spec.plan_id, Phase.VERIFYING, status.attempt, True,
                           "Checking the installed package and dependencies", int(time.time())).save(directory)
                 _verify(spec, directory)
-                status = JobStatus(spec.plan_id, Phase.INSTALLED, status.attempt, True,
+                status = JobStatus(spec.plan_id, Phase.RESTARTING if spec.restart_profiles else Phase.INSTALLED,
+                                   status.attempt, True,
                                    "Files installed and checked; running gateway not yet verified", int(time.time()))
                 status.save(directory)
-                pending_update_path(spec.baseline.environment).unlink()
-                data.release_reservation()
-                return status
+                if not spec.restart_profiles:
+                    pending_update_path(spec.baseline.environment).unlink()
+                    data.release_reservation()
+                    return status
+            return _restart_runtime(directory, spec)
         except InstallationBusyError:
             # An orphan pip child may still be alive. Do not turn its ongoing
             # installation into a terminal failure or overwrite its journal.
             raise
         except Exception as exc:
             status = JobStatus.read(directory)
+            if status.phase in {Phase.FINALIZING, Phase.SUCCEEDED}:
+                # Runtime success was durably verified. Retry only final cleanup,
+                # never demote it to a restart or package-repair transaction.
+                raise
             # Do not persist arbitrary package-manager output, URLs or credentials.
             message = str(exc) if isinstance(exc, (ValueError, InstallationBusyError)) else f"Update failed ({type(exc).__name__})"
-            failed = JobStatus(spec.plan_id, Phase.FAILED, status.attempt, status.mutation_started,
+            phase = Phase.RESTART_FAILED if status.phase in {
+                Phase.RESTARTING, Phase.ACTIVATING, Phase.RESTART_FAILED,
+            } else Phase.FAILED
+            failed = JobStatus(spec.plan_id, phase, status.attempt, status.mutation_started,
                                message[:1000], int(time.time()))
             failed.save(directory)
             if not status.mutation_started:
@@ -438,6 +463,35 @@ def run_job(directory: Path) -> JobStatus:
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
                     data.release_reservation()
             raise
+
+
+def _restart_runtime(directory: Path, spec: WorkerSpec) -> JobStatus:
+    # Use the target Python, but enter through frozen stdlib code so its shared
+    # installation lease is held before importing the mutable target runtime.
+    subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
+                    "--restart", str(directory)], check=True, timeout=300,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = JobStatus.read(directory)
+    if result.phase != Phase.SUCCEEDED:
+        raise ValueError("Runtime handoff did not verify the updated gateways")
+    return result
+
+
+def _runtime_child(directory: Path, participant: str | None = None) -> None:
+    spec = WorkerSpec.read(directory)
+    if Path(sys.prefix).resolve() != Path(spec.baseline.environment) or not spec.restart_profiles:
+        raise ValueError("Runtime handoff is using the wrong environment or participants")
+    with installation_access(allow_incomplete=True):
+        _pending_owner(spec)
+        # Deliberately import the installed application, not a frozen stub.
+        from nanobot.update_restart import run_gateway, run_restarts
+
+        if participant is None:
+            run_restarts(directory)
+        elif participant in spec.restart_profiles:
+            run_gateway(directory, participant)
+        else:
+            raise ValueError("This gateway is not a reviewed restart participant")
 
 
 def cancel_job(directory: Path) -> JobStatus:
@@ -460,6 +514,12 @@ def cancel_job(directory: Path) -> JobStatus:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--restart":
+        _runtime_child(Path(sys.argv[2]).resolve())
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == "--gateway":
+        _runtime_child(Path(sys.argv[2]).resolve(), sys.argv[3])
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--pip":
         _pip_child(Path(sys.argv[2]).resolve())
         return

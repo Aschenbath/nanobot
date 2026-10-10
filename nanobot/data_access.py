@@ -215,6 +215,22 @@ def profile_data_paths(*, home: Path, data_dir: Path, config: Path, workspace: P
     )
 
 
+def finish_data_handoff(paths: Iterable[str | Path], *, job_id: str) -> None:
+    """Finish cleanup of a durably verified handoff, including after a crash.
+
+    Unlike starting a handoff this can find its reservation already cleared.
+    Caller must have persisted verified runtime success. The owner lock and
+    exact job/scope check prevent clearing another maintenance reservation;
+    running children keep their own data leases throughout this cleanup.
+    """
+    roots = _canonical_roots(paths)
+    if not roots or str(UUID(job_id)) != job_id:
+        raise ValueError("Data handoff completion requires its original identity and scope")
+    directory = Path.home() / ".nanobot" / "updates" / "data-locks"
+    with file_access(directory / "maintenance.lock", exclusive=True):
+        DataLease(roots, directory / "maintenance.json", job_id, False).release_reservation()
+
+
 @contextmanager
 def data_access(paths: Iterable[str | Path], *, updating: bool = False,
                 job_id: str | None = None, grant: DataStartupGrant | None = None) -> Generator[DataLease]:

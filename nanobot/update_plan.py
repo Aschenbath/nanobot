@@ -109,6 +109,8 @@ class UpdatePlan(ReleaseRecord):
     target: ReleaseTarget
     extras: list[str] | None = None
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=1024)
+    # Inventory alone is not authority to start a previously stopped instance.
+    restart_profiles: list[str] = Field(default_factory=list, max_length=1024)
     created_at: int = Field(ge=0)
     expires_at: int = Field(gt=0)
 
@@ -136,6 +138,15 @@ class UpdatePlan(ReleaseRecord):
             raise ValueError("Update plan must expire within fifteen minutes")
         if self.channel == "stable" and Version(self.target.version).is_prerelease:
             raise ValueError("A stable plan cannot install a preview")
+        profiles = {item.receipt.id: item.receipt for item in self.profiles}
+        if len(set(self.restart_profiles)) != len(self.restart_profiles):
+            raise ValueError("Restart participants must be unique")
+        for participant in self.restart_profiles:
+            profile = profiles.get(participant)
+            if (profile is None or profile.environment != self.installation.environment
+                    or profile.launch_mode != "background" or profile.launch is None
+                    or profile.launch.lifetime != "explicit" or not profile.port):
+                raise ValueError("Restart requires a reviewed, explicitly managed background gateway")
         return self
 
     @property

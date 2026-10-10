@@ -505,6 +505,12 @@ class GatewayHTTPHandler:
         payload: dict[str, Any],
     ) -> Response:
         """Run one explicitly allowlisted mutation for an authenticated WebUI socket."""
+        from nanobot.runtime_admission import RuntimeMaintenanceError
+
+        try:
+            self.bus.admission.check()
+        except RuntimeMaintenanceError:
+            return _http_error(503, "Gateway update is being verified. Retry shortly.")
         path = self._webui_mutation_path(action, payload)
         if isinstance(path, Response):
             return path

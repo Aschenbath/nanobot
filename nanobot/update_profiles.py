@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import nanobot
 from nanobot.config.home import get_home_path
-from nanobot.data_access import data_access, profile_data_paths
+from nanobot.data_access import DataStartupGrant, data_access, profile_data_paths
 from nanobot.gateway.runtime import (
     GatewayHealthIdentity,
     GatewayInstance,
@@ -81,6 +81,7 @@ class ProfileReceipt(BaseModel):
     active: bool
     # Older receipts remain useful data inventory, but cannot prove launch intent.
     launch: ProfileLaunch | None = None
+    update_job_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 
     @field_validator("environment", "python", "package", "home", "data_dir", "config", "workspace", "state_path", "log_path")
     @classmethod
@@ -160,7 +161,8 @@ def _save(directory: Path, receipt: ProfileReceipt) -> None:
 @contextmanager
 def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *,
                            data_dir: Path, workspace: Path, port: int,
-                           verbose: bool = False) -> Generator[ProfileReceipt]:
+                           verbose: bool = False,
+                           grant: DataStartupGrant | None = None) -> Generator[ProfileReceipt]:
     """Record an already-claimed gateway and retain its profile after shutdown."""
     state_path = str(instance.paths.state_path.resolve())
     directory = installation_state_dir() / "profiles"
@@ -178,13 +180,16 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
         state_path=state_path, log_path=str(instance.paths.log_path.resolve()), port=port,
         launch_mode=status.launch_mode, pid=os.getpid(),
         process_identity=runtime.process_identity(os.getpid()), active=True,
+        update_job_id=grant.job_id if grant else None,
         launch=ProfileLaunch(home=options.home, config_path=options.config_path,
                              workspace=options.workspace, working_directory=str(Path.cwd().resolve()),
                              verbose=options.verbose, lifetime=status.lifetime),
     )
     paths = profile_data_paths(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
                                config=Path(receipt.config), workspace=Path(receipt.workspace))
-    with data_access(paths):
+    if grant is not None and grant.participant != receipt.id:
+        raise ValueError("Startup grant belongs to a different gateway instance")
+    with data_access(paths, grant=grant):
         with FileLock(str(directory / "profiles.lock"), timeout=5):
             _save(directory, receipt)
         try:
@@ -233,7 +238,20 @@ def require_stopped_profiles(expected: list[ObservedProfile], environment: str) 
         raise ValueError("A reviewed gateway profile is still in use or its process owner is unconfirmed")
 
 
-def verify_restarted_profile(previous: ProfileReceipt, *, version: str) -> ProfileReceipt:
+def validate_restart_identity(previous: ProfileReceipt, current: ProfileReceipt, *,
+                              version: str, job_id: str | None = None) -> None:
+    """Validate a new claim without mistaking it for running/healthy evidence."""
+    if previous.launch is None:
+        raise ValueError("The original gateway launch identity is unknown")
+    changing = {"run_id", "pid", "process_identity", "version", "active", "update_job_id"}
+    if (current.model_dump(exclude=changing) != previous.model_dump(exclude=changing)
+            or current.version != version or current.run_id == previous.run_id
+            or current.process_identity == previous.process_identity or current.update_job_id != job_id):
+        raise ValueError("The restarted gateway differs from the reviewed instance or target version")
+
+
+def verify_restarted_profile(previous: ProfileReceipt, *, version: str,
+                             job_id: str | None = None, maintenance: bool | None = None) -> ProfileReceipt:
     """Verify a fresh run of the reviewed local profile; never start/stop it.
 
     Call under the update owner's lifecycle/maintenance handoff. A receipt or an
@@ -244,18 +262,12 @@ def verify_restarted_profile(previous: ProfileReceipt, *, version: str) -> Profi
     if observed is None or observed.state != "running":
         raise ValueError("The updated gateway is not running with a verified process identity")
     current = observed.receipt
-    if previous.launch is None:
-        raise ValueError("The original gateway launch identity is unknown")
-    changing = {"run_id", "pid", "process_identity", "version", "active"}
-    if (current.model_dump(exclude=changing) != previous.model_dump(exclude=changing)
-            or current.version != version or current.run_id == previous.run_id
-            or current.process_identity == previous.process_identity):
-        raise ValueError("The restarted gateway differs from the reviewed instance or target version")
+    validate_restart_identity(previous, current, version=version, job_id=job_id)
     state_path, log_path = Path(current.state_path), Path(current.log_path)
     runtime = GatewayRuntime(paths=GatewayRuntimePaths(
         run_dir=state_path.parent, logs_dir=log_path.parent, state_path=state_path, log_path=log_path,
     ))
-    if not runtime.verify_ready(current.health_identity):
+    if not runtime.verify_ready(current.health_identity, maintenance=maintenance):
         raise ValueError("Gateway readiness did not confirm the updated instance, run and version")
     # Re-read the receipt as well: a new claim can precede its new receipt.
     final = next((item for item in inspect_profiles(previous.environment)

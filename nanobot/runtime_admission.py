@@ -72,6 +72,20 @@ class RuntimeAdmission:
             raise RuntimeBusyError(
                 "nanobot has pending work. Finish active tasks and retry the update."
             )
+        with self.pause_before_start():
+            yield
+
+    @contextmanager
+    def pause_before_start(self) -> Generator[None, None, None]:
+        """Hold a fresh runtime before starting any consumers or external intake.
+
+        Startup may already have reconstructed a durable recovery queue. It must
+        not execute that queue until activation. Running gateways must instead
+        use pause_if_idle, which also checks their owner's pending-work view.
+        """
+        self.check()
+        if self._active:
+            raise RuntimeBusyError("Runtime work has already started")
         self._paused = True
         self._open.clear()
         try:

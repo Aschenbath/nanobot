@@ -71,7 +71,7 @@ def test_root_alias_dispatches_the_shared_agent_command(monkeypatch) -> None:
         "set_cli_process_identity",
         lambda args: calls.__setitem__("identity", args),
     )
-    monkeypatch.setattr(entry, "_configure_windows_console", lambda: None)
+    monkeypatch.setattr(entry, "configure_windows_console", lambda: None)
     monkeypatch.setattr(
         entry,
         "_run_agent",
@@ -92,7 +92,7 @@ def test_desktop_handled_bare_invocation_does_not_start_python(monkeypatch) -> N
 
     monkeypatch.setattr(entry.sys, "argv", ["nanobot"])
     monkeypatch.setattr(entry, "set_cli_process_identity", lambda _args: None)
-    monkeypatch.setattr(entry, "_configure_windows_console", lambda: None)
+    monkeypatch.setattr(entry, "configure_windows_console", lambda: None)
     monkeypatch.setattr(desktop_target, "dispatch_bare_desktop_target", lambda _args: 0)
     monkeypatch.setattr(
         entry,

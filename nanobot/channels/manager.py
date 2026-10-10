@@ -392,6 +392,8 @@ class ChannelManager:
             errors = self._channel_errors = {}
         errors.pop(name, None)
         try:
+            if name != "websocket":
+                await self.bus.admission.wait_until_open()
             await channel.start()
         except asyncio.CancelledError:
             raise
@@ -645,6 +647,7 @@ class ChannelManager:
         poll_s: float = _RESTART_NOTICE_START_POLL_S,
     ) -> None:
         """Deliver a restart notice after the target channel starts."""
+        await self.bus.admission.wait_until_open()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
         target = self.channels.get(notice.channel)
@@ -775,6 +778,7 @@ class ChannelManager:
 
     async def _dispatch_outbound(self) -> None:
         try:
+            await self.bus.admission.wait_until_open()
             await self._dispatch_outbound_loop()
         finally:
             await self._cancel_outbound()

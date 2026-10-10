@@ -29,6 +29,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.websocket.binary_http import BinaryHTTPBridge
 from nanobot.config.schema import Base
+from nanobot.runtime_admission import RuntimeMaintenanceError
 from nanobot.session.webui_turns import (
     clear_websocket_turn_if_current,
     mark_websocket_turn_transcript_persistence_failed,
@@ -698,7 +699,16 @@ class WebSocketChannel(BaseChannel):
         async def handler(connection: ServerConnection) -> None:
             await self._connection_loop(connection)
 
-        bridge = BinaryHTTPBridge(self._uploads.handle)
+        from aiohttp import web
+
+        async def handle_binary(request: web.BaseRequest) -> web.StreamResponse:
+            try:
+                self.bus.admission.check()
+            except RuntimeMaintenanceError:
+                return web.json_response({"error": "Gateway update is being verified"}, status=503)
+            return await self._uploads.handle(request)
+
+        bridge = BinaryHTTPBridge(handle_binary)
 
         async def prune_uploads() -> None:
             while not stop_event.is_set():

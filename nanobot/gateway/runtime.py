@@ -55,7 +55,8 @@ class GatewayHealthIdentity:
 
 
 def _gateway_health_ready(host: str, port: int, *, timeout_s: float = 0.4,
-                          expected: GatewayHealthIdentity | None = None) -> bool:
+                          expected: GatewayHealthIdentity | None = None,
+                          maintenance: bool | None = None) -> bool:
     """Read readiness from the management listener without using proxy settings."""
     connect_host = "127.0.0.1" if host in {"", "0.0.0.0"} else "::1" if host == "::" else host
     connection = http.client.HTTPConnection(connect_host, port, timeout=timeout_s)
@@ -76,6 +77,8 @@ def _gateway_health_ready(host: str, port: int, *, timeout_s: float = 0.4,
     if not isinstance(raw_payload, dict):
         return False
     payload = cast(dict[str, object], raw_payload)
+    if maintenance is not None and payload.get("maintenance") is not maintenance:
+        return False
     if expected is not None:
         raw_identity = payload.get("runtime")
         if payload.get("ready") is not True or not isinstance(raw_identity, dict):
@@ -354,7 +357,7 @@ class GatewayRuntime(ManagedProcessRuntime[GatewayStartOptions]):
             state["health_host"] = host
             self._write_state(state)
 
-    def verify_ready(self, expected: GatewayHealthIdentity) -> bool:
+    def verify_ready(self, expected: GatewayHealthIdentity, *, maintenance: bool | None = None) -> bool:
         """Bind health to one live local process, not merely a responding port.
 
         This is local lifecycle evidence, not remote authentication. Missing
@@ -368,7 +371,7 @@ class GatewayRuntime(ManagedProcessRuntime[GatewayStartOptions]):
                 or not isinstance(host, str) or not self._is_pid_running(pid)
                 or not self._record_matches_process(state, pid)):
             return False
-        if not _gateway_health_ready(host, port, expected=expected):
+        if not _gateway_health_ready(host, port, expected=expected, maintenance=maintenance):
             return False
         # The process may have exited or been replaced while the HTTP probe ran.
         return (self._read_state() == state and self._is_pid_running(pid)

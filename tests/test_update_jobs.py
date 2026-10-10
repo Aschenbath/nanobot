@@ -25,6 +25,7 @@ from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import (
     InstallationBusyError,
     installation_access,
+    installation_state_dir,
     pending_update_path,
 )
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
@@ -43,8 +44,45 @@ from nanobot.update_worker import (
     write_record,
 )
 
+_RESTART_PROBE = """
+# Synthetic installed handoff for worker/lease routing, not gateway readiness.
+import time
+from pathlib import Path
+import nanobot
+from _nanobot_update.data_access import data_access
+from _nanobot_update.installation_lock import InstallationBusyError, installation_access, pending_update_path
+from _nanobot_update.update_worker import JobStatus, Phase, WorkerSpec, write_record
 
-def wheel(directory, name, version, *, requires=(), platform="any", broken=False):
+def run_gateway(directory, participant):
+    raise AssertionError('This routing fixture must not launch a gateway')
+
+def run_restarts(directory):
+    spec = WorkerSpec.read(directory)
+    status = JobStatus.read(directory)
+    assert status.phase in {Phase.RESTARTING, Phase.RESTART_FAILED}
+    with installation_access(allow_incomplete=True):
+        try:
+            with installation_access(updating=True):
+                raise AssertionError('Runtime bridge has no shared installation lease')
+        except InstallationBusyError:
+            pass
+        with data_access((item.path for item in spec.backup_sources), job_id=spec.plan_id) as data:
+            write_record(directory / 'handoff-probe.json', {
+                'version': nanobot.__version__, 'package': str(Path(nanobot.__file__).resolve()),
+                'attempt': status.attempt, 'phase': status.phase.value,
+            })
+            if (directory / 'fail-restart').exists():
+                raise RuntimeError('Controlled handoff failure')
+            JobStatus(spec.plan_id, Phase.FINALIZING, status.attempt, True,
+                      'Synthetic routing complete; not real gateway evidence', int(time.time())).save(directory)
+            data.release_reservation()
+            pending_update_path().unlink()
+            JobStatus(spec.plan_id, Phase.SUCCEEDED, status.attempt, True,
+                      'Synthetic routing complete; not real gateway evidence', int(time.time())).save(directory)
+"""
+
+
+def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False):
     package = name.replace("-", "_")
     dist = f"{package}-{version}.dist-info"
     files = {
@@ -58,6 +96,8 @@ def wheel(directory, name, version, *, requires=(), platform="any", broken=False
             files["nanobot/__init__.py"] = b"raise RuntimeError('broken release fixture')\n"
         files["nanobot/web/dist/index.html"] = f"verified UI {version}".encode()
         files["nanobot/tui/bin/fixture"] = b"fixture, not a native execution claim"
+        if restart:
+            files["nanobot/update_restart.py"] = _RESTART_PROBE.encode()
     records = []
     for filename, data in files.items():
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
@@ -91,7 +131,8 @@ def installation(tmp_path, monkeypatch, request):
                    check=True, capture_output=True, timeout=60)
     platform = next(tag.platform for tag in sys_tags() if tag.platform in PLATFORMS.values())
     candidate = wheel(artifacts, "nanobot-ai", "0.3.5", requires=["fixture-update-dep>=2.0.0"], platform=platform,
-                      broken=getattr(request, "param", False))
+                      broken=getattr(request, "param", False) is True,
+                      restart=getattr(request, "param", False) == "restart")
     baseline = inspect_environment(python)
     site = Path(subprocess.check_output([python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
     snapshot = InstallationSnapshot(
@@ -119,13 +160,23 @@ def installation(tmp_path, monkeypatch, request):
                     pass
     finally:
         set_home_path(selected_home)
+    profiles = inspect_profiles(str(environment))
+    restart_profiles = []
+    if getattr(request, "param", False) == "restart":
+        # Synthetic process metadata selects the installed routing stub above;
+        # test_update_restart.py separately runs the actual background gateway.
+        receipt = profiles[0].receipt.model_copy(update={"launch_mode": "background"})
+        write_record(installation_state_dir(str(environment)) / "profiles" / f"{receipt.id}.json",
+                     receipt.model_dump(mode="json"))
+        profiles = inspect_profiles(str(environment))
+        restart_profiles = [receipt.id]
     target = ReleaseTarget(version="0.3.5", source="pypi",
                            url=f"https://files.pythonhosted.org/packages/{candidate.name}",
                            artifact=ReleaseArtifact(filename=candidate.name, size=candidate.stat().st_size,
                                                     sha256=hashlib.sha256(candidate.read_bytes()).hexdigest()))
     now = int(time.time())
     plan = UpdatePlan(id=str(uuid4()), installation=snapshot, target=target, extras=[], channel="stable",
-                      profiles=inspect_profiles(str(environment)),
+                      profiles=profiles, restart_profiles=restart_profiles,
                       created_at=now, expires_at=now + 900)
     requests = []
 
@@ -149,6 +200,50 @@ def installation(tmp_path, monkeypatch, request):
 async def wait_worker(process):
     code = await asyncio.to_thread(process.wait, 40)
     assert code == 0
+
+
+@pytest.mark.parametrize("installation", ["restart"], indirect=True)
+async def test_installed_runtime_failure_repairs_handoff_without_reinstalling(installation, tmp_path, monkeypatch):
+    plan, _, site, requests, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        failure = directory / "fail-restart"
+        failure.touch()
+        process = await start_job(directory, feed)
+        assert await asyncio.to_thread(process.wait, 40) != 0
+        status = JobStatus.read(directory)
+        assert status.phase == Phase.RESTART_FAILED and status.attempt == 1
+        assert status.mutation_started
+        probe = read_record(directory / "handoff-probe.json")
+        assert probe == {"version": "0.3.5", "package": str((site / "nanobot/__init__.py").resolve()),
+                         "attempt": 1, "phase": "restarting"}
+        assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+        backup = (directory / "backup/data.zip").read_bytes()
+        record = (site / "nanobot_ai-0.3.5.dist-info/RECORD").read_bytes()
+        with pytest.raises(InstallationBusyError):
+            with installation_access(environment=plan.installation.environment):
+                pytest.fail("Runtime failure released the installation fence")
+        with pytest.raises(InstallationBusyError):
+            with data_access([plan.profiles[0].receipt.config]):
+                pytest.fail("Runtime failure released the data reservation")
+
+        async def offline(*_args, **_kwargs):
+            pytest.fail("Already-installed handoff repair must not depend on a release feed")
+
+        monkeypatch.setattr(feed, "revalidate", offline)
+        requests.clear()
+        with pytest.raises(ValueError, match="explicit repair"):
+            await start_job(directory, feed)
+        failure.unlink()
+        await wait_worker(await start_job(directory, feed, repair=True))
+    assert not requests
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+    assert JobStatus.read(directory).attempt == 1
+    assert read_record(directory / "handoff-probe.json")["phase"] == "restart_failed"
+    assert (directory / "backup/data.zip").read_bytes() == backup
+    assert (site / "nanobot_ai-0.3.5.dist-info/RECORD").read_bytes() == record
+    with installation_access(environment=plan.installation.environment), data_access([plan.profiles[0].receipt.config]):
+        pass
 
 
 def test_update_record_size_is_bounded_before_replacement(tmp_path):

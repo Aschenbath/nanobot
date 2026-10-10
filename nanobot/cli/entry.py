@@ -47,7 +47,8 @@ def _native_tui_candidate(args: list[str]) -> bool:
     return True
 
 
-def _configure_windows_console() -> None:
+def configure_windows_console() -> None:
+    """Keep multilingual output usable for CLI and protected gateway startup."""
     if sys.platform != "win32" or sys.stdout.encoding == "utf-8":
         return
     os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -119,7 +120,7 @@ def _dispatch() -> None:
     agent_args = None if shell_completion else _agent_invocation_args(raw_args)
     dispatch_args = ["agent", *agent_args] if agent_args is not None else raw_args
     set_cli_process_identity(dispatch_args)
-    _configure_windows_console()
+    configure_windows_console()
     if not shell_completion and raw_args[:1] == ["update"]:
         import typer
 
