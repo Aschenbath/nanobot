@@ -24,6 +24,7 @@ from typing import cast
 from uuid import UUID
 from zipfile import ZipFile
 
+from nanobot.data_access import data_access
 from nanobot.installation_lock import (
     InstallationBusyError,
     file_access,
@@ -308,7 +309,8 @@ def _pip_child(directory: Path) -> None:
     spec = WorkerSpec.read(directory)
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
         raise ValueError("Installer child is using the wrong environment")
-    with installation_access(updating=True):
+    with (installation_access(updating=True),
+          data_access((source.path for source in spec.backup_sources), updating=True)):
         status = JobStatus.read(directory)
         if status.phase in {Phase.INSTALLED, Phase.CANCELLED}:
             raise ValueError("This update job is already finished")
@@ -374,7 +376,8 @@ def run_job(directory: Path) -> JobStatus:
         if status.phase == Phase.CANCELLED:
             raise ValueError("This update job was cancelled")
         try:
-            with installation_access(updating=True, environment=spec.baseline.environment):
+            with (installation_access(updating=True, environment=spec.baseline.environment),
+                  data_access((source.path for source in spec.backup_sources), updating=True)):
                 _pending_owner(spec)
                 if status.phase == Phase.INSTALLED:
                     # Recover a crash after persisting the result but before removing
@@ -401,7 +404,8 @@ def run_job(directory: Path) -> JobStatus:
             subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
                             "--pip", str(directory)], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-            with installation_access(updating=True, environment=spec.baseline.environment):
+            with (installation_access(updating=True, environment=spec.baseline.environment),
+                  data_access((source.path for source in spec.backup_sources), updating=True)):
                 status = JobStatus.read(directory)
                 JobStatus(spec.plan_id, Phase.VERIFYING, status.attempt, True,
                           "Checking the installed package and dependencies", int(time.time())).save(directory)

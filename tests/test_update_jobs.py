@@ -20,6 +20,7 @@ import pytest
 from packaging.tags import sys_tags
 
 from nanobot.config.home import get_selected_home_path, set_home_path
+from nanobot.data_access import data_access
 from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import (
     InstallationBusyError,
@@ -296,6 +297,9 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
             with pytest.raises(InstallationBusyError):
                 with installation_access(updating=True, environment=plan.installation.environment):
                     pytest.fail("Live pip lost its installation lease with the coordinator")
+            with pytest.raises(InstallationBusyError, match="data is in use"):
+                with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+                    pytest.fail("Live pip lost its data lease with the coordinator")
             with pytest.raises(InstallationBusyError):
                 await start_job(directory, feed, repair=True)
         finally:
@@ -334,6 +338,23 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
     assert JobStatus.read(directory).attempt == 2
     assert JobStatus.read(directory).phase == Phase.INSTALLED
     assert (site / "nanobot/web/dist/index.html").read_text() == "verified UI 0.3.5"
+
+
+@pytest.mark.asyncio
+async def test_other_installation_writer_refuses_job_before_approval_or_backup(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        # This test process uses a different Python environment from the pip job.
+        with data_access([Path(plan.profiles[0].receipt.workspace) / "sessions"]):
+            with pytest.raises(InstallationBusyError, match="data is in use"):
+                await start_job(directory, feed)
+        assert not (directory / "approval.json").exists()
+        assert not (directory / "backup").exists()
+        assert JobStatus.read(directory).phase == Phase.READY
+        assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+        await wait_worker(await start_job(directory, feed))
+        assert JobStatus.read(directory).phase == Phase.INSTALLED
 
 
 @pytest.mark.asyncio

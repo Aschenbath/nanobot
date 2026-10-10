@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import nanobot
 from nanobot.config.home import get_home_path
+from nanobot.data_access import data_access, profile_data_paths
 from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime, GatewayRuntimePaths
 from nanobot.installation_lock import installation_state_dir
 from nanobot.utils.atomic_file import atomic_write_lines
@@ -140,15 +141,18 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
         launch_mode=status.launch_mode, pid=os.getpid(),
         process_identity=runtime.process_identity(os.getpid()), active=True,
     )
-    with FileLock(str(directory / "profiles.lock"), timeout=5):
-        _save(directory, receipt)
-    try:
-        yield
-    finally:
+    paths = profile_data_paths(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
+                               config=Path(receipt.config), workspace=Path(receipt.workspace))
+    with data_access(paths):
         with FileLock(str(directory / "profiles.lock"), timeout=5):
-            # The instance lease prevents a replacement while this gateway owns
-            # it. Persist an inactive receipt; do not delete the data inventory.
-            _save(directory, receipt.model_copy(update={"active": False}))
+            _save(directory, receipt)
+        try:
+            yield
+        finally:
+            with FileLock(str(directory / "profiles.lock"), timeout=5):
+                # Persist the inactive receipt before releasing the data leases.
+                # A receipt alone does not prove every external writer has stopped.
+                _save(directory, receipt.model_copy(update={"active": False}))
 
 
 def inspect_profiles(environment: str) -> list[ObservedProfile]:

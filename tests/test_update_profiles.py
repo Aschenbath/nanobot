@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from nanobot.data_access import data_access
 from nanobot.installation_lock import (
     InstallationBusyError,
     installation_access,
@@ -32,13 +33,13 @@ from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import installation_access
 from nanobot.update_profiles import record_gateway_profile
 
-profile, environment, marker = map(Path, sys.argv[1:])
+profile, environment, marker, workspace = map(Path, sys.argv[1:])
 sys.prefix = str(environment)
 set_home_path(profile)
 instance = GatewayInstance.resolve(config_path=profile / 'config.json')
 runtime = GatewayRuntime(paths=instance.paths)
 with installation_access(), runtime.foreground_instance(instance.start_options(port=18790)):
-    with record_gateway_profile(instance, runtime, data_dir=profile, workspace=profile / 'user project', port=18790):
+    with record_gateway_profile(instance, runtime, data_dir=profile, workspace=workspace, port=18790):
         marker.write_text('ready')
         sys.stdin.read(1)
 """
@@ -54,12 +55,13 @@ def private_home(tmp_path, monkeypatch):
 
 
 @contextmanager
-def gateway(profile, environment):
+def gateway(profile, environment, *, workspace=None):
     profile.mkdir(parents=True, exist_ok=True)
     (profile / "config.json").write_text('{"credential":"must-not-be-in-receipt"}')
     marker = profile / "started"
     marker.unlink(missing_ok=True)
-    process = subprocess.Popen([sys.executable, "-c", _CHILD, str(profile), str(environment), str(marker)],
+    process = subprocess.Popen([sys.executable, "-c", _CHILD, str(profile), str(environment), str(marker),
+                                str(workspace or profile / "user project")],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         deadline = time.monotonic() + 8
@@ -135,6 +137,22 @@ def test_missing_process_identity_cannot_become_pid_only_confirmation(private_ho
             inspect_profiles(str(environment))
 
 
+def test_separate_profile_and_environment_cannot_hide_a_shared_workspace_writer(private_home, tmp_path):
+    first, other = tmp_path / "first environment", tmp_path / "other environment"
+    workspace = tmp_path / "shared user project"
+    with gateway(tmp_path / "profile one", first, workspace=workspace):
+        reviewed = inspect_profiles(str(first))
+    with gateway(tmp_path / "profile two", other, workspace=workspace):
+        # The first profile is stopped and unchanged: its own inventory alone
+        # cannot prove that no other installation writes this workspace.
+        require_stopped_profiles(reviewed, str(first))
+        with pytest.raises(InstallationBusyError, match="data is in use"):
+            with data_access([workspace / "sessions"], updating=True):
+                pytest.fail("Another profile's shared workspace writer was ignored")
+    with data_access([workspace / "sessions"], updating=True):
+        pass
+
+
 @pytest.fixture
 def startup_profile(private_home, tmp_path, monkeypatch):
     from nanobot.config.schema import Config
@@ -165,6 +183,9 @@ def test_startup_is_visible_and_protected_before_workspace_writes(startup_profil
         with pytest.raises(InstallationBusyError, match="installation is in use"):
             with installation_access(updating=True):
                 pytest.fail("An update entered while gateway initialization was writing")
+        with pytest.raises(InstallationBusyError, match="data is in use"):
+            with data_access([workspace / "sessions"], updating=True):
+                pytest.fail("A different installation could back up live gateway data")
         seen.append(observed[0].receipt.run_id)
         raise RuntimeError("workspace initialization failed")
 
@@ -216,6 +237,45 @@ def test_gateway_entrypoint_refuses_installation_before_initialization(startup_p
                                          webui_static_dist=False)
     assert inspect_profiles(sys.prefix) == []
     assert not (profile / "workspace").exists()
+
+
+def test_gateway_refuses_shared_data_maintenance_before_initializing_writers(startup_profile, monkeypatch):
+    from nanobot.cli import gateway_runtime
+
+    profile, config = startup_profile
+    monkeypatch.setattr(gateway_runtime, "sync_workspace_templates",
+                        lambda _path: pytest.fail("Startup wrote to a store under maintenance"))
+    with data_access([config.workspace_path / "sessions"], updating=True):
+        with pytest.raises(InstallationBusyError, match="data is in use"):
+            gateway_runtime._run_gateway(config, health_server_enabled=False, webui_static_dist=False)
+    assert inspect_profiles(sys.prefix) == []
+    assert not (profile / "workspace").exists()
+
+
+def test_classic_cli_holds_data_lease_before_writers_and_through_exit(startup_profile, monkeypatch):
+    from nanobot.cli import agent as cli_agent
+
+    _, config = startup_profile
+    monkeypatch.setattr(cli_agent, "_load_runtime_config", lambda *_args: config)
+    reached = []
+
+    def run_classic(_config, **_kwargs):
+        with pytest.raises(InstallationBusyError):
+            with data_access([config.workspace_path / "sessions"], updating=True):
+                pytest.fail("Classic CLI did not protect its shared data")
+        reached.append(True)
+        raise RuntimeError("simulated classic runtime exit")
+
+    monkeypatch.setattr(cli_agent, "_run_classic", run_classic)
+    with data_access([config.workspace_path / "sessions"], updating=True):
+        with pytest.raises(InstallationBusyError, match="data is in use"):
+            cli_agent.agent(message="hello", classic=True, theme="auto")
+    assert not reached
+    with pytest.raises(RuntimeError, match="simulated classic runtime exit"):
+        cli_agent.agent(message="hello", classic=True, theme="auto")
+    with data_access([config.workspace_path / "sessions"], updating=True):
+        pass
+    assert reached == [True]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Graceful SIGTERM proof uses the POSIX gateway handler")

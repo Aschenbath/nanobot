@@ -22,19 +22,11 @@ from pathlib import Path
 from typing import Literal, cast
 from zipfile import ZIP_STORED, ZipFile
 
+from nanobot.data_access import profile_data_paths
 from nanobot.utils.atomic_file import atomic_write_lines
 
 _MAX_ENTRIES = 100_000
 _MAX_BYTES = 10 * 1024**3
-_DATA_STORES = (
-    "sessions", "webui", "media", "auth", "pairing.json", "cron",
-    "llm_usage.sqlite3", "llm_usage.sqlite3-wal", "llm_usage.sqlite3-shm",
-    "whatsapp-auth", "weixin", "matrix-store", "linear", "mochat", "cli-apps/installed.json",
-)
-_WORKSPACE_STORES = (
-    ".nanobot", "memory", "skills", "sessions", "cron", "triggers",
-    "AGENTS.md", "TOOLS.md", "SOUL.md", "USER.md", "HEARTBEAT.md",
-)
 
 
 @dataclass(frozen=True)
@@ -53,9 +45,7 @@ class BackupSource:
 
 def profile_sources(*, home: Path, data_dir: Path, config: Path, workspace: Path) -> tuple[BackupSource, ...]:
     """Select known stores from the gateway's recorded paths, not config contents."""
-    paths = [config, home / "history" / "cli_history", home / "sessions"]
-    paths.extend(data_dir / name for name in _DATA_STORES)
-    paths.extend(workspace / name for name in _WORKSPACE_STORES)
+    paths = profile_data_paths(home=home, data_dir=data_dir, config=config, workspace=workspace)
     # Do not resolve individual stores: a symlink must be refused, not expanded
     # into an extra read root. The receipt already canonicalizes its base paths.
     return tuple(BackupSource.parse({"path": str(path)}) for path in paths)

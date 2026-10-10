@@ -23,6 +23,7 @@ from zipfile import ZipFile, ZipInfo
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from pydantic import BaseModel, ConfigDict, Field
 
+from nanobot.data_access import data_access
 from nanobot.installation_lock import file_access, installation_access, installation_state_dir
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Sha256
@@ -84,7 +85,7 @@ def _worker_archive(path: Path) -> str:
     with ZipFile(path, "x") as bundle:
         files = {"__main__.py": b"from nanobot.update_worker import main\nmain()\n",
                  "nanobot/__init__.py": b"", "nanobot/utils/__init__.py": b""}
-        for name in ("update_worker.py", "update_backup.py", "installation_lock.py", "utils/atomic_file.py"):
+        for name in ("update_worker.py", "update_backup.py", "data_access.py", "installation_lock.py", "utils/atomic_file.py"):
             files[f"nanobot/{name}"] = (sources / name).read_bytes()
         for name, data in files.items():
             bundle.writestr(ZipInfo(name), data)
@@ -228,7 +229,8 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
     await feed.revalidate(plan.target)
     with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
-        with installation_access(updating=True, environment=spec.baseline.environment):
+        with (installation_access(updating=True, environment=spec.baseline.environment),
+              data_access((source.path for source in spec.backup_sources), updating=True)):
             state = JobStatus.read(directory)
             if state.phase in {Phase.INSTALLED, Phase.CANCELLED}:
                 raise ValueError("This job is already finished; it cannot be started again")
