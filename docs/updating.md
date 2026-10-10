@@ -43,6 +43,24 @@ backup or post-restart verification until the execution handoff is integrated an
 tested. A plan also does not authorize bypassing uv/pipx, Docker, Desktop or an
 external supervisor; the installation owner remains responsible for its files.
 
+### Package-manager settings
+
+For uv and pipx installations, planning reads the owner's existing receipt and
+records a credential-free summary: selected extras, the main package's version
+constraint, pin/lock status, source kind and names of additional packages. Extras
+are taken from that record rather than guessed from installed dependencies. The
+receipt hash binds the full original settings; planning does not rewrite it.
+
+`owner_restriction` explains when a target conflicts with a recorded constraint,
+pin, lock or unrecognized source. A null value does **not** establish that this
+installation supports automatic execution. Other resolver settings still belong
+to the manager, and the internal pip worker continues to reject managed environments.
+
+The parser has receipt coverage from uv 0.11.16 and pipx 1.7.1/1.17.13 (pipx schemas
+0.5 and 0.12). It rejects unrecognized schemas without exposing receipt contents
+or migrating them. Reading an old receipt does not imply that an old manager
+supports newer install/upgrade flags. Execution compatibility is a separate gate.
+
 ## Runtime coordination in this draft
 
 The `nanobot` CLI entrypoint now holds a shared installation lease while running. Profiles using

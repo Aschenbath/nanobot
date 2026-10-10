@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from nanobot.cli.update import update as update_command
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import ReleaseArtifact, release_filenames
+from nanobot.update_manager import ManagerPolicy
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan, UpdatePlans, inspect_installation
 
 
@@ -114,7 +115,10 @@ def test_probe_reads_fresh_interpreter_and_owner_receipt(tmp_path, monkeypatch):
     dist = site / "nanobot_ai-0.3.5.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: nanobot-ai\nVersion: 0.3.5\n")
-    (root / "pipx_metadata.json").write_text('{"test_receipt": true}')
+    receipt = {"pipx_metadata_version": "0.12", "main_package": {
+        "package": "nanobot-ai", "package_or_url": "nanobot-ai[webui]", "pinned": False,
+    }}
+    (root / "pipx_metadata.json").write_text(json.dumps(receipt))
     monkeypatch.setattr(sys, "prefix", str(root))
     monkeypatch.setattr(sys, "executable", str(executable))
     monkeypatch.setattr(update_plan.nanobot, "__version__", "0.3.4")
@@ -125,9 +129,35 @@ def test_probe_reads_fresh_interpreter_and_owner_receipt(tmp_path, monkeypatch):
     assert snapshot.running_version == "0.3.4"
     assert snapshot.owner == ("container" if Path("/.dockerenv").exists() else "pipx")
     assert snapshot.records["pipx_metadata.json"] == hashlib.sha256((root / "pipx_metadata.json").read_bytes()).hexdigest()
+    if snapshot.owner == "pipx":
+        assert snapshot.manager.extras == ["webui"]
     before = snapshot.fingerprint
-    (root / "pipx_metadata.json").write_text('{"test_receipt": false}')
+    receipt["main_package"]["pinned"] = True
+    (root / "pipx_metadata.json").write_text(json.dumps(receipt))
     assert inspect_installation().fingerprint != before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manager", ["uv", "pipx"])
+async def test_managed_plan_preserves_extras_and_reports_owner_constraints(tmp_path, manager):
+    policy = ManagerPolicy(manager=manager, backend="uv" if manager == "uv" else "pip",
+                           source="registry", extras=["webui"], version_constraint="<0.3.5")
+    snapshot = installation().model_copy(update={"owner": manager, "manager": policy})
+
+    class Feed:
+        async def latest(self, channel):
+            assert channel == "stable"
+            return target()
+
+    saved = await UpdatePlans(tmp_path).prepare(snapshot, "stable", Feed(), now=100)
+    assert saved.extras == ["webui"]
+    assert saved.action == "upgrade"
+    assert "constraints" in saved.owner_restriction
+    assert UpdatePlans(tmp_path).load(saved.id) == saved
+    changed = saved.model_dump()
+    changed["extras"] = []
+    with pytest.raises(ValueError, match="recorded extras"):
+        UpdatePlan.model_validate(changed)
 
 
 def test_cli_plan_is_available_and_never_starts_install(monkeypatch):

@@ -24,6 +24,7 @@ import nanobot
 from nanobot.installation_lock import installation_access, installation_id, installation_state_dir
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
+from nanobot.update_manager import ManagerPolicy, read_manager_policy
 from nanobot.update_profiles import ObservedProfile, inspect_profiles, validate_profiles
 from nanobot.utils.helpers import atomic_write_lines
 
@@ -62,6 +63,13 @@ class InstallationSnapshot(_Probe):
     running_version: str
     running_package: str
     owner: Owner
+    manager: ManagerPolicy | None = None
+
+    @model_validator(mode="after")
+    def matching_manager(self) -> InstallationSnapshot:
+        if self.manager is not None and self.manager.manager != self.owner:
+            raise ValueError("Package-manager settings must belong to this installation owner")
+        return self
 
     @field_validator("installed_version", "running_version")
     @classmethod
@@ -97,8 +105,12 @@ def inspect_installation() -> InstallationSnapshot:
         owner = "pipx"
     elif sys.prefix == sys.base_prefix:
         owner = "system"
+    manager = None
+    if owner == "uv" or owner == "pipx":
+        receipt = "uv-receipt.toml" if owner == "uv" else "pipx_metadata.json"
+        manager = read_manager_policy(Path(fresh.environment), owner, fresh.records[receipt])
     return InstallationSnapshot(**fresh.model_dump(), running_version=nanobot.__version__,
-                                running_package=str(Path(nanobot.__file__).resolve()), owner=owner)
+                                running_package=str(Path(nanobot.__file__).resolve()), owner=owner, manager=manager)
 
 
 class UpdatePlan(ReleaseRecord):
@@ -140,6 +152,8 @@ class UpdatePlan(ReleaseRecord):
             raise ValueError("Update plan must expire within fifteen minutes")
         if self.channel == "stable" and Version(self.target.version).is_prerelease:
             raise ValueError("A stable plan cannot install a preview")
+        if self.installation.manager is not None and self.extras != self.installation.manager.extras:
+            raise ValueError("An update must preserve the installation owner's recorded extras")
         profiles = {item.receipt.id: item.receipt for item in self.profiles}
         if len(set(self.stop_profiles)) != len(self.stop_profiles):
             raise ValueError("Shutdown participants must be unique")
@@ -172,6 +186,11 @@ class UpdatePlan(ReleaseRecord):
         if running != installed:
             return "restart"
         return "none"
+
+    @property
+    def owner_restriction(self) -> str | None:
+        manager = self.installation.manager
+        return manager.restriction(self.target.version) if manager is not None else None
 
     def validate_for(self, installation: InstallationSnapshot, *, now: int | None = None) -> None:
         checked_at = int(time.time()) if now is None else now
@@ -217,7 +236,8 @@ class UpdatePlans:
         target = await feed.latest(channel)
         created_at = int(time.time()) if now is None else now
         profiles = inspect_profiles(installation.environment)
-        plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, profiles=profiles,
+        extras = installation.manager.extras if installation.manager is not None else None
+        plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, extras=extras, profiles=profiles,
                           created_at=created_at, expires_at=created_at + 15 * 60)
         return self.save(plan)
 
@@ -247,6 +267,7 @@ def describe_plan(plan: UpdatePlan) -> str:
     return json.dumps({
         **plan.model_dump(mode="json"), "action": plan.action,
         "installation_id": plan.installation.installation_id,
+        "owner_restriction": plan.owner_restriction,
         "profile_notice": "Known profiles only; this does not prove all runtimes or supervisors are accounted for.",
         "notice": "Plan only. No packages were changed or processes restarted.",
     }, indent=2)
