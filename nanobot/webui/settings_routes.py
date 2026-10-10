@@ -261,7 +261,7 @@ class WebUISettingsRouter:
             settings,
             logger,
         )
-        self._system = system_domain.SystemSettingsHandler(settings, logger)
+        self._system = system_domain.SystemSettingsHandler(settings, logger, bus.admission)
 
     async def close(self) -> None:
         """Release state owned by settings domains."""

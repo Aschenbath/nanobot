@@ -305,12 +305,17 @@ def test_special_setup_validation_is_owned_by_channel_package(name: str):
 
 @pytest.mark.parametrize("name", ["feishu", "linear", "weixin", "whatsapp"])
 def test_interactive_connector_is_owned_by_channel_package(name: str):
+    from nanobot.channels.connect import ManagedChannelConnector
+
     plugin = load_channel_package(name)
 
     assert plugin is not None
     assert plugin.connector is not None
     assert plugin.connector.startswith(f"nanobot.channels.{name}.")
-    assert plugin.load_connector().__class__.__module__ == f"nanobot.channels.{name}.connect"
+    connector = plugin.load_connector()
+    assert connector.__class__.__module__ == f"nanobot.channels.{name}.connect"
+    assert isinstance(connector, ManagedChannelConnector)
+    assert connector.has_pending_work is False
 
 
 def test_descriptor_defaults_cover_onboarding_fields_without_runtime_import():

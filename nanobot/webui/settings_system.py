@@ -18,7 +18,7 @@ from pydantic.alias_generators import to_snake
 
 from nanobot.build_info import COMMIT
 from nanobot.channels._setup import channel_setup_spec
-from nanobot.channels.connect import ChannelConnectError
+from nanobot.channels.connect import ChannelConnectError, ChannelConnector, ManagedChannelConnector
 from nanobot.channels.contracts import (
     RouteFieldType,
     channel_instance_config,
@@ -27,6 +27,7 @@ from nanobot.channels.contracts import (
 from nanobot.config.schema import Config
 from nanobot.llm_usage import llm_usage_payload
 from nanobot.optional_features import OptionalFeatureError, with_channel_runtime_status
+from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.security.workspace_access import workspace_sandbox_status
 from nanobot.update import UpdateError, update_blocked_reason
 from nanobot.webui.settings_capabilities import network_safety_payload
@@ -42,9 +43,10 @@ from nanobot.webui.settings_runtime import runtime_config_payload
 from nanobot.webui.update_service import UpdateService
 
 if TYPE_CHECKING:
+    from nanobot.channels.plugin import ChannelPlugin
     from nanobot.webui.settings_services import WebUISettingsServices
 
-LoadChannelPlugin = Callable[[str], Any]
+LoadChannelPlugin = Callable[[str], "ChannelPlugin"]
 ListPendingPairings = Callable[[], Iterable[dict[str, Any]]]
 SettingsOperation = Callable[..., Any]
 
@@ -418,30 +420,49 @@ def pairing_payload(
 class SystemSettingsHandler:
     """Handle channel and system commands behind a transport-neutral request DTO."""
 
-    def __init__(self, settings: WebUISettingsServices, logger: Any) -> None:
+    def __init__(
+        self, settings: WebUISettingsServices, logger: Any, admission: RuntimeAdmission,
+    ) -> None:
         self.settings = settings
         self.logger = logger
-        self._channel_connectors: dict[str, Any] = {}
+        self._admission = admission
+        self._channel_connectors: dict[str, ChannelConnector] = {}
+        self._remove_pending_work: Callable[[], None] | None = None
+        self._closing_connectors = False
         self._updates = UpdateService()
+
+    def _has_pending_connectors(self) -> bool:
+        return self._closing_connectors or any(
+            not isinstance(connector, ManagedChannelConnector) or connector.has_pending_work
+            for connector in self._channel_connectors.values()
+        )
 
     async def close(self) -> None:
         """Release channel-owned setup sessions during gateway shutdown."""
         await self._updates.close()
         connectors = tuple(self._channel_connectors.items())
-        self._channel_connectors.clear()
-        for channel_name, connector in connectors:
-            close = getattr(connector, "close", None)
-            if not callable(close):
-                continue
-            try:
-                result = close()
-                if inspect.isawaitable(result):
-                    await result
-            except Exception:
-                self.logger.exception(
-                    "failed to close {} WebUI connector",
-                    channel_name,
-                )
+        self._closing_connectors = True
+        try:
+            for channel_name, connector in connectors:
+                close = getattr(connector, "close", None)
+                if not callable(close):
+                    continue
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                    if isinstance(connector, ManagedChannelConnector) and not connector.has_pending_work:
+                        del self._channel_connectors[channel_name]
+                except Exception:
+                    self.logger.exception(
+                        "failed to close {} WebUI connector",
+                        channel_name,
+                    )
+            if not self._channel_connectors and self._remove_pending_work is not None:
+                self._remove_pending_work()
+                self._remove_pending_work = None
+        finally:
+            self._closing_connectors = False
 
     async def handle(
         self,
@@ -898,10 +919,15 @@ class SystemSettingsHandler:
         action: str,
         operations: SystemSettingsOperations,
     ) -> SettingsRouteResult:
+        self._admission.check()
         try:
             connector = self._channel_connectors.get(channel_name)
             if connector is None:
                 plugin = operations.load_channel_plugin(channel_name)
+                if self._remove_pending_work is None:
+                    self._remove_pending_work = self._admission.register_pending_work(
+                        self._has_pending_connectors,
+                    )
                 connector = plugin.load_connector()
                 self._channel_connectors[channel_name] = connector
         except ImportError:

@@ -107,6 +107,11 @@ async def test_close_releases_channel_connectors() -> None:
     closed = False
 
     class Connector:
+        has_pending_work = False
+
+        async def handle(self, action, query):
+            return {}
+
         async def close(self) -> None:
             nonlocal closed
             closed = True
@@ -117,6 +122,73 @@ async def test_close_releases_channel_connectors() -> None:
 
     assert closed is True
     assert router._system._channel_connectors == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_channel_setup_blocks_maintenance_until_confirmed_cleanup(
+    tmp_path, monkeypatch, close_fails,
+) -> None:
+    router = _router(config_path=tmp_path / "config.json")
+    cleanup_started, allow_cleanup = asyncio.Event(), asyncio.Event()
+
+    class Connector:
+        has_pending_work = True
+
+        async def handle(self, action, query):
+            return {"status": "pending", "session_id": "test"}
+
+        async def close(self):
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            if close_fails:
+                raise RuntimeError("native writer has not stopped")
+            self.has_pending_work = False
+
+    connector = Connector()
+    monkeypatch.setattr(
+        "nanobot.webui.settings_routes.load_channel_plugin",
+        lambda _: SimpleNamespace(load_connector=lambda: connector),
+    )
+    path = "/api/settings/channels/whatsapp/connect/start"
+    response = await router.dispatch(None, _mutation_request(path, {}), path)
+    assert response.status_code == 200
+    assert json.loads(response.body)["status"] == "pending"
+    with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+        pytest.fail("Returning a QR code does not finish its connection")
+    shutdown = asyncio.create_task(router.close())
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+        with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+            pytest.fail("Cleanup still owns its pending connection")
+    finally:
+        allow_cleanup.set()
+        await shutdown
+    if close_fails:
+        assert router._system._channel_connectors["whatsapp"] is connector
+        with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+            pytest.fail("A failed close must not release ownership")
+        close_fails = False
+        await router.close()
+    assert router._system._channel_connectors == {}
+    with router.bus.admission.pause_if_idle(lambda: False):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_legacy_connector_can_connect_but_cannot_claim_maintenance_idle(tmp_path, monkeypatch):
+    router = _router(config_path=tmp_path / "config.json")
+    connector = SimpleNamespace(handle=AsyncMock(return_value={"status": "pending"}))
+    monkeypatch.setattr(
+        "nanobot.webui.settings_routes.load_channel_plugin",
+        lambda _: SimpleNamespace(load_connector=lambda: connector),
+    )
+    path = "/api/settings/channels/custom/connect/start"
+    response = await router.dispatch(None, _mutation_request(path, {}), path)
+    assert response.status_code == 200
+    await router.close()
+    with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+        pytest.fail("An untracked extension must not be assumed idle")
 
 
 @pytest.mark.asyncio

@@ -65,6 +65,27 @@ older runtimes without this mechanism, arbitrary Python imports, another OS user
 processes or unrecognized supervisors. Such installations must not be advertised
 as eligible for unattended/coordinated updates merely because a lease is available.
 
+### Interactive channel connections
+
+Settings registers channel-owned setup work with the same runtime admission gate.
+A QR/browser response does not make a pending connection idle. Built-in Feishu,
+WeChat, WhatsApp and Linear connectors expose their pending work and close it during
+shutdown; settings retains ownership through cleanup and after a failed close.
+Extensions without this lifecycle contract keep their existing connection behavior,
+but cannot claim to be idle for coordinated updates while loaded.
+
+WhatsApp's native worker must actually return before its temporary database is
+promoted or removed. A shutdown timeout leaves the worker and files owned; retry
+cleanup instead of interpreting a cancelled Python wrapper as a stopped native
+thread. Linear releases its listener only after request threads, including webhook
+writes, finish. Abandoned WhatsApp and Linear setup sessions initiate cleanup at
+expiry without requiring another browser poll. Expiry or a cleanup timeout alone
+does not establish that a remaining writer stopped.
+
+These guards complement settings-request activity and actual gateway process exit.
+They do not prove that provider OAuth threads or every external integration writer
+are accounted for, and do not enable the internal updater in the UI.
+
 ### Known gateway profiles
 
 Gateway startup now records an installation-scoped profile receipt outside the package
