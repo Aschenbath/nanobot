@@ -252,7 +252,7 @@ class WebUISettingsRouter:
         self._mcp_runtime_status = mcp_runtime_status
         self._mcp_reload = mcp_reload
         self._mcp_oauth_redirect_uri = mcp_oauth_redirect_uri
-        self._mcp_oauth = McpOAuthManager()
+        self._mcp_oauth = McpOAuthManager(bus.admission)
         self._restart_sections: set[str] = set()
         self._restart_baselines: dict[str, dict[str, Any]] = {}
         self._restart_changes: dict[str, str] = {}
@@ -265,6 +265,7 @@ class WebUISettingsRouter:
 
     async def close(self) -> None:
         """Release state owned by settings domains."""
+        await self._mcp_oauth.close()
         await self._system.close()
 
     async def dispatch(

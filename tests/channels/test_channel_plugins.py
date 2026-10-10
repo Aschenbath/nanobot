@@ -3556,9 +3556,8 @@ async def test_stop_all_cancels_dispatcher_and_stops_channels():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    mgr = ChannelManager.__new__(ChannelManager)
+    mgr = ChannelManager(Config.model_validate({"channels": {"websocket": {"enabled": False}}}), MessageBus())
     mgr.config = fake_config
-    mgr.bus = MessageBus()
 
     ch = _StartableChannel(fake_config, mgr.bus)
     mgr.channels = {"startable": ch}
@@ -3638,9 +3637,8 @@ async def test_stop_all_handles_channel_exception():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    mgr = ChannelManager.__new__(ChannelManager)
+    mgr = ChannelManager(Config.model_validate({"channels": {"websocket": {"enabled": False}}}), MessageBus())
     mgr.config = fake_config
-    mgr.bus = MessageBus()
     mgr.channels = {"stopfailing": _StopFailingChannel(fake_config, mgr.bus)}
     mgr._channel_tasks = {}
     mgr._outbound_tasks = {}
@@ -3675,9 +3673,8 @@ async def test_stop_all_handles_channel_stop_cancelled_task():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    mgr = ChannelManager.__new__(ChannelManager)
+    mgr = ChannelManager(Config.model_validate({"channels": {"websocket": {"enabled": False}}}), MessageBus())
     mgr.config = fake_config
-    mgr.bus = MessageBus()
     next_channel = _StartableChannel(fake_config, mgr.bus)
     mgr.channels = {
         "stopcancelled": _StopCancelledChannel(fake_config, mgr.bus),
@@ -3701,9 +3698,8 @@ async def test_start_all_no_channels_logs_warning():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    mgr = ChannelManager.__new__(ChannelManager)
+    mgr = ChannelManager(Config.model_validate({"channels": {"websocket": {"enabled": False}}}), MessageBus())
     mgr.config = fake_config
-    mgr.bus = MessageBus()
     mgr.channels = {}  # No channels
     mgr._dispatch_task = None
 
@@ -3721,9 +3717,8 @@ async def test_start_all_creates_dispatch_task():
         providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
     )
 
-    mgr = ChannelManager.__new__(ChannelManager)
+    mgr = ChannelManager(Config.model_validate({"channels": {"websocket": {"enabled": False}}}), MessageBus())
     mgr.config = fake_config
-    mgr.bus = MessageBus()
 
     ch = _StartableChannel(fake_config, mgr.bus)
     mgr.channels = {"startable": ch}

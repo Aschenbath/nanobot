@@ -12,7 +12,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from websockets.datastructures import Headers
 
+from nanobot.bus.queue import MessageBus
 from nanobot.config.loader import get_config_path
+from nanobot.config.schema import MCPServerConfig
+from nanobot.runtime_admission import RuntimeBusyError
 from nanobot.webui.http_utils import http_json_response
 from nanobot.webui.mcp_presets_api import custom_mcp_action
 from nanobot.webui.settings_routes import WebUISettingsRouter
@@ -34,7 +37,7 @@ def _router(
             rename_model_preset=rename_model_preset,
             refresh_runtime_config=refresh_runtime_config,
         ),
-        bus=SimpleNamespace(),
+        bus=MessageBus(),
         logger=SimpleNamespace(exception=lambda *_args: None),
         check_api_token=lambda _request: authorized,
         parse_query=lambda path: parse_qs(urlsplit(path).query),
@@ -257,6 +260,50 @@ async def test_mcp_reload_callback_is_bounded(
         "message": "MCP hot reload timed out. Restart nanobot to pick up changes.",
         "requires_restart": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_settings_shutdown_joins_browser_authorization_and_releases_admission(
+    tmp_path, monkeypatch,
+) -> None:
+    config = MCPServerConfig(type="streamableHttp", auth="oauth", url="https://mcp.example/mcp")
+    monkeypatch.setattr(
+        "nanobot.webui.settings_routes.ensure_mcp_oauth_server",
+        lambda _query, *, config_path=None: ("linear", config),
+    )
+    monkeypatch.setattr("nanobot.webui.mcp_oauth_api.validate_url_target", lambda _: (True, ""))
+    cleanup_started, allow_cleanup = asyncio.Event(), asyncio.Event()
+
+    async def connect(_servers, _registry, *, oauth_handlers):
+        handlers = oauth_handlers["linear"]
+        await handlers.redirect_handler("https://accounts.example/authorize?state=settings")
+        try:
+            await handlers.callback_handler()
+        finally:
+            cleanup_started.set()
+            await allow_cleanup.wait()
+        return {}
+
+    monkeypatch.setattr("nanobot.webui.mcp_oauth_api.connect_mcp_servers", connect)
+    router = _router(config_path=tmp_path / "config.json")
+    path = "/api/settings/mcp-oauth/start"
+    response = await router.dispatch(None, _mutation_request(path, {"name": "linear"}), path)
+    assert response.status_code == 200
+    assert json.loads(response.body)["status"] == "authorization_required"
+    with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+        pytest.fail("Settings returned, but authorization has not finished")
+
+    shutdown = asyncio.create_task(router.close())
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+        assert not shutdown.done()
+        with pytest.raises(RuntimeBusyError), router.bus.admission.pause_if_idle(lambda: False):
+            pytest.fail("Settings shutdown must retain ownership through cleanup")
+    finally:
+        allow_cleanup.set()
+        await shutdown
+    with router.bus.admission.pause_if_idle(lambda: False):
+        pass
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ class RuntimeAdmission:
     def __init__(self) -> None:
         self._paused = False
         self._active = 0
+        self._pending_checks: list[Callable[[], bool]] = []
         self._open = asyncio.Event()
         self._open.set()
 
@@ -48,6 +49,25 @@ class RuntimeAdmission:
         """Pause scheduler intake without consuming or rescheduling pending work."""
         while self._paused:
             await self._open.wait()
+
+    def register_pending_work(self, check: Callable[[], bool]) -> Callable[[], None]:
+        """Account for an owner's queued/detached work until it is shut down.
+
+        Like activity(), registration and inspection are event-loop-local. The
+        owner removes its check only after closing its writers. Checks must not
+        mutate state or yield, so admission can close without an idle-check gap.
+        """
+        self.check()
+        self._pending_checks.append(check)
+        registered = True
+
+        def remove() -> None:
+            nonlocal registered
+            if registered:
+                self._pending_checks.remove(check)
+                registered = False
+
+        return remove
 
     @contextmanager
     def activity(self) -> Generator[None, None, None]:
@@ -68,7 +88,7 @@ class RuntimeAdmission:
         releasing it after a refused/aborted update restores prior admission.
         """
         self.check()
-        if self._active or has_pending_work():
+        if self._active or has_pending_work() or any(check() for check in self._pending_checks):
             raise RuntimeBusyError(
                 "nanobot has pending work. Finish active tasks and retry the update."
             )

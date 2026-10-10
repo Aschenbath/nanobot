@@ -972,6 +972,16 @@ class WebSocketChannel(BaseChannel):
             name=f"websocket-outbound-{id(connection):x}",
         )
 
+    @property
+    def has_pending_delivery(self) -> bool:
+        # send() only enqueues a frame. buffered_bytes includes the frame that
+        # a writer has removed from its queue but has not finished transmitting.
+        return bool(self._outbound_retire_tasks) or any(
+            state.buffered_bytes or not state.queue.empty()
+            or (state.writer is not None and not state.writer.done())
+            for state in self._connection_outbound.values()
+        )
+
     async def _drain_connection_outbound(
         self,
         connection: ServerConnection,
