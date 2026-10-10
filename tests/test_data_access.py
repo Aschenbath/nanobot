@@ -1,5 +1,7 @@
 """Real shared-data leases across process and installation identities."""
 
+import json
+import os
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -7,15 +9,16 @@ from uuid import uuid4
 
 import pytest
 
-from nanobot.data_access import data_access
+from nanobot.data_access import DataStartupGrant, data_access
 from nanobot.installation_lock import InstallationBusyError
 
 _CHILD = """
-import sys
-from nanobot.data_access import data_access
+import json, os, sys
+from nanobot.data_access import DataStartupGrant, data_access
 sys.prefix = sys.argv[1]
-with data_access(sys.argv[4:], updating=sys.argv[2] == 'update', job_id=sys.argv[3] or None) as lease:
-    if sys.argv[3]:
+grant = DataStartupGrant(**json.loads(os.environ['TEST_DATA_GRANT'])) if 'TEST_DATA_GRANT' in os.environ else None
+with data_access(sys.argv[4:], updating=sys.argv[2] == 'update', job_id=sys.argv[3] or None, grant=grant) as lease:
+    if sys.argv[3] and sys.argv[2] == 'update':
         lease.reserve()
     print('ready', flush=True)
     sys.stdin.read(1)
@@ -32,10 +35,13 @@ def private_home(tmp_path, monkeypatch):
 
 
 @contextmanager
-def process_access(environment, paths, *, updating=False, job_id=None):
+def process_access(environment, paths, *, updating=False, job_id=None, grant=None):
+    env = os.environ.copy()
+    if grant is not None:
+        env["TEST_DATA_GRANT"] = json.dumps({"job_id": grant.job_id, "participant": grant.participant, "token": grant.token})
     process = subprocess.Popen(
         [sys.executable, "-c", _CHILD, str(environment), "update" if updating else "runtime", job_id or "", *map(str, paths)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
     )
     try:
         assert process.stdout.readline().strip() == "ready", process.stderr.read()
@@ -119,3 +125,97 @@ def test_job_reservation_survives_process_exit_until_same_scope_is_recovered(pri
         recovered.release_reservation()
     with data_access([store]):
         pass
+
+
+def test_verified_handoff_admits_only_granted_scope_until_explicit_completion(private_home, tmp_path):
+    store = tmp_path / "sessions"
+    runtime_scope = [store / "profile"]
+    job_id, participant = str(uuid4()), "a" * 64
+    with data_access([store], updating=True, job_id=job_id) as owner:
+        owner.reserve()
+    with data_access([store], job_id=job_id) as handoff:
+        grant = handoff.grant_startup(participant, runtime_scope)
+        assert grant.token not in handoff.reservation_path.read_text()
+        assert grant.token not in repr(grant)
+        with pytest.raises(ValueError, match="exceeds"):
+            handoff.grant_startup("b" * 64, [store.parent])
+        with pytest.raises(InstallationBusyError, match="scope"):
+            with data_access([store], grant=grant):
+                pytest.fail("A participant expanded its allowed data roots")
+        invalid = DataStartupGrant(job_id, participant, "0" * 64)
+        with pytest.raises(InstallationBusyError, match="scope"):
+            with data_access(runtime_scope, grant=invalid):
+                pytest.fail("A job ID and participant name bypassed the grant")
+        with process_access(tmp_path / "target environment", runtime_scope, grant=grant):
+            with pytest.raises(InstallationBusyError):
+                with data_access(runtime_scope, grant=grant):
+                    pytest.fail("Two processes claimed one startup participant")
+            with pytest.raises(InstallationBusyError, match="still running"):
+                handoff.grant_startup(participant, runtime_scope)
+            with pytest.raises(InstallationBusyError, match="reserved"):
+                with data_access(runtime_scope):
+                    pytest.fail("An ordinary startup entered maintenance")
+            # Only the lifecycle owner calls this after verifying the runtime;
+            # participant leases are shared, so completion does not deadlock.
+            handoff.release_reservation()
+            with data_access(runtime_scope):
+                pass
+    with pytest.raises(InstallationBusyError, match="no longer reserved"):
+        with data_access(runtime_scope, grant=grant):
+            pytest.fail("A completed startup grant was replayed")
+
+
+def test_crashed_handoff_keeps_fence_and_child_lease_until_recovery(private_home, tmp_path):
+    store = tmp_path / "sessions"
+    job_id, participant = str(uuid4()), "c" * 64
+    with data_access([store], updating=True, job_id=job_id) as owner:
+        owner.reserve()
+    coordinator = subprocess.Popen([
+        sys.executable, "-c", """
+import json, sys
+from dataclasses import asdict
+from nanobot.data_access import data_access
+with data_access([sys.argv[1]], job_id=sys.argv[2]) as handoff:
+    grant = handoff.grant_startup(sys.argv[3], [sys.argv[1]])
+    print(json.dumps(asdict(grant)), flush=True)
+    sys.stdin.read(1)
+""", str(store), job_id, participant,
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        encoded = coordinator.stdout.readline()
+        assert encoded, coordinator.stderr.read()
+        grant = DataStartupGrant(**json.loads(encoded))
+        with process_access(tmp_path / "target environment", [store], grant=grant) as child:
+            coordinator.kill()
+            coordinator.wait(timeout=10)
+            # The coordinator's OS leases are gone, but the child owns its own.
+            with pytest.raises(InstallationBusyError):
+                with data_access([store], updating=True, job_id=job_id):
+                    pytest.fail("Repair raced an orphan startup still using data")
+            with pytest.raises(InstallationBusyError, match="reserved"):
+                with data_access([store]):
+                    pytest.fail("Coordinator exit incorrectly lifted maintenance")
+            child.kill()
+            child.wait(timeout=10)
+    finally:
+        if coordinator.poll() is None:
+            coordinator.kill()
+        coordinator.communicate(timeout=10)
+    with data_access([store], job_id=job_id) as recovered:
+        replacement = recovered.grant_startup(participant, [store])
+        with pytest.raises(InstallationBusyError, match="scope"):
+            with data_access([store], grant=grant):
+                pytest.fail("An obsolete grant survived explicit reauthorization")
+        with data_access([store], grant=replacement) as startup:
+            with pytest.raises(ValueError, match="Only an update job"):
+                startup.release_reservation()
+            with pytest.raises(ValueError, match="Only an update job"):
+                startup.reserve()
+        # Exiting the recovered handoff still does not mean verification passed.
+    with data_access([store], updating=True, job_id=job_id) as repair:
+        repair.reserve()  # New package mutation revokes all startup grants.
+    with pytest.raises(InstallationBusyError, match="scope"):
+        with data_access([store], grant=replacement):
+            pytest.fail("A grant from before repair authorized a new startup")
+    with data_access([store], updating=True, job_id=job_id) as repair:
+        repair.release_reservation()

@@ -12,9 +12,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Generator, Iterable
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -34,7 +35,42 @@ _WORKSPACE_STORES = (
 _MAX_RESERVATION_BYTES = 16 * 1024 * 1024
 
 
-def _reservation(path: Path) -> tuple[str, tuple[str, ...]] | None:
+def _stored_roots(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("Invalid data maintenance scope")
+    values = cast(list[object], raw)
+    if not 1 <= len(values) <= 40_000 or any(
+        not isinstance(root, str) or len(root) > 4096 or "\0" in root or not Path(root).is_absolute()
+        for root in values
+    ):
+        raise ValueError("Invalid data maintenance scope")
+    return tuple(cast(list[str], values))
+
+
+def _covered(requested: tuple[str, ...], reserved: tuple[str, ...]) -> bool:
+    allowed = set(map(Path, reserved))
+    return all(any(parent in allowed for parent in (path, *path.parents)) for path in map(Path, requested))
+
+
+@dataclass(frozen=True)
+class _Reservation:
+    job_id: str
+    roots: tuple[str, ...]
+    grants: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+
+    def save(self, path: Path) -> None:
+        encoded = json.dumps({
+            "schema_version": 1, "job_id": self.job_id, "roots": self.roots,
+            "grants": {participant: {"token_sha256": digest, "roots": scope}
+                       for participant, (digest, scope) in self.grants.items()},
+        })
+        if len(encoded.encode("utf-8")) + 1 > _MAX_RESERVATION_BYTES:
+            raise ValueError("Data maintenance reservation is too large")
+        atomic_write_lines(path, [encoded])
+        path.chmod(0o600)
+
+
+def _reservation(path: Path) -> _Reservation | None:
     """Read a bounded, atomically replaced reservation; corruption never means idle."""
     if path.is_symlink():
         raise ValueError("Invalid data maintenance reservation")
@@ -53,15 +89,51 @@ def _reservation(path: Path) -> tuple[str, tuple[str, ...]] | None:
     record = cast(dict[str, object], raw)
     owner, roots = record.get("job_id"), record.get("roots")
     if (record.get("schema_version") != 1 or not isinstance(owner, str)
-            or str(UUID(owner)) != owner or not isinstance(roots, list)):
+            or str(UUID(owner)) != owner):
         raise ValueError("Invalid data maintenance reservation")
-    values = cast(list[object], roots)
-    if not 1 <= len(values) <= 40_000 or any(
-        not isinstance(root, str) or len(root) > 4096 or "\0" in root or not Path(root).is_absolute()
-        for root in values
-    ):
-        raise ValueError("Invalid data maintenance scope")
-    return owner, tuple(cast(list[str], values))
+    scope = _stored_roots(roots)
+    raw_grants = record.get("grants", {})
+    if not isinstance(raw_grants, dict):
+        raise ValueError("Invalid maintenance startup grants")
+    grant_values = cast(dict[object, object], raw_grants)
+    if len(grant_values) > 1024:
+        raise ValueError("Invalid maintenance startup grants")
+    grants: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for participant, raw_grant in grant_values.items():
+        if not isinstance(participant, str) or not re.fullmatch(r"[0-9a-f]{64}", participant) or not isinstance(raw_grant, dict):
+            raise ValueError("Invalid maintenance startup participant")
+        grant = cast(dict[str, object], raw_grant)
+        digest = grant.get("token_sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Invalid maintenance startup grant")
+        granted_scope = _stored_roots(grant.get("roots"))
+        if not _covered(granted_scope, scope):
+            raise ValueError("Maintenance startup scope exceeds the reserved data")
+        grants[participant] = digest, granted_scope
+    return _Reservation(owner, scope, grants)
+
+
+@dataclass(frozen=True)
+class DataStartupGrant:
+    """Process-local bearer for one reviewed participant, not task admission.
+
+    The lifecycle owner must pass it only to the intended verified startup and
+    keep agent/tool/scheduler admission closed. This coordinates cooperating
+    runtimes; it is not an OS security boundary against the same account.
+    """
+
+    job_id: str
+    participant: str
+    token: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (str(UUID(self.job_id)) != self.job_id or not re.fullmatch(r"[0-9a-f]{64}", self.participant)
+                or not re.fullmatch(r"[0-9a-f]{64}", self.token)):
+            raise ValueError("Invalid maintenance startup grant")
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(self.token.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -71,16 +143,40 @@ class DataLease:
     roots: tuple[str, ...]
     reservation_path: Path
     job_id: str | None
+    exclusive: bool
 
     def reserve(self) -> None:
         """Keep participating writers out through handoff, crash and repair."""
-        if self.job_id is None:
+        if self.job_id is None or not self.exclusive:
             raise ValueError("Only an update job may reserve data maintenance")
-        encoded = json.dumps({"schema_version": 1, "job_id": self.job_id, "roots": self.roots})
-        if len(encoded.encode("utf-8")) + 1 > _MAX_RESERVATION_BYTES:
-            raise ValueError("Data maintenance reservation is too large")
-        atomic_write_lines(self.reservation_path, [encoded])
-        self.reservation_path.chmod(0o600)
+        # Starting another package mutation revokes every old startup grant.
+        _Reservation(self.job_id, self.roots).save(self.reservation_path)
+
+    def grant_startup(self, participant: str, paths: Iterable[str | Path]) -> DataStartupGrant:
+        """Authorize one runtime during a shared, job-owned post-install handoff.
+
+        Must be called inside data_access(paths, job_id=...) after installation
+        verification. No exclusive data locks are held while the child starts.
+        A live participant retains its own OS lease and cannot be reauthorized.
+        """
+        if self.job_id is None or self.exclusive:
+            raise ValueError("Startup grants require a shared maintenance handoff")
+        grant = DataStartupGrant(self.job_id, participant, os.urandom(32).hex())
+        scope = _canonical_roots(paths)
+        if not scope or not _covered(scope, self.roots):
+            raise ValueError("Startup grant exceeds the reviewed data scope")
+        current = _reservation(self.reservation_path)
+        if current is None or (current.job_id, current.roots) != (self.job_id, self.roots):
+            raise ValueError("Data maintenance belongs to a different job or scope")
+        if participant not in current.grants and len(current.grants) >= 1024:
+            raise ValueError("Too many maintenance startup participants")
+        try:
+            with file_access(self.reservation_path.parent / f"startup-{participant}.lock", exclusive=True):
+                current.grants[participant] = grant.digest, scope
+                current.save(self.reservation_path)
+        except BlockingIOError as exc:
+            raise InstallationBusyError("This maintenance startup participant is still running") from exc
+        return grant
 
     def release_reservation(self) -> None:
         """Clear only this job's reservation after verification or safe cancellation."""
@@ -89,11 +185,21 @@ class DataLease:
         current = _reservation(self.reservation_path)
         if current is None:
             return
-        if current != (self.job_id, self.roots):
+        if (current.job_id, current.roots) != (self.job_id, self.roots):
             raise ValueError("Data maintenance belongs to a different job or scope")
         # Atomic replacement also flushes the directory; a crash cannot lose an
         # unsynced unlink and resurrect an apparently cleared reservation.
         atomic_write_lines(self.reservation_path, ["null"])
+
+
+def _canonical_roots(paths: Iterable[str | Path]) -> tuple[str, ...]:
+    roots: set[str] = set()
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute():
+            raise ValueError("Data stores must use absolute paths")
+        roots.add(str(path.resolve()).casefold())
+    return tuple(sorted(roots))
 
 
 def profile_data_paths(*, home: Path, data_dir: Path, config: Path, workspace: Path) -> tuple[Path, ...]:
@@ -111,7 +217,7 @@ def profile_data_paths(*, home: Path, data_dir: Path, config: Path, workspace: P
 
 @contextmanager
 def data_access(paths: Iterable[str | Path], *, updating: bool = False,
-                job_id: str | None = None) -> Generator[DataLease]:
+                job_id: str | None = None, grant: DataStartupGrant | None = None) -> Generator[DataLease]:
     """Refuse overlapping live writers/maintenance without waiting or killing them.
 
     Writers claim roots in one namespace and ancestors in the other; maintenance
@@ -121,16 +227,19 @@ def data_access(paths: Iterable[str | Path], *, updating: bool = False,
     Leases are nonblocking, ordered and released together after partial failure.
     An exclusive job may reserve its roots across process handoff. Only that same
     job and exact scope can resume maintenance; a crash does not lift the fence.
+
+    After verifying package files, the owner may use shared access with job_id to
+    grant restricted child startup. The owner retains the maintenance lock, while
+    each granted child holds its own shared data and exclusive participant leases.
+    Only the owner releases the reservation after runtime verification; context
+    exit never clears it. A grant permits data initialization, not normal work.
     """
-    roots: set[Path] = set()
-    for raw in paths:
-        path = Path(raw)
-        if not path.is_absolute():
-            raise ValueError("Data stores must use absolute paths")
-        roots.add(path.resolve())
-    if job_id is not None and (not updating or not roots or str(UUID(job_id)) != job_id):
-        raise ValueError("Data maintenance requires an exclusive canonical job identity")
-    canonical = tuple(sorted({str(path).casefold() for path in roots}))
+    canonical = _canonical_roots(paths)
+    roots = set(map(Path, canonical))
+    if job_id is not None and (not roots or str(UUID(job_id)) != job_id):
+        raise ValueError("Data maintenance requires a canonical job identity")
+    if grant is not None and (updating or job_id is not None):
+        raise ValueError("A startup participant cannot act as the maintenance owner")
     leases: set[tuple[str, str]] = set()
     for path in roots:
         requested, ancestors = (path,), (path, *path.parents)
@@ -145,10 +254,12 @@ def data_access(paths: Iterable[str | Path], *, updating: bool = False,
     directory = Path.home() / ".nanobot" / "updates" / "data-locks"
     with ExitStack() as stack:
         try:
-            if updating:
+            if updating or job_id is not None:
                 # One reservation per account, including Windows stores on
                 # different drives that have no shared filesystem ancestor.
                 stack.enter_context(file_access(directory / "maintenance.lock", exclusive=True))
+            if grant is not None:
+                stack.enter_context(file_access(directory / f"startup-{grant.participant}.lock", exclusive=True))
             for namespace, key in sorted(leases):
                 name = hashlib.sha256(os.fsencode(key)).hexdigest()
                 stack.enter_context(file_access(directory / f"{namespace}-{name}.lock", exclusive=updating))
@@ -159,15 +270,20 @@ def data_access(paths: Iterable[str | Path], *, updating: bool = False,
             ) from exc
         path = directory / "maintenance.json"
         pending = _reservation(path)
+        if pending is None and (grant is not None or (job_id is not None and not updating)):
+            raise InstallationBusyError("Data maintenance handoff is no longer reserved")
         if pending is not None:
-            owner, reserved = pending
-            if updating:
+            owner, reserved = pending.job_id, pending.roots
+            if updating or job_id is not None:
                 if (job_id, canonical) != (owner, reserved):
                     raise InstallationBusyError("Data maintenance belongs to an unfinished update; resume that job first")
+            elif grant is not None:
+                if grant.job_id != owner or pending.grants.get(grant.participant) != (grant.digest, canonical):
+                    raise InstallationBusyError("Startup grant does not match this participant's reserved data scope")
             else:
                 requested = set(map(Path, canonical))
                 ancestors = {parent for root in requested for parent in (root, *root.parents)}
                 if any(root in ancestors or any(parent in requested for parent in root.parents)
                        for root in map(Path, reserved)):
                     raise InstallationBusyError("Nanobot data is reserved by an unfinished update; check its saved job before restarting")
-        yield DataLease(canonical, path, job_id)
+        yield DataLease(canonical, path, job_id, updating)
