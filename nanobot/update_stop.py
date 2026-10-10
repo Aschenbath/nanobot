@@ -21,7 +21,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.gateway.runtime import GatewayRuntime
-from nanobot.installation_lock import file_access, installation_state_dir
+from nanobot.installation_lock import file_access, installation_access, installation_state_dir
 from nanobot.runtime_admission import RuntimeBusyError, RuntimeMaintenanceError
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_profiles import ProfileReceipt, require_stopped_profiles, validate_profiles
@@ -67,7 +67,7 @@ def _job(environment: str, identifier: str) -> tuple[Path, UpdatePlan]:
     if (spec.baseline.environment != environment or plan.installation.environment != environment
             or spec.plan_id != plan.id or tuple(plan.restart_profiles) != spec.restart_profiles
             or spec.version != plan.target.version
-            or status.phase != Phase.READY or status.mutation_started):
+            or status.phase not in {Phase.READY, Phase.CHECKING, Phase.STOPPING} or status.mutation_started):
         raise ValueError("Gateway shutdown requires an unchanged, prepared update job")
     return directory, plan
 
@@ -188,7 +188,10 @@ async def stop_reviewed_gateways(directory: Path, *, timeout: float = 30) -> Non
     spec = WorkerSpec.read(directory)
     environment = spec.baseline.environment
     root = installation_state_dir(environment)
-    with file_access(root / "stop.lock", exclusive=True), file_access(root / "worker.lock", exclusive=True):
+    # The detached parent owns worker.lock. This coordinator owns the stop
+    # mailbox and a runtime lease instead, also protecting standalone callers
+    # and an orphan child when its parent exits before the handoff completes.
+    with installation_access(environment=environment), file_access(root / "stop.lock", exclusive=True):
         _, plan = _job(environment, spec.plan_id)
         participants = [item.receipt for item in plan.profiles if item.receipt.id in plan.stop_profiles]
         if any(item.pid == os.getpid() for item in participants):

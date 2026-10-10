@@ -31,7 +31,7 @@ from nanobot.installation_lock import (
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_backup import BackupSource
-from nanobot.update_jobs import prepare_job, start_job
+from nanobot.update_jobs import prepare_job, start_handoff, start_job
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan
 from nanobot.update_profiles import inspect_profiles, record_gateway_profile
 from nanobot.update_worker import (
@@ -82,7 +82,35 @@ def run_restarts(directory):
 """
 
 
-def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False):
+_HANDOFF_PROBE = """
+# Synthetic old-runtime preflight; release/stop contracts are tested separately.
+import time
+from _nanobot_update.installation_lock import InstallationBusyError, installation_access
+from _nanobot_update.update_worker import JobStatus, Phase, WorkerSpec, write_record
+
+def prepare_handoff(directory):
+    spec = WorkerSpec.read(directory)
+    try:
+        with installation_access(updating=True):
+            raise AssertionError('Old runtime imported before taking its lease')
+    except InstallationBusyError:
+        pass
+    write_record(directory / 'preflight-entered.json', {'plan_id': spec.plan_id})
+    deadline = time.monotonic() + 20
+    while (directory / 'pause-preflight').exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if (directory / 'pause-preflight').exists():
+        raise RuntimeError('Timed out waiting for the test to release preflight')
+    if (directory / 'refuse-preflight').exists():
+        JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, 0, False,
+                  'Controlled preflight refusal', int(time.time())).save(directory)
+        raise RuntimeError('Controlled preflight refusal')
+    JobStatus(spec.plan_id, Phase.STOPPING, 0, False,
+              'Synthetic preflight complete', int(time.time())).save(directory)
+"""
+
+
+def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False, handoff=False):
     package = name.replace("-", "_")
     dist = f"{package}-{version}.dist-info"
     files = {
@@ -98,6 +126,8 @@ def wheel(directory, name, version, *, requires=(), platform="any", broken=False
         files["nanobot/tui/bin/fixture"] = b"fixture, not a native execution claim"
         if restart:
             files["nanobot/update_restart.py"] = _RESTART_PROBE.encode()
+        if handoff:
+            files["nanobot/update_handoff.py"] = _HANDOFF_PROBE.encode()
     records = []
     for filename, data in files.items():
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
@@ -126,13 +156,15 @@ def installation(tmp_path, monkeypatch, request):
     monkeypatch.setenv("PIP_FIND_LINKS", str(artifacts))
     for version in ("1.0.0", "2.0.0"):
         wheel(artifacts, "fixture-update-dep", version)
-    previous = wheel(artifacts, "nanobot-ai", "0.3.4", requires=["fixture-update-dep==1.0.0"])
+    mode = getattr(request, "param", False)
+    previous = wheel(artifacts, "nanobot-ai", "0.3.4", requires=["fixture-update-dep==1.0.0"],
+                     handoff=mode == "handoff")
     subprocess.run([python, "-I", "-m", "pip", "install", "--disable-pip-version-check", str(previous)],
                    check=True, capture_output=True, timeout=60)
     platform = next(tag.platform for tag in sys_tags() if tag.platform in PLATFORMS.values())
     candidate = wheel(artifacts, "nanobot-ai", "0.3.5", requires=["fixture-update-dep>=2.0.0"], platform=platform,
                       broken=getattr(request, "param", False) is True,
-                      restart=getattr(request, "param", False) == "restart")
+                      restart=mode in ("restart", "handoff"))
     baseline = inspect_environment(python)
     site = Path(subprocess.check_output([python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
     snapshot = InstallationSnapshot(
@@ -162,7 +194,7 @@ def installation(tmp_path, monkeypatch, request):
         set_home_path(selected_home)
     profiles = inspect_profiles(str(environment))
     restart_profiles = []
-    if getattr(request, "param", False) == "restart":
+    if mode in ("restart", "handoff"):
         # Synthetic process metadata selects the installed routing stub above;
         # test_update_restart.py separately runs the actual background gateway.
         receipt = profiles[0].receipt.model_copy(update={"launch_mode": "background"})
@@ -200,6 +232,202 @@ def installation(tmp_path, monkeypatch, request):
 async def wait_worker(process):
     code = await asyncio.to_thread(process.wait, 40)
     assert code == 0
+
+
+async def wait_for(predicate):
+    async with asyncio.timeout(40):
+        while not predicate():
+            await asyncio.sleep(0.02)
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_detached_handoff_outlives_requester_and_installs_after_preflight_exits(installation, tmp_path):
+    """Real frozen worker/pip, synthetic preflight/restart: not a gateway E2E."""
+    plan, _, site, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    pause = directory / "pause-preflight"
+    pause.touch()
+    launcher = (
+        f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from pathlib import Path\nfrom nanobot.update_jobs import start_handoff\n"
+        f"start_handoff(Path({str(directory)!r}))\n"
+    )
+    subprocess.run([sys.executable, "-c", launcher], check=True, timeout=10,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # The caller is gone. The old-runtime child is still alive with its own lease.
+    try:
+        await wait_for(lambda: (directory / "preflight-entered.json").exists())
+        assert JobStatus.read(directory).phase == Phase.CHECKING
+        assert not (directory / "approval.json").exists()
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True, environment=plan.installation.environment):
+                pytest.fail("Preflight released its environment before actual exit")
+        with pytest.raises(BlockingIOError):
+            start_handoff(directory)
+        assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    finally:
+        pause.unlink(missing_ok=True)
+        await wait_for(lambda: JobStatus.read(directory).phase in {
+            Phase.SUCCEEDED, Phase.HANDOFF_FAILED, Phase.FAILED, Phase.RESTART_FAILED,
+        })
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+    assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+    assert read_record(directory / "handoff-probe.json")["package"] == str((site / "nanobot/__init__.py").resolve())
+    assert not (site / "nanobot/update_handoff.py").exists(), "Old preflight source was not replaced"
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_refused_handoff_never_approves_install_and_can_retry_exact_plan(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    refusal = directory / "refuse-preflight"
+    refusal.touch()
+    process = start_handoff(directory)
+    assert await asyncio.to_thread(process.wait, 40) != 0
+    state = JobStatus.read(directory)
+    assert state.phase == Phase.HANDOFF_FAILED and not state.mutation_started
+    assert state.message == "Controlled preflight refusal"
+    assert not (directory / "approval.json").exists()
+    assert not (directory / "backup").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    refusal.unlink()
+    await wait_worker(start_handoff(directory))
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_handoff_reports_writer_that_remains_after_preflight(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    # A separate cooperating client still owns this environment. Successful
+    # gateway/preflight exit must not silently leave the UI showing "stopping".
+    with installation_access(environment=plan.installation.environment):
+        process = start_handoff(directory)
+        assert await asyncio.to_thread(process.wait, 40) != 0
+    state = JobStatus.read(directory)
+    assert state.phase == Phase.HANDOFF_FAILED and not state.mutation_started
+    assert "exclusive access" in state.message
+    assert not (directory / "approval.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    await wait_worker(start_handoff(directory))
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+    # Replaying the detached command cannot demote a completed transaction.
+    spec = WorkerSpec.read(directory)
+    replay = subprocess.run([spec.baseline.base_python, "-I", str(directory / "worker.pyz"),
+                             "--handoff", str(directory)], capture_output=True, timeout=10)
+    assert replay.returncode != 0
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_saved_handoff_requires_fresh_consent_before_importing_old_runtime(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    spec = WorkerSpec.read(directory)
+    command = [spec.baseline.python, "-I", str(directory / "worker.pyz"), "--prepare-handoff", str(directory)]
+    for expired in (False, True):
+        if expired:
+            now = int(time.time())
+            write_record(directory / "handoff-approval.json", {
+                "plan_id": plan.id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+                "created_at": now - 1000, "expires_at": now - 100,
+            })
+        result = subprocess.run(command, capture_output=True, timeout=10)
+        assert result.returncode != 0
+        assert not (directory / "preflight-entered.json").exists()
+        assert not (directory / "approval.json").exists()
+        assert JobStatus.read(directory).phase == Phase.READY
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_orphan_preflight_keeps_lease_and_cannot_approve_installation(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    pause = directory / "pause-preflight"
+    pause.touch()
+    process = start_handoff(directory)
+    try:
+        await wait_for(lambda: (directory / "preflight-entered.json").exists())
+        process.kill()  # Only this test-owned coordinator, never the old runtime child.
+        await asyncio.to_thread(process.wait, 10)
+        with pytest.raises(BlockingIOError):
+            start_handoff(directory)
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True, environment=plan.installation.environment):
+                pytest.fail("Lost parent released the surviving child's lease")
+        assert not (directory / "approval.json").exists()
+    finally:
+        pause.unlink(missing_ok=True)
+        if process.poll() is None:
+            process.kill()
+        await asyncio.to_thread(process.wait, 10)
+
+    def child_exited():
+        try:
+            with installation_access(updating=True, environment=plan.installation.environment):
+                return True
+        except InstallationBusyError:
+            return False
+
+    await wait_for(child_exited)
+    assert not (directory / "approval.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    await wait_worker(start_handoff(directory))
+    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+async def test_old_runtime_preflight_revalidates_before_shutdown(installation, tmp_path, monkeypatch, refuse):
+    from nanobot import update_handoff
+
+    plan, _, _, requests, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    events = []
+
+    class ObservedFeed(ReleaseFeed):
+        def __init__(self, cache_dir):
+            super().__init__(cache_dir, transport=transport)
+
+        async def revalidate(self, target):
+            events.append("revalidate")
+            assert target == plan.target
+            if refuse:
+                raise RuntimeError("private credential must not enter status")
+            await super().revalidate(target)
+
+        async def __aexit__(self, *_args):
+            await super().__aexit__()
+            events.append("closed")
+
+    async def stop(path):
+        assert path == directory
+        assert events == ["revalidate", "closed"]
+        assert JobStatus.read(directory).phase == Phase.STOPPING
+        assert not (directory / "approval.json").exists()
+        events.append("stop")
+
+    monkeypatch.setattr(update_handoff, "ReleaseFeed", ObservedFeed)
+    monkeypatch.setattr(update_handoff, "stop_reviewed_gateways", stop)
+    JobStatus(plan.id, Phase.CHECKING, 0, False, "Testing preflight", int(time.time())).save(directory)
+    if refuse:
+        with pytest.raises(RuntimeError):
+            await asyncio.to_thread(update_handoff.prepare_handoff, directory)
+        assert events == ["revalidate", "closed"]
+        assert JobStatus.read(directory).phase == Phase.HANDOFF_FAILED
+        assert "private credential" not in (directory / "status.json").read_text()
+    else:
+        await asyncio.to_thread(update_handoff.prepare_handoff, directory)
+        assert events == ["revalidate", "closed", "stop"]
+        assert requests[-1].endswith("/pypi/nanobot-ai/0.3.5/json")
+    assert not (directory / "approval.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
 
 
 @pytest.mark.parametrize("installation", ["restart"], indirect=True)

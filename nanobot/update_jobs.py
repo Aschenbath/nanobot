@@ -1,8 +1,8 @@
 """Prepare exact offline jobs and hand them to the standalone pip worker.
 
 This is the executor's internal Interface, not an authenticated WebUI mutation.
-The caller still owns task shutdown and explicit restart selection. The worker
-backs up reviewed data, installs, then hands off to the selected background runtimes.
+The caller owns explicit shutdown/restart selection. A detached worker revalidates,
+stops reviewed idle gateways, backs up data, installs, and restarts selected runtimes.
 Until that caller is integrated, CLI/UI cannot start these jobs.
 """
 
@@ -267,7 +267,54 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
                 "plan_id": spec.plan_id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
                 "created_at": now, "expires_at": now + 900 if repair else min(plan.expires_at, now + 900),
             })
-    command = [spec.baseline.base_python, "-I", str(directory / "worker.pyz"), str(directory)]
+    return _spawn_worker(directory, spec)
+
+
+def start_handoff(directory: Path) -> subprocess.Popen[bytes]:
+    """Confirm an exact prepared plan and detach before the requesting gateway exits.
+
+    Unlike start_job (already-stopped installations/repair), release revalidation
+    and cooperative shutdown run independently of the caller. No installation
+    approval is written until that child exits and exclusive leases are held.
+    This remains internal until busy-owner accounting and client consent are wired.
+    """
+    spec = WorkerSpec.read(directory)
+    plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
+    root = installation_state_dir(spec.baseline.environment)
+    with (file_access(root / "worker.lock", exclusive=True),
+          file_access(root / "handoff-child.lock", exclusive=True),
+          installation_access(environment=spec.baseline.environment)):
+        state = JobStatus.read(directory)
+        if state.mutation_started or state.phase not in {
+            Phase.READY, Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED,
+        }:
+            raise ValueError("Shutdown handoff requires an unmodified prepared job")
+        now = int(time.time())
+        plan.validate_for(plan.installation, now=now)
+        write_record(directory / "handoff-approval.json", {
+            "plan_id": spec.plan_id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+            "created_at": now, "expires_at": min(plan.expires_at, now + 900),
+        })
+        (directory / "approval.json").unlink(missing_ok=True)
+        JobStatus(spec.plan_id, Phase.CHECKING, state.attempt, False,
+                  "Starting an independent update handoff", now).save(directory)
+    # Release the ownership lease before spawning: a fast child must be able to
+    # take it immediately. Duplicate launches still serialize in run_job.
+    try:
+        return _spawn_worker(directory, spec, handoff=True)
+    except OSError:
+        with file_access(root / "worker.lock", exclusive=True):
+            state = JobStatus.read(directory)
+            if state.phase == Phase.CHECKING:
+                JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, state.attempt, False,
+                          "Could not start the independent update process; no shutdown was requested",
+                          int(time.time())).save(directory)
+        raise
+
+
+def _spawn_worker(directory: Path, spec: WorkerSpec, *, handoff: bool = False) -> subprocess.Popen[bytes]:
+    command = [spec.baseline.base_python, "-I", str(directory / "worker.pyz")]
+    command.extend(["--handoff", str(directory)] if handoff else [str(directory)])
     if os.name == "nt":
         return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 cwd=directory, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)

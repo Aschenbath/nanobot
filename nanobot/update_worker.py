@@ -3,7 +3,8 @@
 This file and its stdlib-only helpers are copied to an immutable zipapp outside
 site-packages before mutation. The coordinator uses the base Python. Its pip child
 owns the runtime lease itself, so killing the coordinator cannot release that lease
-while pip is still changing files. Nothing in this module imports the nanobot runtime.
+while pip is still changing files. Only lease-protected child entrypoints import
+the installed nanobot runtime for pre-install shutdown or post-install restart.
 """
 
 from __future__ import annotations
@@ -248,6 +249,9 @@ class WorkerSpec:
 
 class Phase(str, Enum):
     READY = "ready"
+    CHECKING = "checking"
+    STOPPING = "stopping"
+    HANDOFF_FAILED = "handoff_failed"
     BACKING_UP = "backing_up"
     INSTALLING = "installing"
     VERIFYING = "verifying"
@@ -283,8 +287,8 @@ class JobStatus:
         write_record(directory / "status.json", asdict(self))
 
 
-def _check_approval(directory: Path, spec: WorkerSpec) -> None:
-    approval = read_record(directory / "approval.json")
+def _check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False) -> dict[str, object]:
+    approval = read_record(directory / ("handoff-approval.json" if handoff else "approval.json"))
     now = int(time.time())
     created, expires = _integer(approval["created_at"]), _integer(approval["expires_at"])
     if not created <= now < expires <= created + 900:
@@ -292,6 +296,41 @@ def _check_approval(directory: Path, spec: WorkerSpec) -> None:
     digest = hashlib.sha256((directory / "request.json").read_bytes()).hexdigest()
     if approval.get("request_sha256") != digest or approval.get("plan_id") != spec.plan_id:
         raise ValueError("Update approval does not match this job")
+    return approval
+
+
+def _prepare_handoff_child(directory: Path) -> None:
+    spec = WorkerSpec.read(directory)
+    if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
+        raise ValueError("Shutdown handoff is using the wrong environment")
+    # The child imports the old application, but keeps a shared lease until it
+    # actually exits. Parent loss cannot allow another installer to replace its
+    # imports. The base-Python parent waits for this exit before changing files.
+    with (file_access(installation_state_dir(spec.baseline.environment) / "handoff-child.lock", exclusive=True),
+          installation_access()):
+        _check_approval(directory, spec, handoff=True)
+        from nanobot.update_handoff import prepare_handoff
+
+        prepare_handoff(directory)
+
+
+def _handoff(directory: Path, spec: WorkerSpec) -> None:
+    status = JobStatus.read(directory)
+    _check_approval(directory, spec, handoff=True)
+    JobStatus(spec.plan_id, Phase.CHECKING, status.attempt, False,
+              "Rechecking the exact release and installation before shutdown", int(time.time())).save(directory)
+    subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
+                    "--prepare-handoff", str(directory)], check=True, timeout=300,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    approval = _check_approval(directory, spec, handoff=True)
+    with (installation_access(updating=True, environment=spec.baseline.environment),
+          data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
+        check_environment(spec, repairing=False)
+        for wheel in spec.wheels:
+            wheel.verify(directory / "wheels")
+        # Stopping a process did not grant installation authority. Only successful
+        # preflight, child exit and exclusive installation/data leases get here.
+        write_record(directory / "approval.json", approval)
 
 
 def check_environment(spec: WorkerSpec, *, repairing: bool) -> None:
@@ -381,15 +420,26 @@ def _verify(spec: WorkerSpec, directory: Path) -> None:
         raise ValueError("Installed dependency verification failed")
 
 
-def run_job(directory: Path) -> JobStatus:
+def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
     """Execute one approved offline job. 'installed' does not mean restarted."""
     spec = WorkerSpec.read(directory)
     root = installation_state_dir(spec.baseline.environment)
     with file_access(root / "worker.lock", exclusive=True):
+        if handoff:
+            # An orphan preflight child may still own the old runtime. Refuse a
+            # competing handoff without rewriting its durable progress.
+            with file_access(root / "handoff-child.lock", exclusive=True):
+                pass
         status = JobStatus.read(directory)
         if status.phase == Phase.CANCELLED:
             raise ValueError("This update job was cancelled")
+        if handoff and (status.mutation_started or status.phase not in {
+            Phase.READY, Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED,
+        }):
+            raise ValueError("Shutdown handoff requires an unmodified prepared job")
         try:
+            if handoff:
+                _handoff(directory, spec)
             if status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
                 return _restart_runtime(directory, spec)
             with (installation_access(updating=True, environment=spec.baseline.environment),
@@ -441,6 +491,11 @@ def run_job(directory: Path) -> JobStatus:
         except InstallationBusyError:
             # An orphan pip child may still be alive. Do not turn its ongoing
             # installation into a terminal failure or overwrite its journal.
+            current = JobStatus.read(directory)
+            if handoff and current.phase in {Phase.CHECKING, Phase.STOPPING} and not current.mutation_started:
+                JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, current.attempt, False,
+                          "Update handoff could not acquire exclusive access; no package files were changed",
+                          int(time.time())).save(directory)
             raise
         except Exception as exc:
             status = JobStatus.read(directory)
@@ -450,13 +505,21 @@ def run_job(directory: Path) -> JobStatus:
                 raise
             # Do not persist arbitrary package-manager output, URLs or credentials.
             message = str(exc) if isinstance(exc, (ValueError, InstallationBusyError)) else f"Update failed ({type(exc).__name__})"
-            phase = Phase.RESTART_FAILED if status.phase in {
-                Phase.RESTARTING, Phase.ACTIVATING, Phase.RESTART_FAILED,
-            } else Phase.FAILED
+            handoff_failed = status.phase in {Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED}
+            if handoff_failed:
+                # The old runtime may already have exited. Never imply that a
+                # pre-install failure undoes a durable shutdown commitment.
+                message = (status.message if status.phase == Phase.HANDOFF_FAILED else
+                           "Update handoff did not finish; review the saved shutdown state before retrying")
+            phase = Phase.HANDOFF_FAILED if handoff_failed else (
+                Phase.RESTART_FAILED if status.phase in {
+                    Phase.RESTARTING, Phase.ACTIVATING, Phase.RESTART_FAILED,
+                } else Phase.FAILED
+            )
             failed = JobStatus(spec.plan_id, phase, status.attempt, status.mutation_started,
                                message[:1000], int(time.time()))
             failed.save(directory)
-            if not status.mutation_started:
+            if not status.mutation_started and not handoff_failed:
                 with (installation_access(updating=True, environment=spec.baseline.environment),
                       data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                     _pending_owner(spec)
@@ -514,6 +577,9 @@ def cancel_job(directory: Path) -> JobStatus:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-handoff":
+        _prepare_handoff_child(Path(sys.argv[2]).resolve())
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--restart":
         _runtime_child(Path(sys.argv[2]).resolve())
         return
@@ -529,11 +595,12 @@ def main() -> None:
         status = cancel_job(directory) if sys.argv[1] == "--cancel" else JobStatus.read(directory)
         print(json.dumps(asdict(status)))
         return
-    if len(sys.argv) != 2:
+    handoff = len(sys.argv) == 3 and sys.argv[1] == "--handoff"
+    if len(sys.argv) != 2 and not handoff:
         raise SystemExit("Use this worker with its exact saved job directory")
-    directory = Path(sys.argv[1]).resolve()
+    directory = Path(sys.argv[2] if handoff else sys.argv[1]).resolve()
     try:
-        result = run_job(directory)
+        result = run_job(directory, handoff=handoff)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Update did not finish: {type(exc).__name__}. Consult the saved job status.", file=sys.stderr)
         raise SystemExit(1) from exc
