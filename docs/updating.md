@@ -223,12 +223,28 @@ records `preparation_failed` without installation authority, and a retry must us
 same immutable plan. Reusing its ID for changed consent is rejected; a new review gets
 a new ID.
 
-An abruptly exited preparer can leave a `preparing` record. That record alone cannot
-prove that its native children stopped, so the same job refuses staging reuse or cleanup
-until separately inspected. This is not a complete abrupt-process recovery mechanism:
-cross-job native-child ownership and a public recovery action still need validation
-before preparation is exposed as an in-app operation. The cancellation tests prove
-settled asyncio cancellation, not that killing a parent kills every child process.
+Preparation commands now enter through the frozen worker with Python site startup
+disabled. Each actual pip/probe process acquires its own runtime and native-preparation
+leases before loading the mutable environment. Python probes and pip run in that
+same single-use process on POSIX and Windows; the leases also cover site startup
+and Python exit cleanup. Native uv retains its leases through POSIX exec; it remains
+POSIX-only. The per-installation native lease also blocks another preparation and
+gateway shutdown while an orphan native command is still working.
+
+An abruptly exited preparer can leave a `preparing` record. That record alone is not
+liveness evidence. The internal `settle_interrupted_preparation` operation requires
+both parent and native preparation leases, then revokes the preparation generation
+and records `preparation_failed`. It neither deletes staging nor starts an install.
+A late child from that generation cannot execute after recovery or a new retry.
+Interrupted recovery can finish recording the revoked state. The exact immutable
+plan may then be prepared again if still valid; a changed plan needs a new ID.
+Records predating child-owned leases cannot prove this recovery contract.
+
+Real macOS process tests cover parent loss during a Python probe, pip and native uv,
+including refusal of conflicting work, late-child rejection and subsequent retry.
+They do not prove native Windows behavior or containment of arbitrary descendants
+created by custom environment hooks. The authenticated public recovery action and native
+platform acceptance are still required before enabling in-app preparation.
 
 The journal records the attempt, phase, whether mutation began, and a bounded message.
 After pip exits, a fresh interpreter must import the target from the correct environment;

@@ -191,7 +191,8 @@ async def stop_reviewed_gateways(directory: Path, *, timeout: float = 30) -> Non
     # The detached parent owns worker.lock. This coordinator owns the stop
     # mailbox and a runtime lease instead, also protecting standalone callers
     # and an orphan child when its parent exits before the handoff completes.
-    with installation_access(environment=environment), file_access(root / "stop.lock", exclusive=True):
+    with (installation_access(environment=environment), file_access(root / "stop.lock", exclusive=True),
+          file_access(root / "prepare.lock", exclusive=True), file_access(root / "prepare-native.lock", exclusive=True)):
         _, plan = _job(environment, spec.plan_id)
         participants = [item.receipt for item in plan.profiles if item.receipt.id in plan.stop_profiles]
         if any(item.pid == os.getpid() for item in participants):

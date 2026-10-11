@@ -12,12 +12,13 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+
+from nanobot.update_process import PreparationProcess
 
 # Cache/receipt and exec-lease behavior must be exercised before expanding this
 # internal native route to another manager release. Unsupported versions use
@@ -113,8 +114,8 @@ def uv_environment(*, tools: Path, binaries: Path, cache: Path) -> dict[str, str
     return env
 
 
-def _run(executable: str, arguments: list[str], *, env: dict[str, str], cwd: Path) -> str:
-    result = subprocess.run([executable, *arguments], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
+def _run(process: PreparationProcess, executable: str, arguments: list[str], *, env: dict[str, str], cwd: Path) -> str:
+    result = process.run(executable, arguments, kind="native", env=env, cwd=cwd)
     if result.returncode:
         # Index URLs, raw resolver messages and TOML parse diagnostics may carry
         # credentials. The public job stores a stage, not these raw strings.
@@ -174,12 +175,12 @@ def cache_digest(source: Path, *, copy_to: Path | None = None) -> str:
     return digest.hexdigest()
 
 
-def _versions(python: str, *, prepared: bool = False) -> dict[str, str]:
-    result = subprocess.run([python, "-I", "-c",
+def _versions(process: PreparationProcess, python: str, *, prepared: bool = False) -> dict[str, str]:
+    result = process.run(python, ["-c",
         "import json,re; from importlib.metadata import distributions; "
         "print(json.dumps({re.sub(r'[-_.]+','-',d.metadata['Name']).lower():"
         "[d.version,json.loads(d.read_text('direct_url.json') or '{}')] for d in distributions()}))"],
-        capture_output=True, text=True, timeout=30)
+        timeout=30)
     if result.returncode:
         raise ValueError("Could not inspect the prepared uv environment")
     from urllib.parse import urlsplit
@@ -264,7 +265,8 @@ class UVPreparation:
 
 
 def prepare_uv(*, environment: str, python: str, receipt_sha256: str, app_wheel: Path,
-               version: str, extras: list[str], directory: Path, executable: str) -> UVPreparation:
+               version: str, extras: list[str], directory: Path, executable: str,
+               process: PreparationProcess) -> UVPreparation:
     """Resolve in a separate tool home; never change the user's tool or receipt."""
     _receipt_only_policy()
     if Path(environment).resolve().name != "nanobot-ai":
@@ -316,7 +318,7 @@ def prepare_uv(*, environment: str, python: str, receipt_sha256: str, app_wheel:
         encoded_options = "\n".join(f"{json.dumps(key)} = {_toml(value)}" for key, value in options.items())
     except (ValueError, KeyError, TypeError):
         raise ValueError("These uv settings need the installation owner's update workflow") from None
-    before = _versions(python)
+    before = _versions(process, python)
     # Unique attempts prevent an orphan preparing process from writing a cache
     # reused by a subsequent request after its parent exits.
     staging = Path(tempfile.mkdtemp(prefix=".uv-prepare-", dir=directory))
@@ -325,19 +327,19 @@ def prepare_uv(*, environment: str, python: str, receipt_sha256: str, app_wheel:
     config.write_text(encoded_options, encoding="utf-8")
     config.chmod(0o600)
     env = uv_environment(tools=staging / "tools", binaries=staging / "bin", cache=cache)
-    manager_version = _run(executable, ["--version"], env=env, cwd=staging)
+    manager_version = _run(process, executable, ["--version"], env=env, cwd=staging)
     if manager_version.split()[:2] != ["uv", UV_TRANSACTION_VERSION]:
         raise ValueError("This uv version needs the installation owner's update workflow")
     target = "nanobot-ai" + (f"[{','.join(extras)}]" if extras else "") + " @ " + app_wheel.as_uri()
     # --no-build is private to this disposable receipt. Supplying it to the real
     # tool upgrade would permanently change the user's stored options.
-    _run(executable, ["tool", "install", "--config-file", str(config), "--python", python,
+    _run(process, executable, ["tool", "install", "--config-file", str(config), "--python", python,
                       "--no-build", *injected, target], env=env, cwd=staging)
     prepared_python = staging / "tools/nanobot-ai" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    versions = _versions(str(prepared_python), prepared=True)
+    versions = _versions(process, str(prepared_python), prepared=True)
     if versions.get("nanobot-ai") != version:
         raise ValueError("uv resolved a different application version")
-    if _versions(python) != before or receipt_path.read_bytes() != raw:
+    if _versions(process, python) != before or receipt_path.read_bytes() != raw:
         raise ValueError("The original uv installation changed during preparation")
     for source_cache in cache.glob("sdists-*"):
         if any(path.is_file() and path.stat().st_size for path in source_cache.rglob("*")):

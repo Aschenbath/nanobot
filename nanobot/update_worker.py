@@ -34,6 +34,7 @@ from nanobot.installation_lock import (
     pending_update_path,
 )
 from nanobot.update_backup import BackupSource, ensure_backup, verify_backup
+from nanobot.update_process import PreparationProcess, run_preparation_child
 from nanobot.update_uv import UVPreparation, uv_environment
 from nanobot.utils.atomic_file import atomic_write_lines
 
@@ -146,9 +147,10 @@ class EnvironmentSnapshot:
                    _sha(data["manager_receipt_sha"]) if data.get("manager_receipt_sha") is not None else None)
 
 
-def inspect_environment(python: str, *, uv: bool = False) -> EnvironmentSnapshot:
-    result = subprocess.run([python, "-I", "-c", _PROBE, "uv" if uv else "pip"],
-                            capture_output=True, text=True, timeout=15)
+def inspect_environment(python: str, *, uv: bool = False, process: PreparationProcess | None = None) -> EnvironmentSnapshot:
+    arguments = ["-c", _PROBE, "uv" if uv else "pip"]
+    result = (process.run(python, arguments, timeout=15) if process is not None else
+              subprocess.run([python, "-I", *arguments], capture_output=True, text=True, timeout=15))
     if result.returncode:
         raise ValueError("Could not verify the selected package environment; use its installation owner")
     return EnvironmentSnapshot.parse(json.loads(result.stdout))
@@ -651,6 +653,9 @@ def cancel_job(directory: Path) -> JobStatus:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-native":
+        run_preparation_child(Path(sys.argv[2]).resolve())
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--prepare-handoff":
         _prepare_handoff_child(Path(sys.argv[2]).resolve())
         return

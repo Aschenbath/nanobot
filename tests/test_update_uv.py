@@ -21,9 +21,15 @@ from zipfile import ZipFile
 import httpx
 import pytest
 from packaging.tags import sys_tags
-from test_update_jobs import wheel
+from test_update_jobs import _preparer_script, wheel
 
 import nanobot.update_jobs as jobs
+from nanobot.installation_lock import (
+    InstallationBusyError,
+    file_access,
+    installation_access,
+    installation_state_dir,
+)
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_manager import read_manager_policy
@@ -225,3 +231,79 @@ async def test_uv_prepared_job_preserves_owner_and_sealed_inputs(uv_installation
         assert cache_digest(cache) == spec.uv.cache_sha256
         assert (directory / "backup/data.zip").is_file()
         assert len(list(directory.glob(".uv-apply-*"))) == (2 if mode == "repair" else 1)
+
+
+async def test_orphan_native_uv_preparation_keeps_lease_and_can_be_settled(uv_installation, tmp_path):
+    plan, before, receipt, transport, server = uv_installation
+    async with ReleaseFeed(tmp_path / "ready-feed", transport=transport) as feed:
+        prepared = await jobs.prepare_job(plan, feed)
+    plan = plan.model_copy(update={"id": str(uuid4())})
+    root = installation_state_dir(plan.installation.environment)
+    directory = root / "jobs" / plan.id
+    entered, release = threading.Event(), threading.Event()
+    original_receipt = receipt.read_bytes()
+    native_pid = tmp_path / "native-pid"
+
+    class HeldIndex(IndexHandler):
+        def do_GET(self):
+            if self.path.startswith("/simple/fixture-runtime/"):
+                entered.set()
+                assert release.wait(20), "The native uv test was not released"
+            super().do_GET()
+
+    server.RequestHandlerClass = partial(HeldIndex, directory=str(tmp_path / "index"))
+    template = tmp_path / "private-worker.pyz"
+    jobs._worker_archive(template)  # Existing fixture makes every child use the private account.
+    hook = f"""
+import shutil, subprocess
+Path.home = classmethod(lambda cls: Path({str(Path.home())!r}))
+def private_worker(path):
+    shutil.copyfile({str(template)!r}, path)
+    return 'unused-before-final-checksum'
+update_jobs._worker_archive = private_worker
+original_popen = subprocess.Popen
+def observed_popen(*args, **kwargs):
+    child = original_popen(*args, **kwargs)
+    Path({str(native_pid)!r}).write_text(str(child.pid))
+    return child
+subprocess.Popen = observed_popen
+"""
+    script = _preparer_script(plan, tmp_path / "index" / plan.target.artifact.filename, tmp_path / "feed", hook)
+    parent = subprocess.Popen([sys.executable, "-I", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        async with asyncio.timeout(15):
+            while not entered.is_set():
+                assert parent.poll() is None, "Preparation exited before native uv reached the index"
+                await asyncio.sleep(0.01)
+        parent.kill()
+        await asyncio.to_thread(parent.wait, 10)
+        os.kill(int(native_pid.read_text()), 0)
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True, environment=plan.installation.environment):
+                pytest.fail("Native uv lost its own runtime lease after parent death")
+        with pytest.raises(BlockingIOError):
+            jobs.settle_interrupted_preparation(directory)
+        with pytest.raises(BlockingIOError):
+            await stop_reviewed_gateways(prepared)
+        assert not (root / "stop.json").exists(), "A live native preparation must be refused before shutdown"
+        assert JobStatus.read(directory).phase == Phase.PREPARING
+        assert not (directory / "request.json").exists()
+    finally:
+        release.set()
+        if parent.poll() is None:
+            parent.kill()
+        await asyncio.to_thread(parent.wait, 10)
+        async with asyncio.timeout(20):
+            while True:
+                try:
+                    with file_access(root / "prepare-native.lock", exclusive=True):
+                        break
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+    assert jobs.settle_interrupted_preparation(directory).phase == Phase.PREPARATION_FAILED
+    assert inspect_environment(plan.installation.python, uv=True) == before
+    assert receipt.read_bytes() == original_receipt
+    async with ReleaseFeed(tmp_path / "retry-feed", transport=transport) as feed:
+        assert await jobs.prepare_job(plan, feed) == directory
+    assert JobStatus.read(directory).phase == Phase.READY
+    assert not (directory / "approval.json").exists()

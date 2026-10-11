@@ -38,6 +38,7 @@ from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_backup import BackupSource, profile_sources, unique_sources
 from nanobot.update_plan import UpdatePlan
+from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
 from nanobot.update_uv import UVPreparation, prepare_uv
 from nanobot.update_worker import (
@@ -154,9 +155,8 @@ class _Report(BaseModel):
     install: list[_Install] = Field(max_length=500)
 
 
-def _pip(python: str, *arguments: str) -> None:
-    result = subprocess.run([python, "-I", "-m", "pip", "--disable-pip-version-check", "--no-input", *arguments],
-                            capture_output=True, timeout=900)
+def _pip(process: PreparationProcess, python: str, *arguments: str) -> None:
+    result = process.run(python, ["-m", "pip", "--disable-pip-version-check", "--no-input", *arguments])
     if result.returncode:
         # Index URLs and resolver output may contain credentials. Do not put them
         # in the durable job or the WebUI response.
@@ -168,7 +168,7 @@ def _worker_archive(path: Path) -> str:
     # The frozen worker must not shadow the newly installed application when
     # handing off to its runtime. Keep only the copied stdlib helpers in this
     # private namespace; intentional application imports retain `nanobot`.
-    modules = ("update_worker", "update_uv", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
+    modules = ("update_worker", "update_uv", "update_process", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
     with ZipFile(path, "x") as bundle:
         files = {"__main__.py": b"from _nanobot_update.update_worker import main\nmain()\n",
                  "_nanobot_update/__init__.py": b"", "_nanobot_update/utils/__init__.py": b""}
@@ -203,17 +203,18 @@ def _stage_app(plan: UpdatePlan, app_wheel: Path, directory: Path) -> StagedWhee
     return app
 
 
-def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple[StagedWheel, ...]:
+def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path,
+                    process: PreparationProcess) -> tuple[StagedWheel, ...]:
     app = _stage_app(plan, app_wheel, directory)
     wheels = directory / "wheels"
     records = [app]
     python = plan.installation.python
-    _pip(python, "check")
+    _pip(process, python, "check")
     with tempfile.TemporaryDirectory(prefix=".resolve-", dir=directory) as temporary:
         root = Path(temporary)
         report_path = root / "report.json"
         extras = f"[{','.join(plan.extras)}]" if plan.extras else ""
-        _pip(python, "install", "--dry-run", "--only-binary=:all:", "--upgrade",
+        _pip(process, python, "install", "--dry-run", "--only-binary=:all:", "--upgrade",
              "--upgrade-strategy", "only-if-needed", "--report", str(report_path),
              f"nanobot-ai{extras} @ {app_wheel.as_uri()}")
         if report_path.stat().st_size > 8 * 1024 * 1024:
@@ -244,7 +245,7 @@ def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple
             request.write_text("\n".join(requirements), encoding="utf-8")
             request.chmod(0o600)
             downloads = root / "downloads"
-            _pip(python, "download", "--no-deps", "--only-binary=:all:", "--require-hashes",
+            _pip(process, python, "download", "--no-deps", "--only-binary=:all:", "--require-hashes",
                  "--dest", str(downloads), "--requirement", str(request))
             for filename, name, version, digest in dependencies:
                 path = downloads / filename
@@ -255,9 +256,10 @@ def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple
     return tuple(records)
 
 
-def _prepare_transaction(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple[tuple[StagedWheel, ...], UVPreparation | None]:
+def _prepare_transaction(plan: UpdatePlan, app_wheel: Path, directory: Path,
+                         process: PreparationProcess) -> tuple[tuple[StagedWheel, ...], UVPreparation | None]:
     if plan.installation.owner != "uv":
-        return _prepare_wheels(plan, app_wheel, directory), None
+        return _prepare_wheels(plan, app_wheel, directory, process), None
     executable = shutil.which("uv")
     if executable is None:
         raise ValueError("The installation's uv manager is not available")
@@ -265,7 +267,7 @@ def _prepare_transaction(plan: UpdatePlan, app_wheel: Path, directory: Path) -> 
     prepared = prepare_uv(environment=plan.installation.environment, python=plan.installation.python,
                           receipt_sha256=plan.installation.records["uv-receipt.toml"],
                           app_wheel=directory / "wheels" / app.filename, version=plan.target.version,
-                          extras=plan.extras or [], directory=directory, executable=executable)
+                          extras=plan.extras or [], directory=directory, executable=executable, process=process)
     return (app,), prepared
 
 
@@ -301,10 +303,17 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
         if not plan_path.exists():
             atomic_write_lines(plan_path, [plan.model_dump_json()])
             plan_path.chmod(0o600)
+        # An orphan native command retains this installation-wide lease. Never
+        # replace its archive or begin another preparation while it is active.
+        with file_access(root / "prepare-native.lock", exclusive=True):
+            archive = directory / "worker.pyz"
+            archive.unlink(missing_ok=True)  # No committed request exists above.
+            _worker_archive(archive)
+            process = PreparationProcess.create(directory, plan.installation.environment)
         JobStatus(plan.id, Phase.PREPARING, 0, False,
                   "Checking the installation and preparing the exact package", int(time.time())).save(directory)
         try:
-            return await _prepare_inputs(plan, feed, root, directory, native_uv=native_uv)
+            return await _prepare_inputs(plan, feed, root, directory, process, native_uv=native_uv)
         except asyncio.CancelledError:
             JobStatus(plan.id, Phase.PREPARATION_FAILED, 0, False,
                       "Preparation cancelled after its workers exited; no installation was started",
@@ -316,11 +325,13 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
                       f"Preparation failed ({type(exc).__name__}); no installation was started",
                       int(time.time())).save(directory)
             raise
+        finally:
+            process.close()
 
 
 async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, directory: Path,
-                          *, native_uv: bool) -> Path:
-    baseline = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv)
+                          process: PreparationProcess, *, native_uv: bool) -> Path:
+    baseline = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process)
     if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
         plan.installation.environment, plan.installation.python, plan.installation.installed_version,
         plan.installation.records.get("pyvenv.cfg"),
@@ -334,15 +345,13 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
     app_wheel = await feed.download(plan.target, root / "downloads")
     JobStatus(plan.id, Phase.PREPARING, 0, False,
               "Preparing dependencies without changing the installation", int(time.time())).save(directory)
-    records, uv = await _settled_thread(_prepare_transaction, plan, app_wheel, directory)
-    current = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv)
+    records, uv = await _settled_thread(_prepare_transaction, plan, app_wheel, directory, process)
+    current = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process)
     if current != baseline:
         raise ValueError("Installation changed while preparing the update")
     plan.validate_for(plan.installation)
     plan_path = directory / "plan.json"
     archive = directory / "worker.pyz"
-    if archive.exists():
-        archive.unlink()  # Only uncommitted staging: no request/approval exists yet.
     sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
     if native_uv:
         sources.append(BackupSource(str(Path(baseline.environment) / "uv-receipt.toml")))
@@ -351,7 +360,7 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
         sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
                                        config=Path(receipt.config), workspace=Path(receipt.workspace)))
         sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
-    spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
+    spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), hashlib.sha256(archive.read_bytes()).hexdigest(),
                       baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv)
     for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
         path.chmod(0o600)
@@ -362,6 +371,28 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
     # input and the initial status were flushed successfully.
     spec.save(directory)
     return directory
+
+
+def settle_interrupted_preparation(directory: Path) -> JobStatus:
+    """Revoke an abandoned, uncommitted preparation after its real child exits.
+
+    Internal recovery only: no install, directory deletion or automatic retry.
+    A record from the older parent-only lease scheme cannot establish this proof.
+    """
+    directory = directory.resolve()
+    process = PreparationProcess.load(directory)
+    root = installation_state_dir(process.environment)
+    with file_access(root / "prepare.lock", exclusive=True), file_access(root / "prepare-native.lock", exclusive=True):
+        if PreparationProcess.load(directory) != process:
+            raise ValueError("The preparation generation changed")
+        status = JobStatus.read(directory)
+        if status.phase != Phase.PREPARING or (directory / "request.json").exists() or status.mutation_started:
+            raise ValueError("Only an uncommitted preparation can be settled")
+        process.close()
+        status = JobStatus(directory.name, Phase.PREPARATION_FAILED, 0, False,
+                           "Interrupted preparation stopped; no installation was started", int(time.time()))
+        status.save(directory)
+        return status
 
 
 async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False) -> subprocess.Popen[bytes]:

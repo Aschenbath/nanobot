@@ -24,6 +24,7 @@ from nanobot.data_access import data_access
 from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
 from nanobot.installation_lock import (
     InstallationBusyError,
+    file_access,
     installation_access,
     installation_state_dir,
     pending_update_path,
@@ -31,8 +32,14 @@ from nanobot.installation_lock import (
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_backup import BackupSource
-from nanobot.update_jobs import prepare_job, start_handoff, start_job
+from nanobot.update_jobs import (
+    prepare_job,
+    settle_interrupted_preparation,
+    start_handoff,
+    start_job,
+)
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan
+from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import inspect_profiles, record_gateway_profile
 from nanobot.update_worker import (
     JobStatus,
@@ -931,21 +938,19 @@ async def test_failed_download_retains_private_exact_job_for_retry(installation,
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"
 
 
-async def test_abrupt_preparer_exit_does_not_authorize_staging_reuse(installation, tmp_path):
-    plan, candidate, _, _, _ = installation
-    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+def _preparer_script(plan: UpdatePlan, candidate: Path, cache: Path, hook: str) -> str:
     source = Path(__file__).resolve().parents[1]
-    script = f"""
+    return f"""
 import asyncio, os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 import httpx
-from nanobot import update_jobs
+from nanobot import update_jobs, update_worker
 from nanobot.release_feed import ReleaseFeed
 from nanobot.update_plan import UpdatePlan
 from nanobot.releases import release_filenames
 plan = UpdatePlan.model_validate_json({plan.model_dump_json()!r})
-update_jobs._prepare_transaction = lambda *args: os._exit(0)
+{hook}
 def response(request):
     if request.url.host == 'files.pythonhosted.org':
         return httpx.Response(200, content=Path({str(candidate)!r}).read_bytes())
@@ -957,11 +962,16 @@ def response(request):
     return httpx.Response(200, json=dict(info=dict(name='nanobot-ai', version=plan.target.version,
                                                   requires_python='>=3.11'), urls=files))
 async def run():
-    async with ReleaseFeed(Path({str(tmp_path / 'feed')!r}), transport=httpx.MockTransport(response)) as feed:
+    async with ReleaseFeed(Path({str(cache)!r}), transport=httpx.MockTransport(response)) as feed:
         await update_jobs.prepare_job(plan, feed)
-    raise AssertionError('The preparer should have exited abruptly')
 asyncio.run(run())
 """
+
+
+async def test_abrupt_preparer_exit_does_not_authorize_staging_reuse(installation, tmp_path):
+    plan, candidate, _, _, transport = installation
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+    script = _preparer_script(plan, candidate, tmp_path / "feed", "update_jobs._prepare_transaction = lambda *args: os._exit(0)")
     process = await asyncio.to_thread(subprocess.run, [sys.executable, "-I", "-c", script],
                                       capture_output=True, timeout=30)
     assert process.returncode == 0, process.stderr.decode()
@@ -974,3 +984,122 @@ asyncio.run(run())
     assert not (directory / "request.json").exists()
     assert not (directory / "approval.json").exists()
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    assert settle_interrupted_preparation(directory).phase == Phase.PREPARATION_FAILED
+    async with ReleaseFeed(tmp_path / "retry-feed", transport=transport) as feed:
+        assert await prepare_job(plan, feed) == directory
+    assert JobStatus.read(directory).phase == Phase.READY
+
+
+@pytest.mark.parametrize("stage", ["probe", "pip"])
+async def test_orphan_preparation_owns_lease_until_real_native_exit(installation, tmp_path, stage):
+    plan, candidate, _, _, transport = installation
+    root = installation_state_dir(plan.installation.environment)
+    directory = root / "jobs" / plan.id
+    ready, release = tmp_path / "native-ready", tmp_path / "native-release"
+    hold = (
+        "import os, time\nfrom pathlib import Path\n"
+        f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "deadline=time.monotonic()+15\n"
+        f"while not Path({str(release)!r}).exists():\n"
+        "    if time.monotonic()>deadline: raise RuntimeError('Native test wait expired')\n"
+        "    time.sleep(0.01)\n"
+    )
+    if stage == "pip":
+        site = subprocess.check_output([plan.installation.python, "-I", "-c",
+                                        "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip()
+        launcher = Path(site) / "pip/__main__.py"
+        original = launcher.read_text()
+        launcher.write_text(hold + f"exec(compile({original!r}, __file__, 'exec'))\n")
+        hook = ""
+    else:
+        hook = f"update_worker._PROBE = {hold!r} + update_worker._PROBE"
+    script = _preparer_script(plan, candidate, tmp_path / "feed", hook)
+    parent = subprocess.Popen([sys.executable, "-I", "-c", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        async with asyncio.timeout(12):
+            while not ready.exists():
+                assert parent.poll() is None, "Preparer exited before its native command started"
+                await asyncio.sleep(0.01)
+        prior = PreparationProcess.load(directory.resolve())
+        parent.kill()
+        await asyncio.to_thread(parent.wait, 10)
+        # The runtime's Windows implementation uses a process handle, not signal 0.
+        assert GatewayRuntime().process_is_running(int(ready.read_text()))
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True, environment=plan.installation.environment):
+                pytest.fail("Parent death released a live preparation's runtime lease")
+        with pytest.raises(BlockingIOError):
+            settle_interrupted_preparation(directory)
+        async with ReleaseFeed(tmp_path / "other-feed", transport=transport) as feed:
+            with pytest.raises(BlockingIOError):
+                await prepare_job(plan.model_copy(update={"id": str(uuid4())}), feed)
+        assert not (directory / "request.json").exists()
+        assert JobStatus.read(directory).phase == Phase.PREPARING
+    finally:
+        release.touch()
+        if parent.poll() is None:
+            parent.kill()
+        await asyncio.to_thread(parent.wait, 10)
+        # Wait for the child's actual OS lease, not a stale PID or status file.
+        async with asyncio.timeout(15):
+            while True:
+                try:
+                    with file_access(root / "prepare-native.lock", exclusive=True):
+                        break
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+        if stage == "pip":
+            launcher.write_text(original)
+    if stage == "pip":
+        # Recovery itself can exit between revocation and saving the new phase.
+        # Re-entering it must finish the journal, not revive the old generation.
+        with file_access(root / "prepare.lock", exclusive=True), file_access(root / "prepare-native.lock", exclusive=True):
+            prior.close()
+    assert settle_interrupted_preparation(directory).phase == Phase.PREPARATION_FAILED
+    assert not (directory / "approval.json").exists()
+    # A child delayed before locking must not revive after a new generation starts.
+    marker = tmp_path / "late-child-must-not-run"
+    with file_access(root / "prepare.lock", exclusive=True), file_access(root / "prepare-native.lock", exclusive=True):
+        replacement = PreparationProcess.create(directory, plan.installation.environment)
+    result = await asyncio.to_thread(prior.run, plan.installation.python,
+                                     ["-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"], timeout=15)
+    assert result.returncode != 0 and not marker.exists()
+    replacement.close()
+    async with ReleaseFeed(tmp_path / "retry-feed", transport=transport) as feed:
+        assert await prepare_job(plan, feed) == directory
+    assert JobStatus.read(directory).phase == Phase.READY
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Checks actual POSIX flock ownership during Python site startup")
+async def test_preparation_lease_covers_site_startup_and_exit_cleanup(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    root = installation_state_dir(plan.installation.environment)
+    site = subprocess.check_output([plan.installation.python, "-I", "-c",
+                                    "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip()
+    hook = Path(site) / "preparation_lease_test.pth"
+    observed = tmp_path / "site-loaded-under-child-lease"
+    exited = tmp_path / "exit-cleanup-under-child-lease"
+    script = (
+        "import atexit, fcntl, os\nfrom pathlib import Path\n"
+        "def verify_lease():\n"
+        f"    with open({str(root / 'prepare-native.lock')!r}, 'a+b') as lease:\n"
+        "        try: fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "        except BlockingIOError: pass\n"
+        "        else: os._exit(99)\n"
+        "verify_lease()\n"
+        f"Path({str(observed)!r}).touch()\n"
+        "def verify_exit():\n"
+        "    verify_lease()\n"
+        f"    Path({str(exited)!r}).touch()\n"
+        "atexit.register(verify_exit)\n"
+    )
+    hook.write_text(f"import builtins; builtins.exec({script!r}, {{}})\n")
+    try:
+        async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+            directory = await prepare_job(plan, feed)
+        assert JobStatus.read(directory).phase == Phase.READY
+        assert observed.exists(), "Site startup was skipped instead of protected"
+        assert exited.exists(), "Exit cleanup was skipped instead of protected"
+    finally:
+        hook.unlink()
