@@ -1,4 +1,4 @@
-"""Lease-owning native commands for a private, non-installing preparation.
+"""Process-owned leases and protected startup for frozen updater children.
 
 Copied into the frozen worker; keep this module standard-library only. Commands
 come from the preparer's implementation, never from a client or release record.
@@ -23,7 +23,20 @@ from nanobot.utils.atomic_file import atomic_write_lines
 # This stack belongs only to the single-use frozen child. Do not close it on a
 # function return/SystemExit: pip/site atexit cleanup must still hold the leases.
 # Module teardown and process exit release them after Python's exit callbacks.
-_child_leases: ExitStack | None = None
+child_leases = ExitStack()
+
+
+def initialize_runtime(python: str, environment: str) -> None:
+    """Initialize the target's site only after the caller acquired its own leases."""
+    if not sys.flags.isolated or not sys.flags.no_site:
+        raise ValueError("An update child must start with isolated, deferred site initialization")
+    if Path(sys.executable).absolute() != Path(python).absolute():
+        raise ValueError("Update child is using a different Python interpreter")
+    import site
+
+    site.main()
+    if Path(sys.prefix).resolve() != Path(environment).resolve():
+        raise ValueError("Update child is using a different installation")
 
 
 @dataclass(frozen=True)
@@ -89,7 +102,6 @@ class PreparationProcess:
 
 def run_preparation_child(directory: Path) -> None:
     """Acquire our own leases before reading mutable packages or staging files."""
-    global _child_leases
     encoded = sys.stdin.read(1024 * 1024 + 1)
     if len(encoded) > 1024 * 1024:
         raise ValueError("Preparation command exceeds its size limit")
@@ -106,10 +118,9 @@ def run_preparation_child(directory: Path) -> None:
         raise ValueError("Invalid preparation arguments")
     args = cast(list[str], arguments)
     identity = PreparationProcess.load(directory)
-    _child_leases = ExitStack()
-    native = _child_leases.enter_context(file_access(
+    native = child_leases.enter_context(file_access(
         installation_state_dir(identity.environment) / "prepare-native.lock", exclusive=True))
-    installation = _child_leases.enter_context(installation_access(environment=identity.environment))
+    installation = child_leases.enter_context(installation_access(environment=identity.environment))
     # Recovery/retry holds native.lock while revoking the generation. Check
     # again inside the lease: a delayed child cannot use a replacement job.
     if (not identity.active or PreparationProcess.load(directory) != identity
@@ -120,16 +131,15 @@ def run_preparation_child(directory: Path) -> None:
             raise ValueError("Native preparation needs a verified exec handoff on this platform")
         with native.inherit_for_exec(), installation.inherit_for_exec():
             os.execve(executable, [executable, *args], os.environ)
-    if Path(sys.executable).absolute() != Path(executable).absolute():
-        raise ValueError("Preparation used a different Python interpreter")
     if len(args) < 2 or not (args[:1] == ["-c"] or args[:2] == ["-m", "pip"]):
         raise ValueError("Unsupported preparation command")
     # Use the same Python path on POSIX and Windows; byte-range leases cannot
     # transfer through exec on Windows. Site startup and atexit stay protected.
-    import site
-
     sys.argv = ["pip" if args[0] == "-m" else "-c", *args[2:]]
-    site.main()
+    # uv also probes its disposable prepared venv. The job's leases protect
+    # both that staging area and the live installation; they are not necessarily
+    # the environment whose Python this particular probe is running.
+    initialize_runtime(executable, str(Path(executable).parent.parent))
     if args[0] == "-m":
         runpy.run_module("pip", run_name="__main__")
     else:

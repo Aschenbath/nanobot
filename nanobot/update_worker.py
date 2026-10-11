@@ -34,7 +34,12 @@ from nanobot.installation_lock import (
     pending_update_path,
 )
 from nanobot.update_backup import BackupSource, ensure_backup, verify_backup
-from nanobot.update_process import PreparationProcess, run_preparation_child
+from nanobot.update_process import (
+    PreparationProcess,
+    child_leases,
+    initialize_runtime,
+    run_preparation_child,
+)
 from nanobot.update_uv import UVPreparation, uv_environment
 from nanobot.utils.atomic_file import atomic_write_lines
 
@@ -361,17 +366,17 @@ def _check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
 
 def _prepare_handoff_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
-    if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
-        raise ValueError("Shutdown handoff is using the wrong environment")
     # The child imports the old application, but keeps a shared lease until it
     # actually exits. Parent loss cannot allow another installer to replace its
     # imports. The base-Python parent waits for this exit before changing files.
-    with (file_access(installation_state_dir(spec.baseline.environment) / "handoff-child.lock", exclusive=True),
-          installation_access()):
-        _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
-        from nanobot.update_handoff import prepare_handoff
+    child_leases.enter_context(file_access(
+        installation_state_dir(spec.baseline.environment) / "handoff-child.lock", exclusive=True))
+    child_leases.enter_context(installation_access(environment=spec.baseline.environment))
+    _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+    initialize_runtime(spec.baseline.python, spec.baseline.environment)
+    from nanobot.update_handoff import prepare_handoff
 
-        prepare_handoff(directory)
+    prepare_handoff(directory)
 
 
 def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> None:
@@ -379,7 +384,7 @@ def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = No
     _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     JobStatus(spec.plan_id, Phase.CHECKING, status.attempt, False,
               "Rechecking the exact release and installation before shutdown", int(time.time())).save(directory)
-    subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
+    subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                     "--prepare-handoff", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     approval = _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
@@ -423,67 +428,62 @@ def _pending_owner(spec: WorkerSpec) -> None:
 
 def _installer_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
-    if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
-        raise ValueError("Installer child is using the wrong environment")
-    with (installation_access(updating=True) as installation,
-          data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
-        status = JobStatus.read(directory)
-        if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
-                            Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
-            raise ValueError("This update job is already finished")
-        _check_approval(directory, spec, confirmation_id=confirmation_id)
-        _pending_owner(spec)
-        check_environment(spec, repairing=status.mutation_started)
-        wheels = [str(wheel.verify(directory / "wheels")) for wheel in spec.wheels]
-        uv_cache = None
-        if spec.uv is not None:
-            if os.name != "posix":
-                raise ValueError("Native uv lease handoff is not available on this platform")
-            spec.uv.verify(spec.baseline.environment, directory)
-            uv_cache = spec.uv.working_cache(directory)
-        verify_backup(directory, spec.backup_sources, hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
-                      unchanged=not status.mutation_started)
-        pending = pending_update_path()
-        pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        data.reserve()
-        write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
-        JobStatus(spec.plan_id, Phase.INSTALLING, status.attempt + 1, True,
-                  "Installing the verified package files", int(time.time())).save(directory)
-        if spec.uv is not None and uv_cache is not None:
-            # Exact-wheel override is one operation, not a rewrite of the saved
-            # requirement. Even --no-build would persist in the user's receipt.
-            plan = read_record(directory / "plan.json", max_bytes=_MAX_REQUEST_BYTES)
-            extras = plan.get("extras")
-            if not isinstance(extras, list):
-                raise ValueError("Invalid approved uv extras")
-            extra_values = cast(list[object], extras)
-            if not all(isinstance(extra, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extra)
-                       for extra in extra_values):
-                raise ValueError("Invalid approved uv extras")
-            suffix = "[" + ",".join(cast(list[str], extra_values)) + "]" if extras else ""
-            app = next(wheel for wheel in spec.wheels if wheel.name == "nanobot-ai")
-            target = "nanobot-ai" + suffix + " @ " + (directory / "wheels" / app.filename).as_uri()
-            env = uv_environment(tools=Path(spec.baseline.environment).parent,
-                                 binaries=Path(spec.uv.binaries), cache=uv_cache)
-            arguments = [spec.uv.executable, "tool", "upgrade", "--no-config", "--offline", "--reinstall", target]
-            with installation.inherit_for_exec(), data.inherit_for_exec():
-                os.execve(spec.uv.executable, arguments, env)
-        # The installer itself must own the leases, not a wrapper which can die
-        # while a child keeps writing. POSIX exec retains the worker's PID and
-        # leases. Windows stays in this lease-owning process instead of spawning
-        # a child: inherited Windows handles do not transfer byte-range locks.
-        # Only verified local wheels are accepted, so no build child can outlive
-        # the installer. The coordinator performs verification separately.
-        arguments = ["--disable-pip-version-check", "--no-input", "install",
-                     "--no-index", "--no-deps", "--only-binary=:all:", "--no-compile",
-                     "--force-reinstall", *wheels]
-        if os.name == "posix":
-            with installation.inherit_for_exec(), data.inherit_for_exec():
-                os.execve(sys.executable, [sys.executable, "-I", "-m", "pip", *arguments], os.environ)
-        # A dedicated CLI, ending in pip's SystemExit; no application or second
-        # pip call runs afterwards. This is not pip's internal Python API.
-        sys.argv = ["pip", *arguments]
-        runpy.run_module("pip", run_name="__main__")
+    installation = child_leases.enter_context(installation_access(updating=True, environment=spec.baseline.environment))
+    data = child_leases.enter_context(data_access(
+        (source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id))
+    status = JobStatus.read(directory)
+    if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
+                        Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
+        raise ValueError("This update job is already finished")
+    _check_approval(directory, spec, confirmation_id=confirmation_id)
+    _pending_owner(spec)
+    initialize_runtime(spec.baseline.python, spec.baseline.environment)
+    check_environment(spec, repairing=status.mutation_started)
+    wheels = [str(wheel.verify(directory / "wheels")) for wheel in spec.wheels]
+    uv_cache = None
+    if spec.uv is not None:
+        if os.name != "posix":
+            raise ValueError("Native uv lease handoff is not available on this platform")
+        spec.uv.verify(spec.baseline.environment, directory)
+        uv_cache = spec.uv.working_cache(directory)
+    verify_backup(directory, spec.backup_sources, hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+                  unchanged=not status.mutation_started)
+    pending = pending_update_path()
+    pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    data.reserve()
+    write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
+    JobStatus(spec.plan_id, Phase.INSTALLING, status.attempt + 1, True,
+              "Installing the verified package files", int(time.time())).save(directory)
+    if spec.uv is not None and uv_cache is not None:
+        # Exact-wheel override is one operation, not a rewrite of the saved
+        # requirement. Even --no-build would persist in the user's receipt.
+        plan = read_record(directory / "plan.json", max_bytes=_MAX_REQUEST_BYTES)
+        extras = plan.get("extras")
+        if not isinstance(extras, list):
+            raise ValueError("Invalid approved uv extras")
+        extra_values = cast(list[object], extras)
+        if not all(isinstance(extra, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extra)
+                   for extra in extra_values):
+            raise ValueError("Invalid approved uv extras")
+        suffix = "[" + ",".join(cast(list[str], extra_values)) + "]" if extras else ""
+        app = next(wheel for wheel in spec.wheels if wheel.name == "nanobot-ai")
+        target = "nanobot-ai" + suffix + " @ " + (directory / "wheels" / app.filename).as_uri()
+        env = uv_environment(tools=Path(spec.baseline.environment).parent,
+                             binaries=Path(spec.uv.binaries), cache=uv_cache)
+        arguments = [spec.uv.executable, "tool", "upgrade", "--no-config", "--offline", "--reinstall", target]
+        with installation.inherit_for_exec(), data.inherit_for_exec():
+            os.execve(spec.uv.executable, arguments, env)
+    # Keep pip in this lease-owning process on every platform. Inherited Windows
+    # handles cannot transfer byte-range locks; a POSIX wrapper can also die
+    # before a spawned installer. Only verified local wheels are accepted, so
+    # no build child can outlive it. Verification belongs to the coordinator.
+    arguments = ["--disable-pip-version-check", "--no-input", "install",
+                 "--no-index", "--no-deps", "--only-binary=:all:", "--no-compile",
+                 "--force-reinstall", *wheels]
+    # A dedicated CLI, ending in pip's SystemExit; no application or second pip
+    # call runs afterwards. Process-owned leases remain held during atexit.
+    sys.argv = ["pip", *arguments]
+    runpy.run_module("pip", run_name="__main__")
 
 
 def _verify(spec: WorkerSpec, directory: Path) -> None:
@@ -598,7 +598,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                 write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
             env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}
             env["PIP_CONFIG_FILE"] = os.devnull
-            subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
+            subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                             "--install", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             with (installation_access(updating=True, environment=spec.baseline.environment),
@@ -659,7 +659,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
 def _restart_runtime(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> JobStatus:
     # Use the target Python, but enter through frozen stdlib code so its shared
     # installation lease is held before importing the mutable target runtime.
-    subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
+    subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                     "--restart", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     result = JobStatus.read(directory)
@@ -670,23 +670,22 @@ def _restart_runtime(directory: Path, spec: WorkerSpec, confirmation_id: str | N
 
 def _runtime_child(directory: Path, participant: str | None = None, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
-    if Path(sys.prefix).resolve() != Path(spec.baseline.environment) or not spec.restart_profiles:
-        raise ValueError("Runtime handoff is using the wrong environment or participants")
-    with installation_access(allow_incomplete=True):
-        _pending_owner(spec)
-        if confirmation_id is not None:
-            # Completion can take longer than consent's launch window. Bind the
-            # identity, without treating elapsed time as a reason to reinstall.
-            _check_approval(directory, spec, confirmation_id=confirmation_id, check_expiry=False)
-        # Deliberately import the installed application, not a frozen stub.
-        from nanobot.update_restart import run_gateway, run_restarts
+    if not spec.restart_profiles or (participant is not None and participant not in spec.restart_profiles):
+        raise ValueError("This gateway is not a reviewed restart participant")
+    child_leases.enter_context(installation_access(allow_incomplete=True, environment=spec.baseline.environment))
+    _pending_owner(spec)
+    if confirmation_id is not None:
+        # Completion can take longer than consent's launch window. Bind the
+        # identity, without treating elapsed time as a reason to reinstall.
+        _check_approval(directory, spec, confirmation_id=confirmation_id, check_expiry=False)
+    initialize_runtime(spec.baseline.python, spec.baseline.environment)
+    # Deliberately import the installed application, not a frozen stub.
+    from nanobot.update_restart import run_gateway, run_restarts
 
-        if participant is None:
-            run_restarts(directory)
-        elif participant in spec.restart_profiles:
-            run_gateway(directory, participant)
-        else:
-            raise ValueError("This gateway is not a reviewed restart participant")
+    if participant is None:
+        run_restarts(directory)
+    else:
+        run_gateway(directory, participant)
 
 
 def cancel_job(directory: Path) -> JobStatus:

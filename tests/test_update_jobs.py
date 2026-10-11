@@ -363,7 +363,7 @@ async def test_late_confirmed_children_cannot_use_replaced_approval(installation
     before = JobStatus.read(directory)
     for entry in ("--confirmed-handoff", "--prepare-handoff", "--install", "--restart"):
         interpreter = spec.baseline.base_python if entry == "--confirmed-handoff" else spec.baseline.python
-        result = subprocess.run([interpreter, "-I", str(directory / "worker.pyz"),
+        result = subprocess.run([interpreter, "-I", "-S", str(directory / "worker.pyz"),
                                  entry, str(directory), confirmation.id], capture_output=True, timeout=10)
         assert result.returncode != 0, entry
     assert not (directory / "preflight-entered.json").exists()
@@ -460,7 +460,7 @@ async def test_saved_handoff_requires_fresh_consent_before_importing_old_runtime
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
         directory = await prepare_job(plan, feed)
     spec = WorkerSpec.read(directory)
-    command = [spec.baseline.python, "-I", str(directory / "worker.pyz"), "--prepare-handoff", str(directory)]
+    command = [spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"), "--prepare-handoff", str(directory)]
     for expired in (False, True):
         if expired:
             now = int(time.time())
@@ -1221,5 +1221,59 @@ async def test_preparation_lease_covers_site_startup_and_exit_cleanup(installati
         assert JobStatus.read(directory).phase == Phase.READY
         assert observed.exists(), "Site startup was skipped instead of protected"
         assert exited.exists(), "Exit cleanup was skipped instead of protected"
+    finally:
+        hook.unlink()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Checks actual flock ownership in site and atexit hooks")
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+@pytest.mark.parametrize("refuse", [False, True])
+async def test_execution_leases_cover_site_and_atexit(installation, tmp_path, refuse):
+    """Real frozen children and pip; handoff/restart bodies are routing fixtures."""
+    plan, _, site, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    root = installation_state_dir(plan.installation.environment)
+    leases = {
+        "--prepare-handoff": [str(root / "runtime.lock"), str(root / "handoff-child.lock")],
+        "--install": [str(root / "runtime.lock"), str(root.parent / "data-locks/maintenance.lock")],
+        "--restart": [str(root / "runtime.lock")],
+    }
+    hook = site / "execution_lease_test.pth"
+    observed = tmp_path / "execution-hooks"
+    observed.mkdir()
+    script = (
+        "import atexit, fcntl, os, sys\nfrom pathlib import Path\n"
+        f"leases = {leases!r}\n"
+        "entry = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+        "if entry in leases:\n"
+        "    def verify(stage):\n"
+        "        for path in leases[entry]:\n"
+        "            with open(path, 'a+b') as lease:\n"
+        "                try: fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "                except BlockingIOError: pass\n"
+        "                else: os._exit(99)\n"
+        f"        (Path({str(observed)!r}) / (entry + '.' + stage)).touch()\n"
+        "    verify('site')\n"
+        "    atexit.register(verify, 'atexit')\n"
+    )
+    hook.write_text(f"import builtins; builtins.exec({script!r}, {{}})\n")
+    if refuse:
+        (directory / "refuse-preflight").touch()
+    try:
+        process = start_handoff(directory, once=True)
+        assert process is not None
+        code = await asyncio.to_thread(process.wait, 40)
+        assert (code != 0) is refuse
+        assert JobStatus.read(directory).phase == (Phase.HANDOFF_FAILED if refuse else Phase.SUCCEEDED)
+        entries = ["--prepare-handoff"] if refuse else list(leases)
+        assert {path.name for path in observed.iterdir()} == {
+            entry + "." + stage for entry in entries for stage in ("site", "atexit")
+        }
+        # Exit cleanup completed and all process-owned leases really released.
+        with (installation_access(updating=True, environment=plan.installation.environment),
+              data_access((source.path for source in WorkerSpec.read(directory).backup_sources), updating=True),
+              file_access(root / "handoff-child.lock", exclusive=True)):
+            pass
     finally:
         hook.unlink()

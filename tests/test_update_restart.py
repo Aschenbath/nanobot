@@ -162,9 +162,20 @@ def test_actual_gateway_is_parked_until_exact_runtime_activation(private_home, t
     def spawn(command, **kwargs):
         if "--gateway" in command:
             # Run the same frozen entrypoint with checkout imports selected by
-            # this test. Production uses -I and the target's installed package.
-            script = bootstrap + "sys.argv = sys.argv[1:]; sys.path.insert(0, sys.argv[0]); runpy.run_path(sys.argv[0], run_name='__main__')\n"
-            command = [command[0], "-c", script, *command[2:]]
+            # this test, only after protected site initialization. Keep the
+            # production -I -S flags; no application import may bypass them.
+            script = (
+                "import sys, runpy\nsys.argv = sys.argv[1:]\nsys.path.insert(0, sys.argv[0])\n"
+                "from _nanobot_update import update_worker\n"
+                "initialize = update_worker.initialize_runtime\n"
+                "def initialize_fixture(python, environment):\n"
+                "    initialize(python, environment)\n"
+                f"    exec({bootstrap!r}, {{}})\n"
+                "update_worker.initialize_runtime = initialize_fixture\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+            )
+            assert command[1:3] == ["-I", "-S"]
+            command = [command[0], "-I", "-S", "-c", script, *command[3:]]
         elif command[1:3] == ["-m", "nanobot"]:
             script = bootstrap + "from nanobot.cli.entry import main\nmain()\n"
             command = [command[0], "-c", script, *command[3:]]

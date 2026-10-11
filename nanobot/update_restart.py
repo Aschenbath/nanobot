@@ -130,7 +130,7 @@ def _start_gateway(directory: Path, previous: ProfileReceipt, grant: DataStartup
     def spawn(_command: list[str], **kwargs: Any) -> subprocess.Popen[bytes] | subprocess.Popen[str]:
         # Preserve the existing runtime's detached-process and rotating-log setup.
         kwargs["env"] = {**kwargs["env"], _TOKEN_ENV: grant.token}
-        return subprocess.Popen([previous.python, "-I", str(directory / "worker.pyz"),
+        return subprocess.Popen([previous.python, "-I", "-S", str(directory / "worker.pyz"),
                                  "--gateway", str(directory), previous.id],
                                 cwd=launch.working_directory, text=False, **kwargs)
 
