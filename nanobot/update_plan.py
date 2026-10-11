@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import platform
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -27,6 +26,7 @@ from nanobot.installation_lock import installation_access, installation_id, inst
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_manager import ManagerPolicy, read_manager_policy
+from nanobot.update_process import inspect_python_environment
 from nanobot.update_profiles import (
     ObservedProfile,
     ProfileReceipt,
@@ -100,8 +100,8 @@ class InstallationSnapshot(_Probe):
 
 
 def inspect_installation() -> InstallationSnapshot:
-    probe = subprocess.run([sys.executable, "-I", "-c", _PROBE], check=True,
-                           capture_output=True, text=True, timeout=10)
+    probe = inspect_python_environment(sys.executable, str(Path(sys.prefix).resolve()), _PROBE, timeout=10)
+    probe.check_returncode()
     fresh = _Probe.model_validate_json(probe.stdout)
     if Path(fresh.environment) != Path(sys.prefix).resolve():
         raise RuntimeError("The update interpreter belongs to a different installation")
@@ -356,9 +356,9 @@ def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: in
 
 
 def _inspect_with_lease() -> InstallationSnapshot:
-    # The native probe runs in a thread and cannot be cancelled by its asyncio
-    # caller. Keep its own shared lease until the child actually exits, even if
-    # a browser disconnect releases the enclosing request's lease first.
+    # Keep the complete snapshot (including owner receipt parsing) protected
+    # after request cancellation. The native child also holds its own lease,
+    # so loss of this process cannot leave site/import/exit cleanup unprotected.
     with installation_access():
         return inspect_installation()
 

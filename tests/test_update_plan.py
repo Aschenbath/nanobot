@@ -103,7 +103,14 @@ async def test_prepare_and_revalidate_cross_the_same_feed_interface_without_inst
 def test_probe_reads_fresh_interpreter_and_owner_receipt(tmp_path, monkeypatch):
     import venv
 
-    from nanobot import update_plan
+    from nanobot import update_plan, update_process
+
+    account = tmp_path / "private account"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: account))
+    monkeypatch.setattr(update_process, "_INSPECTION_BOOTSTRAP", (
+        "from pathlib import Path\n"
+        f"Path.home = classmethod(lambda cls: Path({str(account)!r}))\n"
+    ) + update_process._INSPECTION_BOOTSTRAP)
 
     root = tmp_path / "env with spaces"
     venv.EnvBuilder(with_pip=False).create(root)

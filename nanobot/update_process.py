@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from nanobot.installation_lock import file_access, installation_access, installation_state_dir
+from nanobot.installation_lock import (
+    InstallationBusyError,
+    file_access,
+    installation_access,
+    installation_state_dir,
+)
 from nanobot.utils.atomic_file import atomic_write_lines
 
 # This stack belongs only to the single-use frozen child. Do not close it on a
@@ -37,6 +42,53 @@ def initialize_runtime(python: str, environment: str) -> None:
     site.main()
     if Path(sys.prefix).resolve() != Path(environment).resolve():
         raise ValueError("Update child is using a different installation")
+
+
+_INSPECTION_BOOTSTRAP = """
+import json, sys, types
+from contextlib import ExitStack
+from pathlib import Path
+request = json.load(sys.stdin)
+locking = types.ModuleType('_nanobot_inspection_lock')
+sys.modules[locking.__name__] = locking
+exec(compile(request['locking'], '<inspection leases>', 'exec'), locking.__dict__)
+leases = ExitStack()
+try:
+    leases.enter_context(locking.installation_access(environment=request['environment'],
+                                                   allow_incomplete=request['allow_incomplete']))
+except locking.InstallationBusyError:
+    raise SystemExit(11) from None
+exec(compile(request['startup'], '<inspection startup>', 'exec'))
+initialize_runtime(request['python'], request['environment'])
+sys.argv = ['-c', *request['arguments']]
+exec(compile(request['probe'], '<installation inspection>', 'exec'), {'__name__': '__main__'})
+"""
+
+
+def inspect_python_environment(python: str, environment: str, probe: str, *,
+                               arguments: tuple[str, ...] = (), timeout: int = 15,
+                               allow_incomplete: bool = False) -> subprocess.CompletedProcess[str]:
+    """Run a first-party read probe with child-owned startup/exit protection.
+
+    Planning has no staged worker yet. Freeze the existing stdlib lease and
+    startup implementations while holding the parent lease, then pass them over
+    stdin to an isolated child. No mutable package code runs before its lease;
+    the global child stack survives probe return and atexit after caller loss.
+    This is not an installer or a command interface for clients/release records.
+    """
+    import inspect
+
+    with installation_access(environment=environment, allow_incomplete=allow_incomplete):
+        request = json.dumps(dict(
+            locking=inspect.getsource(sys.modules[installation_access.__module__]),
+            startup=inspect.getsource(initialize_runtime), python=python, environment=environment,
+            probe=probe, arguments=arguments, allow_incomplete=allow_incomplete,
+        ))
+        result = subprocess.run([python, "-I", "-S", "-c", _INSPECTION_BOOTSTRAP], input=request,
+                                capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 11:
+            raise InstallationBusyError("This installation is being updated; try checking again when it finishes")
+        return result
 
 
 @dataclass(frozen=True)

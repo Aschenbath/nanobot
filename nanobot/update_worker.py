@@ -38,6 +38,7 @@ from nanobot.update_process import (
     PreparationProcess,
     child_leases,
     initialize_runtime,
+    inspect_python_environment,
     run_preparation_child,
 )
 from nanobot.update_uv import UVPreparation, uv_environment
@@ -181,10 +182,13 @@ class EnvironmentSnapshot:
 
 
 def inspect_environment(python: str, *, uv: bool = False, process: PreparationProcess | None = None) -> EnvironmentSnapshot:
+    # Raw metadata diagnostics may inspect an interrupted installation, but
+    # never run concurrently with a package writer. Preparation is stricter.
     probe = "manager = __import__('sys').argv[1]\n" + _PROBE + "\nprint(json.dumps(snapshot))\n"
     arguments = ["-c", probe, "uv" if uv else "pip"]
     result = (process.run(python, arguments, timeout=15) if process is not None else
-              subprocess.run([python, "-I", *arguments], capture_output=True, text=True, timeout=15))
+              inspect_python_environment(python, str(Path(python).parent.parent.resolve()), probe,
+                                         arguments=("uv" if uv else "pip",), allow_incomplete=True))
     if result.returncode:
         raise ValueError("Could not verify the selected package environment; use its installation owner")
     return EnvironmentSnapshot.parse(json.loads(result.stdout))

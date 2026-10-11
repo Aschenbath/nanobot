@@ -60,6 +60,8 @@ class IndexHandler(SimpleHTTPRequestHandler):
 
 @pytest.fixture
 def uv_installation(tmp_path, monkeypatch):
+    from nanobot import update_process
+
     manager_version = subprocess.check_output([shutil.which("uv"), "--version"], text=True, timeout=10)
     if manager_version.split()[:2] != ["uv", UV_TRANSACTION_VERSION]:
         pytest.skip(f"Native transaction integration requires uv {UV_TRANSACTION_VERSION}")
@@ -67,6 +69,11 @@ def uv_installation(tmp_path, monkeypatch):
     account = tmp_path / "private account"
     account.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: account))
+    # The read-only bootstrap has the same isolated account as frozen workers.
+    monkeypatch.setattr(update_process, "_INSPECTION_BOOTSTRAP", (
+        "from pathlib import Path\n"
+        f"Path.home = classmethod(lambda cls: Path({str(account)!r}))\n"
+    ) + update_process._INSPECTION_BOOTSTRAP)
     archive_worker = jobs._worker_archive
 
     def private_worker(path):

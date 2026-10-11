@@ -772,6 +772,69 @@ with installation_access():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["site", "atexit"])
+async def test_planning_probe_retains_lease_after_caller_loss(installation, tmp_path, stage):
+    plan, _, site, _, _ = installation
+    ready, release = tmp_path / "planning-ready", tmp_path / "planning-continue"
+    hook = site / "hold_planning_probe.py"
+    hook.write_text(
+        "import atexit,os,time\nfrom pathlib import Path\n"
+        "def hold():\n"
+        f"    Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "    deadline=time.monotonic()+20\n"
+        f"    while not Path({str(release)!r}).exists():\n"
+        "        if time.monotonic()>deadline: raise SystemExit(99)\n"
+        "        time.sleep(0.02)\n"
+        + ("atexit.register(hold)\n" if stage == "atexit" else "hold()\n")
+    )
+    pth = site / "hold_planning_probe.pth"
+    pth.write_text("import hold_planning_probe\n")
+    caller = (
+        "import sys\nfrom nanobot.update_plan import inspect_installation\n"
+        f"sys.prefix={plan.installation.environment!r}\n"
+        f"sys.executable={plan.installation.python!r}\n"
+        "inspect_installation()\n"
+    )
+    process = subprocess.Popen([sys.executable, "-c", caller], cwd=Path(__file__).resolve().parents[1],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        for _ in range(200):
+            if ready.exists():
+                break
+            if process.poll() is not None:
+                pytest.fail(process.communicate()[1])
+            await asyncio.sleep(0.025)
+        assert ready.exists()
+        child_pid = int(ready.read_text())
+        process.kill()
+        process.wait(timeout=5)
+        os.kill(child_pid, 0)
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True, environment=plan.installation.environment):
+                pytest.fail("A live planning probe lost its lease with its caller")
+    finally:
+        release.touch()
+        if process.poll() is None:
+            process.wait(timeout=15)
+        if process.stderr is not None:
+            process.stderr.close()
+        for _ in range(400):
+            try:
+                with installation_access(updating=True, environment=plan.installation.environment):
+                    break
+            except InstallationBusyError:
+                await asyncio.sleep(0.025)
+        else:
+            pytest.fail("The planning probe did not release its own lease")
+        pth.unlink()
+        hook.unlink()
+    # Planning neither installs nor leaves update authority/startup fences.
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    assert not pending_update_path(plan.installation.environment).exists()
+    assert not (installation_state_dir(plan.installation.environment) / "jobs").exists()
+
+
+@pytest.mark.asyncio
 async def test_changed_artifact_or_owner_receipt_never_installs(installation, tmp_path):
     plan, _, _, _, transport = installation
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
