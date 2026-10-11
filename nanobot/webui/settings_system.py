@@ -42,6 +42,7 @@ from nanobot.update_plan import (
     read_release_plan,
     review_plan,
 )
+from nanobot.update_service import UpdateJobRequest, UpdateJobService
 from nanobot.webui.settings_capabilities import network_safety_payload
 from nanobot.webui.settings_contracts import (
     QueryParams,
@@ -442,6 +443,8 @@ class SystemSettingsHandler:
         self._remove_pending_work: Callable[[], None] | None = None
         self._closing_connectors = False
         self._updates = UpdateService()
+        self._update_jobs = UpdateJobService()
+        self._remove_update_work: Callable[[], None] | None = None
 
     def _has_pending_connectors(self) -> bool:
         return self._closing_connectors or any(
@@ -452,6 +455,10 @@ class SystemSettingsHandler:
     async def close(self) -> None:
         """Release channel-owned setup sessions during gateway shutdown."""
         await self._updates.close()
+        await self._update_jobs.close()
+        if self._remove_update_work is not None:
+            self._remove_update_work()
+            self._remove_update_work = None
         connectors = tuple(self._channel_connectors.items())
         self._closing_connectors = True
         try:
@@ -550,6 +557,8 @@ class SystemSettingsHandler:
             return await self._update_plan(request, create=action == "update-plan-create")
         if action == "update-job-read":
             return await self._update_job(request)
+        if action in {"update-job-prepare", "update-job-settle"}:
+            return self._update_job_action(request, prepare=action == "update-job-prepare")
         if action == "update-status":
             return SettingsRouteResult.success({
                 **self._updates.status(),
@@ -570,6 +579,30 @@ class SystemSettingsHandler:
             except UpdateError as exc:
                 return SettingsRouteResult.failure(409, str(exc))
         return SettingsRouteResult.failure(404, "unknown settings action")
+
+    def _update_job_action(self, request: SettingsRequest, *, prepare: bool) -> SettingsRouteResult:
+        if not self.allow_feature_package_install(request):
+            return SettingsRouteResult.failure(
+                403, "Preparing updates from a remote WebUI is disabled. Use localhost or enable remote package installation.",
+            )
+        try:
+            options = UpdateJobRequest.model_validate(request.payload or {})
+        except (ValidationError, ValueError):
+            return SettingsRouteResult.failure(400, "Invalid update job request")
+        try:
+            self._admission.check()
+            if prepare:
+                if self._remove_update_work is None:
+                    self._remove_update_work = self._admission.register_pending_work(self._update_jobs.has_pending_work)
+                job = self._update_jobs.prepare(options.id)
+            else:
+                job = self._update_jobs.settle(options.id)
+        except (UpdatePlanNotFoundError, UpdateJobNotFoundError):
+            return SettingsRouteResult.failure(404, "This saved update is no longer available. Check again.")
+        except (RuntimeError, ValueError, OSError, KeyError) as exc:
+            self.logger.warning("could not accept an update preparation action ({})", type(exc).__name__)
+            return SettingsRouteResult.failure(409, "Could not accept this preparation action. Read the saved update state before trying again.")
+        return SettingsRouteResult.success({"job": job.model_dump(mode="json")})
 
     async def _update_job(self, request: SettingsRequest) -> SettingsRouteResult:
         plan_id = query_first(request.query, "id") or ""

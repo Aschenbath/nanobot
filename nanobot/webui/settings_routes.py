@@ -151,6 +151,8 @@ _SYSTEM_ROUTES = {
     "/api/settings/nanobot-update/plan": "update-plan-read",
     "/api/settings/nanobot-update/plan/create": "update-plan-create",
     "/api/settings/nanobot-update/job": "update-job-read",
+    "/api/settings/nanobot-update/job/prepare": "update-job-prepare",
+    "/api/settings/nanobot-update/job/settle": "update-job-settle",
     **{
         path: f"mcp-{action}"
         for path, action in _MCP_PRESET_ACTIONS_BY_PATH.items()
@@ -160,6 +162,8 @@ _SYSTEM_ROUTES = {
 _SETTINGS_MUTATION_PATHS = frozenset({
     "/api/settings/nanobot-update/start",
     "/api/settings/nanobot-update/plan/create",
+    "/api/settings/nanobot-update/job/prepare",
+    "/api/settings/nanobot-update/job/settle",
     "/api/settings/runtime-config/update",
     "/api/settings/update",
     "/api/settings/model-configurations/create",
@@ -310,7 +314,7 @@ class WebUISettingsRouter:
             return await asyncio.to_thread(self._handle_settings_usage)
 
         domain, action = route
-        if action in {"update-status", "update-start", "update-plan-create", "update-plan-read", "update-job-read"} and self._runtime_surface == "native":
+        if action.startswith("update-") and self._runtime_surface == "native":
             return self._error_response(409, "Update this installation through Nanobot Desktop.")
         restart_before = (
             await asyncio.to_thread(self._restart_values, action)
@@ -331,6 +335,8 @@ class WebUISettingsRouter:
                     "update-status",
                     "update-plan-create",
                     "update-plan-read",
+                    "update-job-prepare",
+                    "update-job-settle",
                 }
             ),
         )
@@ -376,7 +382,7 @@ class WebUISettingsRouter:
                 # Reversible changes are tracked separately from installation and reload failures.
                 result.payload["requires_restart"] = False
         response = self._render_result(result)
-        if action in {"update-status", "update-start", "update-plan-create", "update-plan-read", "update-job-read"}:
+        if action.startswith("update-"):
             # A saved review is immutable, but its local validity and permission
             # are not. Never reuse a cached success after an installation changes.
             response.headers["Cache-Control"] = "no-store"

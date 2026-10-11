@@ -1,9 +1,9 @@
 """Prepare exact offline jobs and hand them to the standalone installer worker.
 
-This is the executor's internal Interface, not an authenticated WebUI mutation.
+The gateway controller exposes authenticated staging without install consent.
 The caller owns explicit shutdown/restart selection. A detached worker revalidates,
 stops reviewed idle gateways, backs up data, installs, and restarts selected runtimes.
-Until that caller is integrated, CLI/UI cannot start these jobs.
+Until that caller is integrated, CLI/UI cannot execute the staged jobs.
 """
 
 from __future__ import annotations
@@ -271,18 +271,23 @@ def _prepare_transaction(plan: UpdatePlan, app_wheel: Path, directory: Path,
     return (app,), prepared
 
 
-async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
-    """Stage a supported job without granting execution or changing installed files."""
+def validate_preparation(plan: UpdatePlan) -> None:
+    """Check the supported preparation contract, without touching the environment."""
     if plan.installation.owner not in {"venv", "uv"} or plan.extras is None:
         raise ValueError("The worker requires a supported dedicated environment and explicitly confirmed extras")
-    native_uv = plan.installation.owner == "uv"
-    if native_uv and (os.name != "posix" or plan.installation.manager is None):
+    if plan.installation.owner == "uv" and (os.name != "posix" or plan.installation.manager is None):
         raise ValueError("This uv installation needs its owner's external update workflow")
     if plan.owner_restriction:
         raise ValueError(plan.owner_restriction)
     if plan.action != "upgrade":
         raise ValueError("This executor prepares upgrades only; no-op, restart and downgrade need their own review")
     plan.validate_for(plan.installation)
+
+
+async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
+    """Stage a supported job without granting execution or changing installed files."""
+    validate_preparation(plan)
+    native_uv = plan.installation.owner == "uv"
     root = installation_state_dir(plan.installation.environment)
     with installation_access(environment=plan.installation.environment), file_access(root / "prepare.lock", exclusive=True):
         directory = root / "jobs" / plan.id

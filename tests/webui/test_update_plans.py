@@ -17,20 +17,23 @@ from packaging.tags import Tag
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
-from nanobot import update_plan
+from nanobot import update_plan, update_service
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import WebSocketConfig
 from nanobot.config.home import get_selected_home_path, set_home_path
 from nanobot.installation_lock import (
     InstallationBusyError,
+    file_access,
     installation_access,
     installation_state_dir,
     pending_update_path,
 )
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import release_filenames
+from nanobot.runtime_admission import RuntimeBusyError
 from nanobot.update_manager import ManagerPolicy
 from nanobot.update_plan import InstallationSnapshot, UpdatePlans
+from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import ObservedProfile, ProfileLaunch, ProfileReceipt
 from nanobot.update_worker import JobStatus, Phase
 from nanobot.webui.client_contract import webui_contract
@@ -39,6 +42,8 @@ from nanobot.webui.gateway_services import build_gateway_services
 CREATE = "/api/settings/nanobot-update/plan/create"
 READ = "/api/settings/nanobot-update/plan"
 JOB = "/api/settings/nanobot-update/job"
+PREPARE = "settings.nanobot.update.prepare"
+SETTLE = "settings.nanobot.update.settle"
 
 
 @pytest.fixture
@@ -112,6 +117,191 @@ async def fetch(gateway, path, *, authorized=True):
     if authorized:
         headers["Authorization"] = f"Bearer {gateway.tokens.issue_api_token(60)}"
     return await gateway.http.dispatch(connection(), Request(path, headers))
+
+
+@pytest.fixture
+def preparation_gateway(review_gateway, monkeypatch):
+    fixture = review_gateway
+    snapshot = fixture.snapshot.model_copy(update={"owner": "venv", "manager": None})
+    monkeypatch.setattr(update_plan, "inspect_installation", lambda: snapshot)
+    monkeypatch.setattr(sys, "prefix", snapshot.environment)
+    fixture.snapshot = snapshot
+    return fixture
+
+
+async def preparation_plan(fixture):
+    gateway = fixture.gateway()
+    response = await gateway.http.dispatch_webui_mutation(
+        connection(local=True), "settings.nanobot.update.plan", {"extras": []},
+    )
+    assert response.status_code == 200, response.body
+    return gateway, UpdatePlans(fixture.directory / "plans").load(json.loads(response.body)["plan"]["id"])
+
+
+async def test_preparation_is_durable_idempotent_and_independent_of_browser(preparation_gateway, monkeypatch):
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    entered, release = asyncio.Event(), asyncio.Event()
+    validated, prepared = [], []
+
+    async def revalidate(self, target):
+        validated.append(target)
+
+    async def stage(exact, feed):
+        prepared.append(exact)
+        directory = fixture.directory / "jobs" / exact.id
+        JobStatus(exact.id, Phase.PREPARING, 0, False, "Preparing", int(time.time())).save(directory)
+        entered.set()
+        await release.wait()
+        JobStatus(exact.id, Phase.READY, 0, False, "Staged fixture", int(time.time())).save(directory)
+        return directory
+
+    monkeypatch.setattr(update_service.ReleaseFeed, "revalidate", revalidate)
+    monkeypatch.setattr(update_service, "prepare_job", stage)
+    close = None
+    try:
+        response = await gateway.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+        assert response.status_code == 200, response.body
+        assert json.loads(response.body)["job"]["recorded_phase"] == "preparation_requested"
+        assert response.headers["Cache-Control"] == "no-store"
+        directory = fixture.directory / "jobs" / plan.id
+        assert JobStatus.read(directory).phase == Phase.PREPARATION_REQUESTED
+        await asyncio.wait_for(entered.wait(), 5)
+        # A recreated router has no reference to the original browser's task.
+        fresh = fixture.gateway()
+        duplicate = await fresh.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+        assert duplicate.status_code == 200
+        assert json.loads(duplicate.body)["job"]["recorded_phase"] == "preparing"
+        assert (await fetch(fresh, JOB + "?id=" + plan.id)).status_code == 200
+        assert (await fresh.http.dispatch_webui_mutation(connection(local=True), SETTLE, {"id": plan.id})).status_code == 409
+        other = plan.model_copy(update={"id": str(uuid4())})
+        UpdatePlans(fixture.directory / "plans").save(other)
+        busy = await fresh.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": other.id})
+        assert busy.status_code == 409
+        assert not (fixture.directory / "jobs" / other.id).exists()
+        with pytest.raises(RuntimeBusyError):
+            with gateway.http.settings_routes._system._admission.pause_if_idle(lambda: False):
+                pytest.fail("Preparation must be counted as runtime work")
+        close = asyncio.create_task(gateway.http.settings_routes.close())
+        async with asyncio.timeout(5):
+            while not gateway.http.settings_routes._system._update_jobs._closing:
+                await asyncio.sleep(0.001)
+        close.cancel()
+        await asyncio.sleep(0)
+        assert not close.done(), "Shutdown cancellation must not release a running preparation"
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True):
+                pytest.fail("Preparation lost its shared installation lease")
+    finally:
+        release.set()
+        if close is not None:
+            await asyncio.wait_for(close, 5)
+        else:
+            await gateway.http.settings_routes.close()
+    final = await fetch(fixture.gateway(), JOB + "?id=" + plan.id)
+    assert json.loads(final.body)["job"]["recorded_phase"] == "ready"
+    assert validated == [plan.target] and prepared == [plan]
+    assert len(fixture.requests) == 1, "The staging controller must not reselect latest"
+    for name in ("approval.json", "handoff-approval.json"):
+        assert not (directory / name).exists()
+    assert not (fixture.directory / "stop.json").exists()
+    assert "webui.update-jobs.prepare.v1" in webui_contract()["capabilities"]
+
+
+async def test_preparation_revalidation_failure_is_saved_and_never_retried_by_refresh(preparation_gateway, monkeypatch):
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    targets = []
+
+    async def withdrawn(self, target):
+        targets.append(target)
+        raise ValueError("private-index-user:secret")
+
+    async def forbidden(*args):
+        pytest.fail("A withdrawn target must not reach staging")
+
+    monkeypatch.setattr(update_service.ReleaseFeed, "revalidate", withdrawn)
+    monkeypatch.setattr(update_service, "prepare_job", forbidden)
+    accepted = await gateway.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+    assert accepted.status_code == 200
+    await gateway.http.settings_routes.close()
+    duplicate = await fixture.gateway().http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+    assert duplicate.status_code == 200
+    assert json.loads(duplicate.body)["job"]["recorded_phase"] == "preparation_failed"
+    assert b"secret" not in duplicate.body
+    directory = fixture.directory / "jobs" / plan.id
+    assert "secret" not in (directory / "status.json").read_text()
+    assert targets == [plan.target]
+    assert not (directory / "request.json").exists()
+
+
+@pytest.mark.parametrize("operation", [PREPARE, SETTLE])
+async def test_preparation_mutations_require_authority_and_exact_id(preparation_gateway, operation):
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    path = JOB + ("/prepare" if operation == PREPARE else "/settle")
+    assert (await fetch(gateway, path)).status_code == 405
+    remote = await gateway.http.dispatch_webui_mutation(connection(), operation, {"id": plan.id})
+    assert remote.status_code == 403
+    desktop = await fixture.gateway("native").http.dispatch_webui_mutation(connection(local=True), operation, {"id": plan.id})
+    assert desktop.status_code == 409
+    for payload in ({}, {"id": "../plan"}, {"id": 12}, {"id": plan.id, "target": "new-version"},
+                    {"id": plan.id, "repair": True}):
+        response = await gateway.http.dispatch_webui_mutation(connection(local=True), operation, payload)
+        assert response.status_code == 400
+    assert not (fixture.directory / "jobs").exists()
+
+
+@pytest.mark.parametrize("problem", ["expired", "source", "unknown_extras", "foreign"])
+async def test_preparation_rejects_unexecutable_reviews_before_creating_work(preparation_gateway, problem):
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    changes = {"id": str(uuid4())}
+    if problem == "expired":
+        changes.update(created_at=plan.created_at - 1800, expires_at=plan.expires_at - 1800)
+    elif problem == "source":
+        changes["installation"] = plan.installation.model_copy(update={"owner": "source"})
+    elif problem == "unknown_extras":
+        changes["extras"] = None
+    else:
+        changes["installation"] = plan.installation.model_copy(update={"environment": str(fixture.directory / "foreign")})
+    invalid = plan.model_copy(update=changes)
+    UpdatePlans(fixture.directory / "plans").save(invalid)
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": invalid.id})
+    assert response.status_code == 409
+    assert not (fixture.directory / "jobs").exists()
+
+
+@pytest.mark.parametrize("phase", [Phase.PREPARATION_REQUESTED, Phase.PREPARING])
+async def test_explicit_settlement_checks_ownership_and_does_not_retry(preparation_gateway, monkeypatch, phase):
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    directory = fixture.directory / "jobs" / plan.id
+    directory.mkdir(parents=True)
+    (directory / "plan.json").write_text(plan.model_dump_json())
+    JobStatus(plan.id, phase, 0, False, "Interrupted fixture", int(time.time())).save(directory)
+    if phase == Phase.PREPARING:
+        PreparationProcess.create(directory, plan.installation.environment)
+
+    async def forbidden(*args):
+        pytest.fail("Reading or settling interrupted staging cannot restart it")
+
+    monkeypatch.setattr(update_service.ReleaseFeed, "revalidate", forbidden)
+    restored = await gateway.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+    assert json.loads(restored.body)["job"]["recorded_phase"] == phase.value
+    lock = "prepare-native.lock" if phase == Phase.PREPARING else "preparation-controller.lock"
+    with file_access(fixture.directory / lock, exclusive=True):
+        blocked = await gateway.http.dispatch_webui_mutation(connection(local=True), SETTLE, {"id": plan.id})
+    assert blocked.status_code == 409
+    assert JobStatus.read(directory).phase == phase
+    settled = await gateway.http.dispatch_webui_mutation(connection(local=True), SETTLE, {"id": plan.id})
+    assert settled.status_code == 200, settled.body
+    assert json.loads(settled.body)["job"]["recorded_phase"] == "preparation_failed"
+    if phase == Phase.PREPARING:
+        assert PreparationProcess.load(directory).active is False
+    assert not (directory / "request.json").exists()
+    duplicate = await fixture.gateway().http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+    assert json.loads(duplicate.body)["job"]["recorded_phase"] == "preparation_failed"
 
 
 async def test_exact_review_survives_router_recreation_without_reselection_or_install(review_gateway):

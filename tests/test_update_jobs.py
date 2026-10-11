@@ -38,9 +38,10 @@ from nanobot.update_jobs import (
     start_handoff,
     start_job,
 )
-from nanobot.update_plan import InstallationSnapshot, UpdatePlan
+from nanobot.update_plan import InstallationSnapshot, UpdatePlan, UpdatePlans
 from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import inspect_profiles, record_gateway_profile
+from nanobot.update_service import UpdateJobService
 from nanobot.update_worker import (
     JobStatus,
     Phase,
@@ -239,6 +240,39 @@ def installation(tmp_path, monkeypatch, request):
         return httpx.Response(200, json={"info": {"name": "nanobot-ai", "version": "0.3.5", "requires_python": ">=3.11"}, "urls": files})
 
     return plan, candidate, site, requests, httpx.MockTransport(response)
+
+
+@pytest.mark.parametrize("cancel_feed_close", [False, True])
+async def test_confirmed_service_prepares_exact_offline_pip_job_without_installing(installation, monkeypatch, cancel_feed_close):
+    from nanobot import update_service
+
+    plan, _, _, requests, transport = installation
+    monkeypatch.setattr(sys, "prefix", plan.installation.environment)
+    root = installation_state_dir()
+    UpdatePlans(root / "plans").save(plan)
+    class PreparedFeed(ReleaseFeed):
+        def __init__(self, directory):
+            super().__init__(directory, transport=transport)
+
+        async def __aexit__(self, *args):
+            await super().__aexit__(*args)
+            if cancel_feed_close:
+                raise asyncio.CancelledError()
+
+    monkeypatch.setattr(update_service, "ReleaseFeed", PreparedFeed)
+    service = UpdateJobService()
+    acknowledged = service.prepare(plan.id)
+    assert acknowledged.recorded_phase == Phase.PREPARATION_REQUESTED
+    await service.close()
+    restored = UpdateJobService().prepare(plan.id)
+    assert restored.recorded_phase == Phase.READY
+    spec = WorkerSpec.read(root / "jobs" / plan.id)
+    spec.verify_inputs(root / "jobs" / plan.id)
+    assert spec.version == "0.3.5"
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+    assert requests == ["https://pypi.org/pypi/nanobot-ai/0.3.5/json"] * 2 + [plan.target.url]
+    assert not (root / "jobs" / plan.id / "approval.json").exists()
+    assert not (root / "stop.json").exists()
 
 
 async def wait_worker(process):

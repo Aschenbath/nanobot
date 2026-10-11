@@ -269,6 +269,7 @@ class WorkerSpec:
 
 
 class Phase(str, Enum):
+    PREPARATION_REQUESTED = "preparation_requested"
     PREPARING = "preparing"
     PREPARATION_FAILED = "preparation_failed"
     READY = "ready"

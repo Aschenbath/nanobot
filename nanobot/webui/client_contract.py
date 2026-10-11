@@ -21,6 +21,7 @@ BINARY_ATTACHMENTS_CAPABILITY = "webui.attachments.binary.v1"
 SELF_UPDATE_CAPABILITY = "webui.self-update.v1"
 UPDATE_PLAN_CAPABILITY = "webui.update-plans.v1"
 UPDATE_JOB_CAPABILITY = "webui.update-jobs.read.v1"
+UPDATE_PREPARATION_CAPABILITY = "webui.update-jobs.prepare.v1"
 
 
 class Compatibility(TypedDict):
@@ -38,7 +39,7 @@ def webui_contract() -> dict[str, object]:
             CORE_CAPABILITY, SUBAGENT_CAPABILITY, SUBAGENT_EVENTS_CAPABILITY,
             SUBAGENT_HISTORY_CAPABILITY, AUTOMATION_CHAT_CAPABILITY,
             BINARY_ATTACHMENTS_CAPABILITY, SELF_UPDATE_CAPABILITY, UPDATE_PLAN_CAPABILITY,
-            UPDATE_JOB_CAPABILITY,
+            UPDATE_JOB_CAPABILITY, UPDATE_PREPARATION_CAPABILITY,
         ],
     }
 
