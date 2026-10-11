@@ -311,19 +311,55 @@ class JobStatus:
         write_record(directory / "status.json", asdict(self))
 
 
-def _check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False) -> dict[str, object]:
+@dataclass(frozen=True)
+class ExecutionConfirmation:
+    """One durable user confirmation; not proof that a worker is currently alive."""
+
+    id: str
+    plan_id: str
+    request_sha256: str
+    created_at: int
+    expires_at: int
+
+    @classmethod
+    def read(cls, directory: Path) -> ExecutionConfirmation | None:
+        try:
+            value = read_record(directory / "confirmation.json", max_bytes=2048)
+        except FileNotFoundError:
+            return None
+        identifier, plan_id = _text(value["id"]), _text(value["plan_id"])
+        if UUID(identifier).hex != identifier or str(UUID(plan_id)) != plan_id or plan_id != directory.name:
+            raise ValueError("Invalid execution confirmation identity")
+        created, expires = _integer(value["created_at"]), _integer(value["expires_at"])
+        if not created < expires <= created + 900:
+            raise ValueError("Invalid execution confirmation lifetime")
+        return cls(identifier, plan_id, _sha(value["request_sha256"]), created, expires)
+
+    def save(self, directory: Path) -> None:
+        write_record(directory / "confirmation.json", asdict(self), max_bytes=2048)
+
+
+def _check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
+                    confirmation_id: str | None = None, check_expiry: bool = True) -> dict[str, object]:
     approval = read_record(directory / ("handoff-approval.json" if handoff else "approval.json"))
     now = int(time.time())
     created, expires = _integer(approval["created_at"]), _integer(approval["expires_at"])
-    if not created <= now < expires <= created + 900:
+    if not created < expires <= created + 900 or (check_expiry and not created <= now < expires):
         raise ValueError("Update approval expired; review this exact job again before retrying")
     digest = hashlib.sha256((directory / "request.json").read_bytes()).hexdigest()
     if approval.get("request_sha256") != digest or approval.get("plan_id") != spec.plan_id:
         raise ValueError("Update approval does not match this job")
+    if confirmation_id is not None:
+        confirmation = ExecutionConfirmation.read(directory)
+        if (confirmation is None or confirmation.id != confirmation_id
+                or approval.get("confirmation_id") != confirmation_id
+                or confirmation.request_sha256 != digest or confirmation.plan_id != spec.plan_id
+                or (confirmation.created_at, confirmation.expires_at) != (created, expires)):
+            raise ValueError("Execution confirmation was replaced or revoked")
     return approval
 
 
-def _prepare_handoff_child(directory: Path) -> None:
+def _prepare_handoff_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
         raise ValueError("Shutdown handoff is using the wrong environment")
@@ -332,21 +368,21 @@ def _prepare_handoff_child(directory: Path) -> None:
     # imports. The base-Python parent waits for this exit before changing files.
     with (file_access(installation_state_dir(spec.baseline.environment) / "handoff-child.lock", exclusive=True),
           installation_access()):
-        _check_approval(directory, spec, handoff=True)
+        _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
         from nanobot.update_handoff import prepare_handoff
 
         prepare_handoff(directory)
 
 
-def _handoff(directory: Path, spec: WorkerSpec) -> None:
+def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> None:
     status = JobStatus.read(directory)
-    _check_approval(directory, spec, handoff=True)
+    _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     JobStatus(spec.plan_id, Phase.CHECKING, status.attempt, False,
               "Rechecking the exact release and installation before shutdown", int(time.time())).save(directory)
     subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
-                    "--prepare-handoff", str(directory)], check=True, timeout=300,
+                    "--prepare-handoff", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    approval = _check_approval(directory, spec, handoff=True)
+    approval = _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     with (installation_access(updating=True, environment=spec.baseline.environment),
           data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
         check_environment(spec, repairing=False)
@@ -385,7 +421,7 @@ def _pending_owner(spec: WorkerSpec) -> None:
         raise ValueError("Another incomplete update owns this installation")
 
 
-def _installer_child(directory: Path) -> None:
+def _installer_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment):
         raise ValueError("Installer child is using the wrong environment")
@@ -395,7 +431,7 @@ def _installer_child(directory: Path) -> None:
         if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
                             Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
             raise ValueError("This update job is already finished")
-        _check_approval(directory, spec)
+        _check_approval(directory, spec, confirmation_id=confirmation_id)
         _pending_owner(spec)
         check_environment(spec, repairing=status.mutation_started)
         wheels = [str(wheel.verify(directory / "wheels")) for wheel in spec.wheels]
@@ -497,11 +533,26 @@ def _verify(spec: WorkerSpec, directory: Path) -> None:
         raise ValueError("Installed dependency verification failed")
 
 
-def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
+def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | None = None) -> JobStatus:
     """Execute one approved offline job. 'installed' does not mean restarted."""
     spec = WorkerSpec.read(directory)
     root = installation_state_dir(spec.baseline.environment)
     with file_access(root / "worker.lock", exclusive=True):
+        if confirmation_id is not None:
+            if not handoff:
+                raise ValueError("A confirmation only starts the reviewed shutdown handoff")
+            confirmation = ExecutionConfirmation.read(directory)
+            if confirmation is None or confirmation.id != confirmation_id:
+                raise ValueError("This execution confirmation is no longer current")
+            claimed = directory / "confirmation-claimed.json"
+            if claimed.exists():
+                if read_record(claimed, max_bytes=2048).get("id") != confirmation_id:
+                    raise ValueError("Another execution confirmation owns this job")
+                # A duplicate or delayed launcher is history, not a retry, even
+                # if the first worker exited before updating its journal.
+                return JobStatus.read(directory)
+            _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+            write_record(claimed, {"id": confirmation_id}, max_bytes=2048)
         if handoff:
             # An orphan preflight child may still own the old runtime. Refuse a
             # competing handoff without rewriting its durable progress.
@@ -517,9 +568,9 @@ def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
         try:
             if handoff:
                 spec.verify_inputs(directory)
-                _handoff(directory, spec)
+                _handoff(directory, spec, confirmation_id)
             if status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
-                return _restart_runtime(directory, spec)
+                return _restart_runtime(directory, spec, confirmation_id)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                 _pending_owner(spec)
@@ -531,7 +582,7 @@ def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
                         pending_update_path(spec.baseline.environment).unlink()
                     data.release_reservation()
                     return status
-                _check_approval(directory, spec)
+                _check_approval(directory, spec, confirmation_id=confirmation_id)
                 check_environment(spec, repairing=status.mutation_started)
                 spec.verify_inputs(directory)
                 JobStatus(spec.plan_id, Phase.BACKING_UP, status.attempt, status.mutation_started,
@@ -548,7 +599,7 @@ def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
             env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}
             env["PIP_CONFIG_FILE"] = os.devnull
             subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
-                            "--install", str(directory)], check=True, timeout=900,
+                            "--install", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
@@ -564,7 +615,7 @@ def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
                     pending_update_path(spec.baseline.environment).unlink()
                     data.release_reservation()
                     return status
-            return _restart_runtime(directory, spec)
+            return _restart_runtime(directory, spec, confirmation_id)
         except InstallationBusyError:
             # An orphan pip child may still be alive. Do not turn its ongoing
             # installation into a terminal failure or overwrite its journal.
@@ -605,11 +656,11 @@ def run_job(directory: Path, *, handoff: bool = False) -> JobStatus:
             raise
 
 
-def _restart_runtime(directory: Path, spec: WorkerSpec) -> JobStatus:
+def _restart_runtime(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> JobStatus:
     # Use the target Python, but enter through frozen stdlib code so its shared
     # installation lease is held before importing the mutable target runtime.
     subprocess.run([spec.baseline.python, "-I", str(directory / "worker.pyz"),
-                    "--restart", str(directory)], check=True, timeout=300,
+                    "--restart", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     result = JobStatus.read(directory)
     if result.phase != Phase.SUCCEEDED:
@@ -617,12 +668,16 @@ def _restart_runtime(directory: Path, spec: WorkerSpec) -> JobStatus:
     return result
 
 
-def _runtime_child(directory: Path, participant: str | None = None) -> None:
+def _runtime_child(directory: Path, participant: str | None = None, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
     if Path(sys.prefix).resolve() != Path(spec.baseline.environment) or not spec.restart_profiles:
         raise ValueError("Runtime handoff is using the wrong environment or participants")
     with installation_access(allow_incomplete=True):
         _pending_owner(spec)
+        if confirmation_id is not None:
+            # Completion can take longer than consent's launch window. Bind the
+            # identity, without treating elapsed time as a reason to reinstall.
+            _check_approval(directory, spec, confirmation_id=confirmation_id, check_expiry=False)
         # Deliberately import the installed application, not a frozen stub.
         from nanobot.update_restart import run_gateway, run_restarts
 
@@ -657,17 +712,17 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--prepare-native":
         run_preparation_child(Path(sys.argv[2]).resolve())
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-handoff":
-        _prepare_handoff_child(Path(sys.argv[2]).resolve())
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "--prepare-handoff":
+        _prepare_handoff_child(Path(sys.argv[2]).resolve(), sys.argv[3] if len(sys.argv) == 4 else None)
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "--restart":
-        _runtime_child(Path(sys.argv[2]).resolve())
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "--restart":
+        _runtime_child(Path(sys.argv[2]).resolve(), confirmation_id=sys.argv[3] if len(sys.argv) == 4 else None)
         return
     if len(sys.argv) == 4 and sys.argv[1] == "--gateway":
         _runtime_child(Path(sys.argv[2]).resolve(), sys.argv[3])
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "--install":
-        _installer_child(Path(sys.argv[2]).resolve())
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "--install":
+        _installer_child(Path(sys.argv[2]).resolve(), sys.argv[3] if len(sys.argv) == 4 else None)
         return
     if len(sys.argv) == 3 and sys.argv[1] in {"--status", "--cancel"}:
         directory = Path(sys.argv[2]).resolve()
@@ -676,11 +731,12 @@ def main() -> None:
         print(json.dumps(asdict(status)))
         return
     handoff = len(sys.argv) == 3 and sys.argv[1] == "--handoff"
-    if len(sys.argv) != 2 and not handoff:
+    confirmed = len(sys.argv) == 4 and sys.argv[1] == "--confirmed-handoff"
+    if len(sys.argv) != 2 and not handoff and not confirmed:
         raise SystemExit("Use this worker with its exact saved job directory")
-    directory = Path(sys.argv[2] if handoff else sys.argv[1]).resolve()
+    directory = Path(sys.argv[2] if handoff or confirmed else sys.argv[1]).resolve()
     try:
-        result = run_job(directory, handoff=handoff)
+        result = run_job(directory, handoff=handoff or confirmed, confirmation_id=sys.argv[3] if confirmed else None)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Update did not finish: {type(exc).__name__}. Consult the saved job status.", file=sys.stderr)
         raise SystemExit(1) from exc

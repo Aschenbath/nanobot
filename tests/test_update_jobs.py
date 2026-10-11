@@ -43,6 +43,7 @@ from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import inspect_profiles, record_gateway_profile
 from nanobot.update_service import UpdateJobService
 from nanobot.update_worker import (
+    ExecutionConfirmation,
     JobStatus,
     Phase,
     WorkerSpec,
@@ -284,6 +285,91 @@ async def wait_for(predicate):
     async with asyncio.timeout(40):
         while not predicate():
             await asyncio.sleep(0.02)
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+@pytest.mark.parametrize("refuse", [False, True])
+async def test_confirmed_handoff_is_consumed_once_even_after_failure(installation, tmp_path, refuse):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    if refuse:
+        (directory / "refuse-preflight").touch()
+    process = start_handoff(directory, once=True)
+    assert process is not None
+    code = await asyncio.to_thread(process.wait, 40)
+    assert (code != 0) is refuse
+    confirmation = ExecutionConfirmation.read(directory)
+    assert confirmation is not None
+    before = JobStatus.read(directory)
+    assert before.phase == (Phase.HANDOFF_FAILED if refuse else Phase.SUCCEEDED)
+    assert inspect_environment(plan.installation.python).app_version == ("0.3.4" if refuse else "0.3.5")
+    (directory / "refuse-preflight").unlink(missing_ok=True)
+    assert start_handoff(directory, once=True) is None
+    assert ExecutionConfirmation.read(directory) == confirmation
+    spec = WorkerSpec.read(directory)
+    # A late duplicate process must not retry a failed shutdown, even though
+    # its original approval is still in its launch window.
+    replay = subprocess.run([spec.baseline.base_python, "-I", str(directory / "worker.pyz"),
+                             "--confirmed-handoff", str(directory), confirmation.id], capture_output=True, timeout=10)
+    assert replay.returncode == 0, replay.stderr
+    assert JobStatus.read(directory) == before
+    assert not (directory / "approval.json").exists() if refuse else before.attempt == 1
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_confirmed_launch_failure_is_not_retry_authority(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    launches = []
+
+    def failed_spawn(directory, spec, **kwargs):
+        launches.append(kwargs)
+        raise OSError("controlled launch failure")
+
+    monkeypatch.setattr(update_jobs, "_spawn_worker", failed_spawn)
+    with pytest.raises(OSError, match="controlled launch"):
+        start_handoff(directory, once=True)
+    confirmation = ExecutionConfirmation.read(directory)
+    assert confirmation is not None
+    assert JobStatus.read(directory).phase == Phase.HANDOFF_FAILED
+    assert start_handoff(directory, once=True) is None
+    assert launches == [{"handoff": True, "confirmation_id": confirmation.id}]
+    assert not (directory / "confirmation-claimed.json").exists()
+    assert not (directory / "approval.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_late_confirmed_children_cannot_use_replaced_approval(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    # Park before process creation to model a delayed launcher deterministically.
+    monkeypatch.setattr(update_jobs, "_spawn_worker", lambda *args, **kwargs: None)
+    start_handoff(directory, once=True)
+    confirmation = ExecutionConfirmation.read(directory)
+    assert confirmation is not None
+    spec = WorkerSpec.read(directory)
+    replaced = read_record(directory / "handoff-approval.json")
+    replaced.pop("confirmation_id")  # A later explicitly managed recovery approval.
+    write_record(directory / "handoff-approval.json", replaced)
+    write_record(directory / "approval.json", replaced)
+    before = JobStatus.read(directory)
+    for entry in ("--confirmed-handoff", "--prepare-handoff", "--install", "--restart"):
+        interpreter = spec.baseline.base_python if entry == "--confirmed-handoff" else spec.baseline.python
+        result = subprocess.run([interpreter, "-I", str(directory / "worker.pyz"),
+                                 entry, str(directory), confirmation.id], capture_output=True, timeout=10)
+        assert result.returncode != 0, entry
+    assert not (directory / "preflight-entered.json").exists()
+    assert not (directory / "confirmation-claimed.json").exists()
+    assert JobStatus.read(directory) == before
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
 
 
 @pytest.mark.parametrize("installation", ["handoff"], indirect=True)

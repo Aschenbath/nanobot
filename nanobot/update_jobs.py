@@ -1,9 +1,9 @@
 """Prepare exact offline jobs and hand them to the standalone installer worker.
 
-The gateway controller exposes authenticated staging without install consent.
+The gateway controller keeps authenticated staging separate from execution consent.
 The caller owns explicit shutdown/restart selection. A detached worker revalidates,
 stops reviewed idle gateways, backs up data, installs, and restarts selected runtimes.
-Until that caller is integrated, CLI/UI cannot execute the staged jobs.
+Confirmed execution is idempotent; an interrupted job needs explicit recovery.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 from urllib.parse import unquote, urlsplit
+from uuid import uuid4
 from zipfile import ZipFile, ZipInfo
 
 from packaging.utils import canonicalize_name, parse_wheel_filename
@@ -42,6 +43,7 @@ from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
 from nanobot.update_uv import UVPreparation, prepare_uv
 from nanobot.update_worker import (
+    ExecutionConfirmation,
     JobStatus,
     Phase,
     StagedWheel,
@@ -74,6 +76,7 @@ class UpdateJobView(ReleaseRecord):
     attempt: int
     mutation_started: bool
     updated_at: int
+    execution_confirmation_id: str | None = None
 
 
 def read_update_job(plan_id: str) -> UpdateJobView:
@@ -95,6 +98,7 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         raise UpdateJobNotFoundError("No saved update job is available") from exc
     if plan.id != plan_id or plan.installation.installation_id != installation_id():
         raise ValueError("Update job belongs to a different installation or plan")
+    confirmation = ExecutionConfirmation.read(directory)
     # Local diagnostic messages may contain paths or exception details. Clients
     # receive typed facts and can localize phases, never raw journal messages.
     return UpdateJobView(
@@ -102,10 +106,11 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         previous_version=plan.installation.installed_version, target_version=plan.target.version,
         channel=plan.channel, recorded_phase=status.phase, attempt=status.attempt,
         mutation_started=status.mutation_started, updated_at=status.updated_at,
+        execution_confirmation_id=confirmation.id if confirmation else None,
     )
 
 
-async def _settled_thread(function: Callable[_Args, _Result], *args: _Args.args,
+async def settled_update_work(function: Callable[_Args, _Result], *args: _Args.args,
                           **kwargs: _Args.kwargs) -> _Result:
     """Retain the caller's preparation leases until native work actually exits."""
     work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
@@ -336,7 +341,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
 
 async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, directory: Path,
                           process: PreparationProcess, *, native_uv: bool) -> Path:
-    baseline = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process)
+    baseline = await settled_update_work(inspect_environment, plan.installation.python, uv=native_uv, process=process)
     if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
         plan.installation.environment, plan.installation.python, plan.installation.installed_version,
         plan.installation.records.get("pyvenv.cfg"),
@@ -350,8 +355,8 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
     app_wheel = await feed.download(plan.target, root / "downloads")
     JobStatus(plan.id, Phase.PREPARING, 0, False,
               "Preparing dependencies without changing the installation", int(time.time())).save(directory)
-    records, uv = await _settled_thread(_prepare_transaction, plan, app_wheel, directory, process)
-    current = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process)
+    records, uv = await settled_update_work(_prepare_transaction, plan, app_wheel, directory, process)
+    current = await settled_update_work(inspect_environment, plan.installation.python, uv=native_uv, process=process)
     if current != baseline:
         raise ValueError("Installation changed while preparing the update")
     plan.validate_for(plan.installation)
@@ -439,21 +444,29 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     return _spawn_worker(directory, spec)
 
 
-def start_handoff(directory: Path) -> subprocess.Popen[bytes]:
+def start_handoff(directory: Path, *, once: bool = False) -> subprocess.Popen[bytes] | None:
     """Confirm an exact prepared plan and detach before the requesting gateway exits.
 
     Unlike start_job (already-stopped installations/repair), release revalidation
     and cooperative shutdown run independently of the caller. No installation
     approval is written until that child exits and exclusive leases are held.
-    This remains internal until busy-owner accounting and client consent are wired.
+    With once=True, persist one confirmation and never launch again for a repeated
+    request. A missing response, failed launch or failed job is not retry authority.
     """
     spec = WorkerSpec.read(directory)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
     root = installation_state_dir(spec.baseline.environment)
+    if once and ExecutionConfirmation.read(directory) is not None:
+        return None
+    confirmation = None
     with (file_access(root / "worker.lock", exclusive=True),
           file_access(root / "handoff-child.lock", exclusive=True),
           installation_access(environment=spec.baseline.environment)):
         state = JobStatus.read(directory)
+        if once and ExecutionConfirmation.read(directory) is not None:
+            return None
+        if once and state.phase != Phase.READY:
+            raise ValueError("Only a ready job can receive its first execution confirmation")
         if state.mutation_started or state.phase not in {
             Phase.READY, Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED,
         }:
@@ -461,17 +474,27 @@ def start_handoff(directory: Path) -> subprocess.Popen[bytes]:
         now = int(time.time())
         plan.validate_for(plan.installation, now=now)
         spec.verify_inputs(directory)
-        write_record(directory / "handoff-approval.json", {
+        approval: dict[str, object] = {
             "plan_id": spec.plan_id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
             "created_at": now, "expires_at": min(plan.expires_at, now + 900),
-        })
+        }
+        if once:
+            confirmation = ExecutionConfirmation(
+                uuid4().hex, spec.plan_id, hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+                now, min(plan.expires_at, now + 900),
+            )
+            # Persist before any launch. If the requester dies here, repeated
+            # submissions read this record; recovery needs explicit new consent.
+            confirmation.save(directory)
+            approval["confirmation_id"] = confirmation.id
+        write_record(directory / "handoff-approval.json", approval)
         (directory / "approval.json").unlink(missing_ok=True)
         JobStatus(spec.plan_id, Phase.CHECKING, state.attempt, False,
                   "Starting an independent update handoff", now).save(directory)
     # Release the ownership lease before spawning: a fast child must be able to
     # take it immediately. Duplicate launches still serialize in run_job.
     try:
-        return _spawn_worker(directory, spec, handoff=True)
+        return _spawn_worker(directory, spec, handoff=True, confirmation_id=confirmation.id if confirmation else None)
     except OSError:
         with file_access(root / "worker.lock", exclusive=True):
             state = JobStatus.read(directory)
@@ -482,9 +505,13 @@ def start_handoff(directory: Path) -> subprocess.Popen[bytes]:
         raise
 
 
-def _spawn_worker(directory: Path, spec: WorkerSpec, *, handoff: bool = False) -> subprocess.Popen[bytes]:
+def _spawn_worker(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
+                  confirmation_id: str | None = None) -> subprocess.Popen[bytes]:
     command = [spec.baseline.base_python, "-I", str(directory / "worker.pyz")]
-    command.extend(["--handoff", str(directory)] if handoff else [str(directory)])
+    if confirmation_id is not None:
+        command.extend(["--confirmed-handoff", str(directory), confirmation_id])
+    else:
+        command.extend(["--handoff", str(directory)] if handoff else [str(directory)])
     if os.name == "nt":
         return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 cwd=directory, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)

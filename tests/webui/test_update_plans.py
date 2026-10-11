@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import platform
+import subprocess
 import sys
 import threading
 import time
@@ -35,7 +36,7 @@ from nanobot.update_manager import ManagerPolicy
 from nanobot.update_plan import InstallationSnapshot, UpdatePlans
 from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import ObservedProfile, ProfileLaunch, ProfileReceipt
-from nanobot.update_worker import JobStatus, Phase
+from nanobot.update_worker import ExecutionConfirmation, JobStatus, Phase
 from nanobot.webui.client_contract import webui_contract
 from nanobot.webui.gateway_services import build_gateway_services
 
@@ -44,6 +45,7 @@ READ = "/api/settings/nanobot-update/plan"
 JOB = "/api/settings/nanobot-update/job"
 PREPARE = "settings.nanobot.update.prepare"
 SETTLE = "settings.nanobot.update.settle"
+EXECUTE = "settings.nanobot.update.execute"
 
 
 @pytest.fixture
@@ -136,6 +138,120 @@ async def preparation_plan(fixture):
     )
     assert response.status_code == 200, response.body
     return gateway, UpdatePlans(fixture.directory / "plans").load(json.loads(response.body)["plan"]["id"])
+
+
+async def execution_plan(fixture):
+    gateway, original = await preparation_plan(fixture)
+    active = original.profiles[0].model_copy(update={"receipt": original.profiles[0].receipt.model_copy(
+        update={"pid": os.getpid()},
+    )})
+    plan = original.model_copy(update={"id": str(uuid4()), "profiles": [active, original.profiles[1]],
+                                       "stop_profiles": [active.receipt.id], "restart_profiles": [active.receipt.id]})
+    directory = fixture.directory / "jobs" / plan.id
+    directory.mkdir(parents=True)
+    (directory / "plan.json").write_text(plan.model_dump_json())
+    JobStatus(plan.id, Phase.READY, 0, False, "Staged routing fixture", int(time.time())).save(directory)
+    return gateway, plan, directory
+
+
+async def test_execution_consent_survives_cancelled_response_and_duplicate_requests(preparation_gateway, monkeypatch):
+    fixture = preparation_gateway
+    gateway, plan, directory = await execution_plan(fixture)
+    entered, release = threading.Event(), threading.Event()
+    launches = []
+    children = []
+    confirmation = ExecutionConfirmation(uuid4().hex, plan.id, "a" * 64, plan.created_at, plan.expires_at)
+
+    def launch(path, *, once):
+        assert path == directory and once
+        launches.append(plan.id)
+        confirmation.save(path)
+        JobStatus(plan.id, Phase.CHECKING, 0, False, "Controlled launch", int(time.time())).save(path)
+        entered.set()
+        assert release.wait(5)
+        child = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(update_service, "start_handoff", launch)
+    payload = {"id": plan.id, "confirm_restart": True}
+    operation = asyncio.create_task(gateway.http.dispatch_webui_mutation(connection(local=True), EXECUTE, payload))
+    try:
+        async with asyncio.timeout(5):
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done(), "A lost requester cannot abandon a still-running launch thread"
+        fresh = fixture.gateway()
+        duplicate = await fresh.http.dispatch_webui_mutation(connection(local=True), EXECUTE, payload)
+        assert duplicate.status_code == 200, duplicate.body
+        assert duplicate.headers["Cache-Control"] == "no-store"
+        saved = json.loads(duplicate.body)["job"]
+        assert saved["execution_confirmation_id"] == confirmation.id
+        assert saved["recorded_phase"] == "checking" and not saved["mutation_started"]
+        restored = await fetch(fresh, JOB + "?id=" + plan.id)
+        assert json.loads(restored.body)["job"] == saved
+    finally:
+        release.set()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            assert gateway.http.settings_routes._system._update_jobs._reapers
+            await asyncio.wait_for(gateway.http.settings_routes.close(), 5)
+            assert children[0].poll() is None, "Gateway shutdown must not wait for its independent updater"
+        finally:
+            for child in children:
+                child.stdin.close()
+                assert await asyncio.to_thread(child.wait, 5) == 0
+    assert launches == [plan.id]
+    assert "webui.update-jobs.execute.v1" in webui_contract()["capabilities"]
+
+
+async def test_execution_requires_explicit_restart_and_existing_install_authority(preparation_gateway, monkeypatch):
+    fixture = preparation_gateway
+    gateway, plan, directory = await execution_plan(fixture)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unconfirmed or unauthorized requests cannot launch an updater")
+
+    monkeypatch.setattr(update_service, "start_handoff", forbidden)
+    assert (await fetch(gateway, JOB + "/execute")).status_code == 405
+    payload = {"id": plan.id, "confirm_restart": True}
+    assert (await gateway.http.dispatch_webui_mutation(connection(), EXECUTE, payload)).status_code == 403
+    assert (await fixture.gateway("native").http.dispatch_webui_mutation(connection(local=True), EXECUTE, payload)).status_code == 409
+    for bad in ({"id": plan.id}, {"id": plan.id, "confirm_restart": False},
+                {"id": plan.id, "confirm_restart": "true"}, {"id": plan.id, "confirm_restart": 1},
+                {**payload, "repair": True}, {**payload, "command": "pip install"}):
+        result = await gateway.http.dispatch_webui_mutation(connection(local=True), EXECUTE, bad)
+        assert result.status_code == 400
+    assert ExecutionConfirmation.read(directory) is None
+
+
+@pytest.mark.parametrize("problem", ["self_not_selected", "peer_not_selected", "no_restart"])
+async def test_execution_refuses_unreviewed_gateway_lifecycle(preparation_gateway, monkeypatch, problem):
+    fixture = preparation_gateway
+    gateway, plan, directory = await execution_plan(fixture)
+    changes = {}
+    if problem == "self_not_selected":
+        changes["profiles"] = [plan.profiles[0].model_copy(update={"receipt": plan.profiles[0].receipt.model_copy(
+            update={"pid": os.getpid() + 10000},
+        )}), plan.profiles[1]]
+    elif problem == "peer_not_selected":
+        changes["profiles"] = [plan.profiles[0], plan.profiles[1].model_copy(update={"state": "running"})]
+    else:
+        changes["restart_profiles"] = []
+    (directory / "plan.json").write_text(plan.model_copy(update=changes).model_dump_json())
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unsupported lifecycle cannot launch an updater")
+
+    monkeypatch.setattr(update_service, "start_handoff", forbidden)
+    result = await gateway.http.dispatch_webui_mutation(connection(local=True), EXECUTE,
+                                                        {"id": plan.id, "confirm_restart": True})
+    assert result.status_code == 409, result.body
+    assert ExecutionConfirmation.read(directory) is None
 
 
 async def test_preparation_is_durable_idempotent_and_independent_of_browser(preparation_gateway, monkeypatch):
@@ -478,6 +594,7 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
         "host": platform.node(), "previous_version": "0.3.4",
         "target_version": "0.3.5", "channel": "stable", "recorded_phase": "preparing",
         "attempt": 0, "mutation_started": False, "updated_at": plan.created_at,
+        "execution_confirmation_id": None,
     }
     assert not (directory / "request.json").exists(), "An early journal must not require committed staging"
     assert "webui.update-jobs.read.v1" in webui_contract()["capabilities"]

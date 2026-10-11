@@ -4,7 +4,7 @@ The private local mailbox carries identities, never commands or arbitrary paths.
 Preparation is reversible: every participant must hold its idle admission gate
 before the coordinator commits normal shutdown. A committed stop is not an
 installation approval, and the installer must still acquire exclusive leases.
-This internal handoff is not yet exposed by a WebUI or CLI update command.
+Only a detached update owner runs this protocol, never a request awaiting its own exit.
 """
 
 from __future__ import annotations

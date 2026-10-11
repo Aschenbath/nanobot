@@ -42,7 +42,7 @@ from nanobot.update_plan import (
     read_release_plan,
     review_plan,
 )
-from nanobot.update_service import UpdateJobRequest, UpdateJobService
+from nanobot.update_service import UpdateExecutionRequest, UpdateJobRequest, UpdateJobService
 from nanobot.webui.settings_capabilities import network_safety_payload
 from nanobot.webui.settings_contracts import (
     QueryParams,
@@ -559,6 +559,8 @@ class SystemSettingsHandler:
             return await self._update_job(request)
         if action in {"update-job-prepare", "update-job-settle"}:
             return self._update_job_action(request, prepare=action == "update-job-prepare")
+        if action == "update-job-execute":
+            return await self._execute_update_job(request)
         if action == "update-status":
             return SettingsRouteResult.success({
                 **self._updates.status(),
@@ -579,6 +581,25 @@ class SystemSettingsHandler:
             except UpdateError as exc:
                 return SettingsRouteResult.failure(409, str(exc))
         return SettingsRouteResult.failure(404, "unknown settings action")
+
+    async def _execute_update_job(self, request: SettingsRequest) -> SettingsRouteResult:
+        if not self.allow_feature_package_install(request):
+            return SettingsRouteResult.failure(
+                403, "Updating from a remote WebUI is disabled. Use localhost or enable remote package installation.",
+            )
+        try:
+            options = UpdateExecutionRequest.model_validate(request.payload or {})
+        except (ValidationError, ValueError):
+            return SettingsRouteResult.failure(400, "Confirm the saved update plan and its gateway restart.")
+        try:
+            self._admission.check()
+            job = await self._update_jobs.execute(options.id)
+        except UpdateJobNotFoundError:
+            return SettingsRouteResult.failure(404, "No saved update job is available. Review and prepare the update first.")
+        except (RuntimeError, ValueError, OSError, KeyError) as exc:
+            self.logger.warning("could not confirm an update handoff ({})", type(exc).__name__)
+            return SettingsRouteResult.failure(409, "Could not confirm this update. Read its saved state before starting a new review.")
+        return SettingsRouteResult.success({"job": job.model_dump(mode="json")})
 
     def _update_job_action(self, request: SettingsRequest, *, prepare: bool) -> SettingsRouteResult:
         if not self.allow_feature_package_install(request):

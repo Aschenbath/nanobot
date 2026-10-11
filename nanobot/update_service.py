@@ -1,13 +1,15 @@
-"""Own exact-plan preparation independently of a client connection.
+"""Own exact-plan staging and execution consent independently of a client.
 
-This is staging, not installation consent. Durable status precedes acknowledgement;
-repeating an ID only reads its existing job. No phase automatically retries work.
-The process lease coordinates controllers in gateways sharing this installation.
+Staging does not grant installation consent. Each explicit execution confirmation
+can launch its detached owner once; repeating an ID reads the durable record.
+No phase automatically retries work. Clients do not own installer lifetimes.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import time
 from contextlib import ExitStack
 
@@ -27,6 +29,8 @@ from nanobot.update_jobs import (
     prepare_job,
     read_update_job,
     settle_interrupted_preparation,
+    settled_update_work,
+    start_handoff,
     validate_preparation,
 )
 from nanobot.update_plan import UpdatePlan, UpdatePlans
@@ -43,10 +47,22 @@ class UpdateJobRequest(ReleaseRecord):
         return UpdatePlan.canonical_id(value)
 
 
+class UpdateExecutionRequest(UpdateJobRequest):
+    confirm_restart: bool
+
+    @field_validator("confirm_restart")
+    @classmethod
+    def explicit_restart(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("Confirm the reviewed shutdown and restart before updating")
+        return value
+
+
 class UpdateJobService:
     def __init__(self) -> None:
         self._task: asyncio.Task[None] | None = None
         self._closing = False
+        self._reapers: set[asyncio.Task[None]] = set()
 
     def has_pending_work(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -138,6 +154,56 @@ class UpdateJobService:
                 raise ValueError("Only an interrupted preparation can be settled")
         return read_update_job(plan_id)
 
+    async def execute(self, plan_id: str) -> UpdateJobView:
+        """Confirm the saved stop/install/restart plan once, never retry by POST.
+
+        This handoff does not count itself as pending runtime work: its detached
+        owner must be able to stop the requesting gateway. All unrelated work
+        still participates in the cooperative idle-admission check.
+        """
+        if self._closing:
+            raise RuntimeError("The update service is shutting down")
+        job = read_update_job(plan_id)
+        if job.execution_confirmation_id is not None:
+            return job
+        directory = installation_state_dir() / "jobs" / plan_id
+        plan = UpdatePlan.model_validate(read_record(directory / "plan.json"))
+        running = {item.receipt.id for item in plan.profiles if item.state == "running"}
+        if (any(item.state == "unconfirmed" for item in plan.profiles)
+                or running != set(plan.stop_profiles) or running != set(plan.restart_profiles)
+                or not any(item.state == "running" and item.receipt.pid == os.getpid() for item in plan.profiles)):
+            raise ValueError("Inline updates require reviewed shutdown and restart of this gateway and every running peer")
+        loop = asyncio.get_running_loop()
+
+        def launch() -> None:
+            process = start_handoff(directory, once=True)
+            if process is not None:
+                # Transfer the child even if cancellation means the HTTP caller
+                # will never receive the thread's return value.
+                loop.call_soon_threadsafe(self._track_worker, process)
+
+        try:
+            await settled_update_work(launch)
+        except (OSError, RuntimeError):
+            # The launcher may have failed after persisting consent, or another
+            # tab may already own the worker. Return durable facts, not a retry.
+            latest = read_update_job(plan_id)
+            if latest.execution_confirmation_id is None:
+                raise
+        return read_update_job(plan_id)
+
+    def _track_worker(self, process: subprocess.Popen[bytes]) -> None:
+        reaper = asyncio.create_task(self._reap(process), name="nanobot-update-reap")
+        self._reapers.add(reaper)
+        reaper.add_done_callback(self._reapers.discard)
+
+    @staticmethod
+    async def _reap(process: subprocess.Popen[bytes]) -> None:
+        # Do not put process.wait in the default thread pool: gateway shutdown
+        # would join that thread while this child is waiting for the gateway.
+        while process.poll() is None:
+            await asyncio.sleep(0.2)
+
     async def close(self) -> None:
         self._closing = True
         if self._task is not None:
@@ -149,3 +215,6 @@ class UpdateJobService:
                 except asyncio.CancelledError:
                     continue
             self._task.result()
+        for reaper in self._reapers:
+            reaper.cancel()
+        await asyncio.gather(*self._reapers, return_exceptions=True)
