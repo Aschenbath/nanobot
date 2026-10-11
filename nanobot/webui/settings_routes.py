@@ -154,6 +154,7 @@ _SYSTEM_ROUTES = {
     "/api/settings/nanobot-update/job/prepare": "update-job-prepare",
     "/api/settings/nanobot-update/job/settle": "update-job-settle",
     "/api/settings/nanobot-update/job/execute": "update-job-execute",
+    "/api/settings/nanobot-update/job/retry": "update-job-retry",
     **{
         path: f"mcp-{action}"
         for path, action in _MCP_PRESET_ACTIONS_BY_PATH.items()
@@ -166,6 +167,7 @@ _SETTINGS_MUTATION_PATHS = frozenset({
     "/api/settings/nanobot-update/job/prepare",
     "/api/settings/nanobot-update/job/settle",
     "/api/settings/nanobot-update/job/execute",
+    "/api/settings/nanobot-update/job/retry",
     "/api/settings/runtime-config/update",
     "/api/settings/update",
     "/api/settings/model-configurations/create",
@@ -340,6 +342,7 @@ class WebUISettingsRouter:
                     "update-job-prepare",
                     "update-job-settle",
                     "update-job-execute",
+                    "update-job-retry",
                 }
             ),
         )

@@ -34,6 +34,7 @@ from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_backup import BackupSource
 from nanobot.update_jobs import (
     prepare_job,
+    retry_handoff,
     settle_interrupted_preparation,
     start_handoff,
     start_job,
@@ -367,6 +368,57 @@ async def test_confirmed_handoff_is_consumed_once_even_after_failure(installatio
     assert replay.returncode == 0, replay.stderr
     assert JobStatus.read(directory) == before
     assert not (directory / "approval.json").exists() if refuse else before.attempt == 1
+    if not refuse:
+        with pytest.raises(ValueError, match="unmodified"):
+            retry_handoff(directory, confirmation.id)
+        assert ExecutionConfirmation.read(directory) == confirmation
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_retry_consumes_one_failed_confirmation_and_rechecks_ownership_and_expiry(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    refusal = directory / "refuse-preflight"
+    refusal.touch()
+    process = start_handoff(directory, once=True)
+    assert process is not None
+    assert await asyncio.to_thread(process.wait, 40) != 0
+    previous = ExecutionConfirmation.read(directory)
+    assert previous is not None
+    failed = JobStatus.read(directory)
+    assert failed.phase == Phase.HANDOFF_FAILED and not failed.mutation_started
+
+    root = installation_state_dir(plan.installation.environment)
+    with file_access(root / "worker.lock", exclusive=True):
+        with pytest.raises(BlockingIOError):
+            retry_handoff(directory, previous.id)
+    with monkeypatch.context() as patch:
+        patch.setattr(update_jobs.time, "time", lambda: plan.expires_at)
+        with pytest.raises(ValueError, match="expired"):
+            retry_handoff(directory, previous.id)
+    assert ExecutionConfirmation.read(directory) == previous
+    assert JobStatus.read(directory) == failed
+
+    refusal.unlink()
+    process = retry_handoff(directory, previous.id)
+    current = ExecutionConfirmation.read(directory)
+    assert current is not None and current.id != previous.id
+    assert current.request_sha256 == previous.request_sha256
+    assert current.expires_at <= plan.expires_at
+    assert retry_handoff(directory, previous.id) is None
+    await wait_worker(process)
+    completed = JobStatus.read(directory)
+    assert completed.phase == Phase.SUCCEEDED and completed.attempt == 1
+    assert inspect_environment(plan.installation.python).app_version == "0.3.5"
+    spec = WorkerSpec.read(directory)
+    late = subprocess.run([spec.baseline.base_python, "-I", str(directory / "worker.pyz"),
+                           "--confirmed-handoff", str(directory), previous.id], capture_output=True, timeout=10)
+    assert late.returncode != 0
+    assert retry_handoff(directory, previous.id) is None
+    assert JobStatus.read(directory) == completed
 
 
 @pytest.mark.parametrize("installation", ["handoff"], indirect=True)
@@ -393,6 +445,34 @@ async def test_confirmed_launch_failure_is_not_retry_authority(installation, tmp
     assert not (directory / "confirmation-claimed.json").exists()
     assert not (directory / "approval.json").exists()
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_late_launch_failure_cannot_overwrite_new_retry_confirmation(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    launched = []
+
+    def spawn(path, spec, **kwargs):
+        launched.append(kwargs["confirmation_id"])
+        if len(launched) == 1:
+            # The first requester stalls before process creation. Another
+            # explicit confirmation recovers that gap before it reports failure.
+            retry_handoff(path, kwargs["confirmation_id"])
+            raise OSError("The superseded launcher failed late")
+        return None
+
+    monkeypatch.setattr(update_jobs, "_spawn_worker", spawn)
+    with pytest.raises(OSError, match="superseded"):
+        start_handoff(directory, once=True)
+    assert len(launched) == 2 and launched[0] != launched[1]
+    assert ExecutionConfirmation.read(directory).id == launched[1]
+    assert JobStatus.read(directory).phase == Phase.CHECKING
+    assert retry_handoff(directory, launched[0]) is None
+    assert len(launched) == 2
 
 
 @pytest.mark.parametrize("installation", ["handoff"], indirect=True)
@@ -535,13 +615,16 @@ async def test_orphan_preflight_keeps_lease_and_cannot_approve_installation(inst
         directory = await prepare_job(plan, feed)
     pause = directory / "pause-preflight"
     pause.touch()
-    process = start_handoff(directory)
+    process = start_handoff(directory, once=True)
+    confirmation = ExecutionConfirmation.read(directory)
+    assert confirmation is not None
     try:
         await wait_for(lambda: (directory / "preflight-entered.json").exists())
         process.kill()  # Only this test-owned coordinator, never the old runtime child.
         await asyncio.to_thread(process.wait, 10)
         with pytest.raises(BlockingIOError):
-            start_handoff(directory)
+            retry_handoff(directory, confirmation.id)
+        assert ExecutionConfirmation.read(directory) == confirmation
         with pytest.raises(InstallationBusyError):
             with installation_access(updating=True, environment=plan.installation.environment):
                 pytest.fail("Lost parent released the surviving child's lease")
@@ -562,7 +645,7 @@ async def test_orphan_preflight_keeps_lease_and_cannot_approve_installation(inst
     await wait_for(child_exited)
     assert not (directory / "approval.json").exists()
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"
-    await wait_worker(start_handoff(directory))
+    await wait_worker(retry_handoff(directory, confirmation.id))
     assert JobStatus.read(directory).phase == Phase.SUCCEEDED
 
 

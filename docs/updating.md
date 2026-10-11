@@ -1,8 +1,10 @@
 # Inspecting an update
 
 The update work on this branch is a draft. Published stable installations continue
-to use their existing package manager. Preview publication and the complete
-stop/install/restart handoff are not enabled by these commands.
+to use their existing package manager. Preview publication and the complete in-app
+update experience are not enabled. The saved-job commands below only inspect or
+explicitly retry an already-confirmed, pre-mutation handoff; they do not select or
+prepare a release for installation.
 
 ## Review an exact release
 
@@ -288,6 +290,49 @@ These internal paths are verified with real detached/pip processes and disposabl
 application wheels, including dependency upgrades, caller exit, coordinator loss and
 repair. Preflight/restart routing fixtures do not constitute a complete application
 upgrade E2E. Actual isolated gateway stop and protected restart have separate tests.
-Remaining background-writer accounting, application-facing uv execution, pipx execution, authenticated UI/CLI consent
-and reconnection, and native platform acceptance are not complete. No public button
-or CLI flag starts this new handoff yet.
+Remaining background-writer accounting, application-facing uv execution, pipx execution,
+finished client consent and reconnection, and native platform acceptance are not complete.
+The separate draft execution capability can confirm a staged plan; no finished public
+button or CLI flag performs initial staging and execution of this handoff yet.
+
+### Explicit recovery before package mutation
+
+The optional `webui.update-jobs.retry-handoff.v1` capability accepts authenticated
+WebSocket action `settings.nanobot.update.retry` with `id`,
+`previous_confirmation_id` and `confirm_restart: true`. The existing package-install
+policy and runtime admission checks apply. Plain HTTP cannot start a retry. This
+action does not turn on the unfinished in-app install flow or change
+`execution_available: false` in the review response.
+
+Retry replaces exactly the saved execution confirmation the user reviewed. Repeating
+that request, replaying the original execute request or using an older confirmation
+only returns history. It cannot trigger another attempt. An unchanged response is
+not evidence of a running worker: consumers must present the returned journal.
+If the current worker or an orphan preflight child still owns its lease, retry fails
+without changing consent. After both exit, recovery can cover a failed handoff or a
+crash before launch/claim. A delayed process with the replaced confirmation cannot
+start. The original exact plan, artifacts, expiry, release eligibility and selected
+runtime identities still apply; retry cannot extend the review or repair mutation.
+
+If the gateway has stopped **but package mutation has not begun**, the same intact
+installation also provides a local entrypoint:
+
+```bash
+nanobot update --job <plan-id>
+nanobot update --job <plan-id> --retry-handoff \
+  --previous-confirmation <execution-confirmation-id> --confirm-restart
+```
+
+Read the first command's saved facts and the original plan before consenting to the
+second. It repeats the reviewed shutdown/install/restart operation, not just a
+connection check. The console owns a shared runtime lease before importing the
+application; its detached owner waits for all runtime readers to exit before
+installing. A successful command returns a durable job record, **not** proof that
+the update or restart succeeded. It neither restarts previously stopped profiles
+outside the plan nor selects a new latest release.
+
+These commands require an intact application environment. They refuse an incomplete
+installation marker and are **not** the standalone recovery solution for broken
+dependencies, expired plans or post-mutation repair. The frozen worker's status
+inspection remains separate; a complete public recovery route for that case is
+still required before enabling the finished update experience.

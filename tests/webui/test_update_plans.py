@@ -46,6 +46,7 @@ JOB = "/api/settings/nanobot-update/job"
 PREPARE = "settings.nanobot.update.prepare"
 SETTLE = "settings.nanobot.update.settle"
 EXECUTE = "settings.nanobot.update.execute"
+RETRY = "settings.nanobot.update.retry"
 
 
 @pytest.fixture
@@ -227,6 +228,60 @@ async def test_execution_requires_explicit_restart_and_existing_install_authorit
         result = await gateway.http.dispatch_webui_mutation(connection(local=True), EXECUTE, bad)
         assert result.status_code == 400
     assert ExecutionConfirmation.read(directory) is None
+
+
+async def test_retry_is_explicit_authorized_and_old_submissions_only_read_history(preparation_gateway, monkeypatch):
+    fixture = preparation_gateway
+    gateway, plan, directory = await execution_plan(fixture)
+    previous = ExecutionConfirmation(uuid4().hex, plan.id, "a" * 64, plan.created_at, plan.expires_at)
+    current = ExecutionConfirmation(uuid4().hex, plan.id, "a" * 64, plan.created_at, plan.expires_at)
+    previous.save(directory)
+    JobStatus(plan.id, Phase.HANDOFF_FAILED, 0, False, "Stopped before mutation", int(time.time())).save(directory)
+    calls = []
+
+    def retry(path, previous_id):
+        assert path == directory and previous_id == previous.id
+        calls.append(previous_id)
+        current.save(path)
+        JobStatus(plan.id, Phase.CHECKING, 0, False, "Retry confirmed", int(time.time())).save(path)
+        return None
+
+    monkeypatch.setattr(update_service, "retry_handoff", retry)
+    payload = {"id": plan.id, "previous_confirmation_id": previous.id, "confirm_restart": True}
+    assert (await fetch(gateway, JOB + "/retry")).status_code == 405
+    assert (await gateway.http.dispatch_webui_mutation(connection(), RETRY, payload)).status_code == 403
+    assert (await fixture.gateway("native").http.dispatch_webui_mutation(connection(local=True), RETRY, payload)).status_code == 409
+    for bad in ({"id": plan.id, "confirm_restart": True}, {**payload, "confirm_restart": False},
+                {**payload, "previous_confirmation_id": "bad-id"}, {**payload, "repair": True},
+                {**payload, "confirm_restart": "true"}):
+        assert (await gateway.http.dispatch_webui_mutation(connection(local=True), RETRY, bad)).status_code == 400
+    assert not calls
+    first = await gateway.http.dispatch_webui_mutation(connection(local=True), RETRY, payload)
+    assert first.status_code == 200, first.body
+    assert first.headers["Cache-Control"] == "no-store"
+    assert json.loads(first.body)["job"]["execution_confirmation_id"] == current.id
+    fresh = fixture.gateway()
+    for action, body in ((RETRY, payload), (EXECUTE, {"id": plan.id, "confirm_restart": True})):
+        repeated = await fresh.http.dispatch_webui_mutation(connection(local=True), action, body)
+        assert repeated.status_code == 200 and json.loads(repeated.body) == json.loads(first.body)
+    assert calls == [previous.id]
+    assert "webui.update-jobs.retry-handoff.v1" in webui_contract()["capabilities"]
+
+
+async def test_busy_retry_does_not_look_like_an_accepted_new_confirmation(preparation_gateway, monkeypatch):
+    gateway, plan, directory = await execution_plan(preparation_gateway)
+    previous = ExecutionConfirmation(uuid4().hex, plan.id, "a" * 64, plan.created_at, plan.expires_at)
+    previous.save(directory)
+
+    def busy(*args):
+        raise BlockingIOError("private lease path must not reach the response")
+
+    monkeypatch.setattr(update_service, "retry_handoff", busy)
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), RETRY,
+        {"id": plan.id, "previous_confirmation_id": previous.id, "confirm_restart": True})
+    assert response.status_code == 409
+    assert b"private lease" not in response.body
+    assert ExecutionConfirmation.read(directory) == previous
 
 
 @pytest.mark.parametrize("problem", ["self_not_selected", "peer_not_selected", "no_restart"])

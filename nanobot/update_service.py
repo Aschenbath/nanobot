@@ -13,7 +13,7 @@ import subprocess
 import time
 from contextlib import ExitStack
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from nanobot.installation_lock import (
     file_access,
@@ -28,6 +28,7 @@ from nanobot.update_jobs import (
     UpdateJobView,
     prepare_job,
     read_update_job,
+    retry_handoff,
     settle_interrupted_preparation,
     settled_update_work,
     start_handoff,
@@ -56,6 +57,10 @@ class UpdateExecutionRequest(UpdateJobRequest):
         if not value:
             raise ValueError("Confirm the reviewed shutdown and restart before updating")
         return value
+
+
+class UpdateRetryRequest(UpdateExecutionRequest):
+    previous_confirmation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class UpdateJobService:
@@ -161,10 +166,22 @@ class UpdateJobService:
         owner must be able to stop the requesting gateway. All unrelated work
         still participates in the cooperative idle-admission check.
         """
+        return await self._execute(plan_id)
+
+    async def retry(self, plan_id: str, previous_confirmation_id: str) -> UpdateJobView:
+        """Explicitly replace one failed, pre-mutation handoff confirmation."""
+        return await self._execute(plan_id, previous_confirmation_id=previous_confirmation_id)
+
+    async def _execute(self, plan_id: str, *, previous_confirmation_id: str | None = None) -> UpdateJobView:
         if self._closing:
             raise RuntimeError("The update service is shutting down")
         job = read_update_job(plan_id)
-        if job.execution_confirmation_id is not None:
+        if previous_confirmation_id is not None:
+            if job.execution_confirmation_id is None:
+                raise ValueError("No execution confirmation is available to retry")
+            if job.execution_confirmation_id != previous_confirmation_id:
+                return job
+        elif job.execution_confirmation_id is not None:
             return job
         directory = installation_state_dir() / "jobs" / plan_id
         plan = UpdatePlan.model_validate(read_record(directory / "plan.json"))
@@ -176,7 +193,8 @@ class UpdateJobService:
         loop = asyncio.get_running_loop()
 
         def launch() -> None:
-            process = start_handoff(directory, once=True)
+            process = (start_handoff(directory, once=True) if previous_confirmation_id is None
+                       else retry_handoff(directory, previous_confirmation_id))
             if process is not None:
                 # Transfer the child even if cancellation means the HTTP caller
                 # will never receive the thread's return value.
@@ -188,7 +206,7 @@ class UpdateJobService:
             # The launcher may have failed after persisting consent, or another
             # tab may already own the worker. Return durable facts, not a retry.
             latest = read_update_job(plan_id)
-            if latest.execution_confirmation_id is None:
+            if latest.execution_confirmation_id in {None, previous_confirmation_id}:
                 raise
         return read_update_job(plan_id)
 

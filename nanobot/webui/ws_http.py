@@ -227,6 +227,7 @@ _WEBUI_MUTATION_PATHS = {
     "settings.nanobot.update.prepare": "/api/settings/nanobot-update/job/prepare",
     "settings.nanobot.update.settle": "/api/settings/nanobot-update/job/settle",
     "settings.nanobot.update.execute": "/api/settings/nanobot-update/job/execute",
+    "settings.nanobot.update.retry": "/api/settings/nanobot-update/job/retry",
     "settings.channel.validate": "/api/settings/channels/validate",
     "settings.channel.configure": "/api/settings/channels/configure",
     "settings.pairing.approve": "/api/settings/pairing/approve",

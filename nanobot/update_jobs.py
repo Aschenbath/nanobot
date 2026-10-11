@@ -22,7 +22,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 from urllib.parse import unquote, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zipfile import ZipFile, ZipInfo
 
 from packaging.utils import canonicalize_name, parse_wheel_filename
@@ -456,19 +456,44 @@ def start_handoff(directory: Path, *, once: bool = False) -> subprocess.Popen[by
     With once=True, persist one confirmation and never launch again for a repeated
     request. A missing response, failed launch or failed job is not retry authority.
     """
+    return _start_handoff(directory, once=once)
+
+
+def retry_handoff(directory: Path, previous_confirmation_id: str) -> subprocess.Popen[bytes] | None:
+    """Consume explicit recovery consent for one unmodified handoff generation.
+
+    A stale predecessor is a read, not another retry. A live owner, surviving
+    preflight child, expired plan or package mutation requires a different action.
+    """
+    if UUID(previous_confirmation_id).hex != previous_confirmation_id:
+        raise ValueError("Invalid previous execution confirmation")
+    return _start_handoff(directory, once=True, previous_confirmation_id=previous_confirmation_id)
+
+
+def _start_handoff(directory: Path, *, once: bool,
+                   previous_confirmation_id: str | None = None) -> subprocess.Popen[bytes] | None:
     spec = WorkerSpec.read(directory)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
     root = installation_state_dir(spec.baseline.environment)
-    if once and ExecutionConfirmation.read(directory) is not None:
+
+    def already_confirmed() -> bool:
+        current = ExecutionConfirmation.read(directory)
+        if previous_confirmation_id is not None:
+            if current is None:
+                raise ValueError("No execution confirmation is available to retry")
+            return current.id != previous_confirmation_id
+        return once and current is not None
+
+    if already_confirmed():
         return None
     confirmation = None
     with (file_access(root / "worker.lock", exclusive=True),
           file_access(root / "handoff-child.lock", exclusive=True),
           installation_access(environment=spec.baseline.environment)):
         state = JobStatus.read(directory)
-        if once and ExecutionConfirmation.read(directory) is not None:
+        if already_confirmed():
             return None
-        if once and state.phase != Phase.READY:
+        if once and previous_confirmation_id is None and state.phase != Phase.READY:
             raise ValueError("Only a ready job can receive its first execution confirmation")
         if state.mutation_started or state.phase not in {
             Phase.READY, Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED,
@@ -490,6 +515,9 @@ def start_handoff(directory: Path, *, once: bool = False) -> subprocess.Popen[by
             # submissions read this record; recovery needs explicit new consent.
             confirmation.save(directory)
             approval["confirmation_id"] = confirmation.id
+            # Both owner leases are held. Revoking the old confirmation first
+            # makes its delayed launchers harmless, even across a crash here.
+            (directory / "confirmation-claimed.json").unlink(missing_ok=True)
         write_record(directory / "handoff-approval.json", approval)
         (directory / "approval.json").unlink(missing_ok=True)
         JobStatus(spec.plan_id, Phase.CHECKING, state.attempt, False,
@@ -501,7 +529,9 @@ def start_handoff(directory: Path, *, once: bool = False) -> subprocess.Popen[by
     except OSError:
         with file_access(root / "worker.lock", exclusive=True):
             state = JobStatus.read(directory)
-            if state.phase == Phase.CHECKING:
+            current = ExecutionConfirmation.read(directory)
+            if (state.phase == Phase.CHECKING
+                    and (confirmation is None or current == confirmation)):
                 JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, state.attempt, False,
                           "Could not start the independent update process; no shutdown was requested",
                           int(time.time())).save(directory)

@@ -7,7 +7,7 @@ import pytest
 
 from nanobot.cli import entry
 from nanobot.cli.entry import _agent_invocation_args, _native_tui_candidate
-from nanobot.installation_lock import installation_access, installation_id
+from nanobot.installation_lock import InstallationBusyError, installation_access, installation_id
 
 
 def test_root_command_routes_to_agent_without_copying_agent_options() -> None:
@@ -139,6 +139,29 @@ def test_update_command_can_reach_its_own_lease_and_recovery(tmp_path, monkeypat
     with installation_access(updating=True):
         entry.main()
     assert called == [True]
+
+
+@pytest.mark.parametrize("args", [["update", "--job", "saved-id"],
+                                 ["--home=/test", "update", "--job=saved-id", "--retry-handoff"]])
+def test_saved_update_recovery_owns_runtime_before_application_imports(tmp_path, monkeypatch, args):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "environment"))
+    monkeypatch.setattr(sys, "argv", ["nanobot", *args])
+    entered = []
+
+    def dispatch():
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True):
+                pytest.fail("Recovery imported without a runtime lease")
+        entered.append(True)
+
+    monkeypatch.setattr(entry, "_dispatch", dispatch)
+    entry.main()
+    assert entered == [True]
+    with installation_access(updating=True):
+        with pytest.raises(SystemExit):
+            entry.main()
+    assert entered == [True]
 
 
 @pytest.mark.parametrize("action,allowed", [("stop", True), ("status", True), ("logs", True), ("restart", False)])

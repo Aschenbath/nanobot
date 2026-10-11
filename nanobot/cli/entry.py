@@ -91,8 +91,11 @@ def _command_args(args: list[str]) -> list[str]:
 def main() -> None:
     """Acquire a runtime lease before loading application code."""
     args = _command_args(sys.argv[1:])
-    if args[:1] == ["update"]:
+    saved_update = args[:1] == ["update"] and any(argument.split("=", 1)[0] == "--job" for argument in args[1:])
+    if args[:1] == ["update"] and not saved_update:
         # The update entrypoint takes its own exclusive lease only for execution.
+        # Saved pre-mutation recovery instead owns a read lease before imports;
+        # its detached worker can replace files only after this process exits.
         _dispatch()
         return
     try:

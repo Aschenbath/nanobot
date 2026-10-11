@@ -12,6 +12,7 @@ from packaging.tags import Tag
 from typer.testing import CliRunner
 
 from nanobot.cli.update import update as update_command
+from nanobot.installation_lock import InstallationBusyError, installation_access
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import ReleaseArtifact, release_filenames
 from nanobot.update_manager import ManagerPolicy
@@ -195,3 +196,59 @@ def test_cli_channel_inspection_cannot_silently_run_stable_update(monkeypatch, c
     result = CliRunner().invoke(app, ["--channel", channel])
     assert result.exit_code != 0
     assert "requires --plan" in result.output
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_saved_job_cli_uses_scoped_status_and_explicit_handoff_only(tmp_path, monkeypatch, retry):
+    from nanobot import update, update_jobs
+    from nanobot.update_jobs import UpdateJobView
+    from nanobot.update_worker import Phase
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "environment"))
+    identifier, confirmation = str(uuid4()), uuid4().hex
+    job = UpdateJobView(id=identifier, installation_id="a" * 64, host="test", previous_version="0.3.4",
+                        target_version="0.3.5", channel="stable", recorded_phase=Phase.HANDOFF_FAILED,
+                        attempt=0, mutation_started=False, updated_at=100, execution_confirmation_id=confirmation)
+    calls = []
+
+    def saved(plan_id):
+        assert plan_id == identifier
+        return job
+
+    def handoff(directory, previous):
+        assert directory.name == identifier and previous == confirmation
+        with pytest.raises(InstallationBusyError):
+            with installation_access(updating=True):
+                pytest.fail("Recovery controller released its runtime too early")
+        calls.append(identifier)
+
+    monkeypatch.setattr(update_jobs, "read_update_job", saved)
+    monkeypatch.setattr(update_jobs, "retry_handoff", handoff)
+    monkeypatch.setattr(update, "update_installation", lambda **kwargs: pytest.fail("Unexpected legacy installer"))
+    app = typer.Typer()
+    app.command()(update_command)
+    arguments = ["--job", identifier]
+    if retry:
+        arguments += ["--retry-handoff", "--previous-confirmation", confirmation, "--confirm-restart"]
+    result = CliRunner().invoke(app, arguments)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == job.model_dump(mode="json")
+    assert calls == ([identifier] if retry else [])
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--retry-handoff"], ["--job", "id", "--confirm-restart"],
+    ["--job", "id", "--retry-handoff", "--confirm-restart"],
+    ["--job", "id", "--previous-confirmation", "confirmation"],
+    ["--job", "id", "--retry-handoff", "--previous-confirmation", "confirmation"],
+    ["--job", "id", "--check"], ["--job", "id", "--dev"], ["--job", "id", "--plan"],
+    ["--job", "id", "--channel", "preview"], ["--job", "id", "--allow-downgrade"],
+])
+def test_saved_job_cli_rejects_ambiguous_recovery_flags(monkeypatch, arguments):
+    from nanobot.cli import update
+
+    monkeypatch.setattr(update, "_saved_job", lambda *args: pytest.fail("Ambiguous recovery was executed"))
+    app = typer.Typer()
+    app.command()(update_command)
+    assert CliRunner().invoke(app, arguments).exit_code != 0
