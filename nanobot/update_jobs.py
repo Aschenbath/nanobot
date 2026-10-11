@@ -1,4 +1,4 @@
-"""Prepare exact offline jobs and hand them to the standalone pip worker.
+"""Prepare exact offline jobs and hand them to the standalone installer worker.
 
 This is the executor's internal Interface, not an authenticated WebUI mutation.
 The caller owns explicit shutdown/restart selection. A detached worker revalidates,
@@ -31,6 +31,7 @@ from nanobot.releases import Sha256
 from nanobot.update_backup import BackupSource, profile_sources, unique_sources
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
+from nanobot.update_uv import UVPreparation, prepare_uv
 from nanobot.update_worker import (
     JobStatus,
     Phase,
@@ -86,7 +87,7 @@ def _worker_archive(path: Path) -> str:
     # The frozen worker must not shadow the newly installed application when
     # handing off to its runtime. Keep only the copied stdlib helpers in this
     # private namespace; intentional application imports retain `nanobot`.
-    modules = ("update_worker", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
+    modules = ("update_worker", "update_uv", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
     with ZipFile(path, "x") as bundle:
         files = {"__main__.py": b"from _nanobot_update.update_worker import main\nmain()\n",
                  "_nanobot_update/__init__.py": b"", "_nanobot_update/utils/__init__.py": b""}
@@ -102,7 +103,7 @@ def _worker_archive(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple[StagedWheel, ...]:
+def _stage_app(plan: UpdatePlan, app_wheel: Path, directory: Path) -> StagedWheel:
     wheels = directory / "wheels"
     wheels.mkdir(mode=0o700, exist_ok=True)
     artifact = plan.target.artifact
@@ -118,6 +119,12 @@ def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple
         available = {canonicalize_name(extra) for extra in metadata.get_all("Provides-Extra", [])}
         if not set(plan.extras or []).issubset(available):
             raise ValueError("The target release does not provide all confirmed extras")
+    return app
+
+
+def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple[StagedWheel, ...]:
+    app = _stage_app(plan, app_wheel, directory)
+    wheels = directory / "wheels"
     records = [app]
     python = plan.installation.python
     _pip(python, "check")
@@ -167,10 +174,29 @@ def _prepare_wheels(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple
     return tuple(records)
 
 
+def _prepare_transaction(plan: UpdatePlan, app_wheel: Path, directory: Path) -> tuple[tuple[StagedWheel, ...], UVPreparation | None]:
+    if plan.installation.owner != "uv":
+        return _prepare_wheels(plan, app_wheel, directory), None
+    executable = shutil.which("uv")
+    if executable is None:
+        raise ValueError("The installation's uv manager is not available")
+    app = _stage_app(plan, app_wheel, directory)
+    prepared = prepare_uv(environment=plan.installation.environment, python=plan.installation.python,
+                          receipt_sha256=plan.installation.records["uv-receipt.toml"],
+                          app_wheel=directory / "wheels" / app.filename, version=plan.target.version,
+                          extras=plan.extras or [], directory=directory, executable=executable)
+    return (app,), prepared
+
+
 async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
-    """Stage a plain-venv job without granting execution or changing installed files."""
-    if plan.installation.owner != "venv" or plan.extras is None:
-        raise ValueError("The pip worker requires a dedicated venv and explicitly confirmed extras")
+    """Stage a supported job without granting execution or changing installed files."""
+    if plan.installation.owner not in {"venv", "uv"} or plan.extras is None:
+        raise ValueError("The worker requires a supported dedicated environment and explicitly confirmed extras")
+    native_uv = plan.installation.owner == "uv"
+    if native_uv and (os.name != "posix" or plan.installation.manager is None):
+        raise ValueError("This uv installation needs its owner's external update workflow")
+    if plan.owner_restriction:
+        raise ValueError(plan.owner_restriction)
     if plan.action != "upgrade":
         raise ValueError("This executor prepares upgrades only; no-op, restart and downgrade need their own review")
     plan.validate_for(plan.installation)
@@ -183,17 +209,19 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
             if spec.plan_sha256 != hashlib.sha256((plan.model_dump_json() + "\n").encode()).hexdigest():
                 raise ValueError("This job already belongs to another approved plan")
             return directory
-        baseline = await asyncio.to_thread(inspect_environment, plan.installation.python)
+        baseline = await asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv)
         if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
             plan.installation.environment, plan.installation.python, plan.installation.installed_version,
             plan.installation.records.get("pyvenv.cfg"),
         ) or any(plan.installation.records.get(name) != digest for name, digest in baseline.app_records.items()):
             raise ValueError("The installation changed since this plan was prepared")
+        if native_uv and baseline.manager_receipt_sha != plan.installation.records.get("uv-receipt.toml"):
+            raise ValueError("The uv installation settings changed since this plan was prepared")
         validate_profiles(plan.profiles, plan.installation.environment)
         app_wheel = await feed.download(plan.target, root / "downloads")
-        preparing = asyncio.create_task(asyncio.to_thread(_prepare_wheels, plan, app_wheel, directory))
+        preparing = asyncio.create_task(asyncio.to_thread(_prepare_transaction, plan, app_wheel, directory))
         try:
-            records = await asyncio.shield(preparing)
+            records, uv = await asyncio.shield(preparing)
         except asyncio.CancelledError:
             # Closing a browser/cancelling its request must not release the staging
             # lease while the package-manager subprocess still writes this job.
@@ -201,7 +229,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
                 await preparing
             finally:
                 raise
-        current = await asyncio.to_thread(inspect_environment, plan.installation.python)
+        current = await asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv)
         if current != baseline:
             raise ValueError("Installation changed while preparing the update")
         plan.validate_for(plan.installation)
@@ -212,13 +240,15 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
         if archive.exists():
             archive.unlink()  # Only uncommitted staging: no request/approval exists yet.
         sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
+        if native_uv:
+            sources.append(BackupSource(str(Path(baseline.environment) / "uv-receipt.toml")))
         for profile in plan.profiles:
             receipt = profile.receipt
             sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
                                            config=Path(receipt.config), workspace=Path(receipt.workspace)))
             sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
         spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
-                          baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles))
+                          baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv)
         for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
             path.chmod(0o600)
             with path.open("r+b") as stream:
@@ -258,8 +288,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
             check_environment(spec, repairing=state.mutation_started)
             if not restarting:
                 require_stopped_profiles(plan.profiles, spec.baseline.environment)
-            for wheel in spec.wheels:
-                wheel.verify(directory / "wheels")
+            spec.verify_inputs(directory)
             now = int(time.time())
             if not repair:
                 plan.validate_for(plan.installation, now=now)
@@ -291,6 +320,7 @@ def start_handoff(directory: Path) -> subprocess.Popen[bytes]:
             raise ValueError("Shutdown handoff requires an unmodified prepared job")
         now = int(time.time())
         plan.validate_for(plan.installation, now=now)
+        spec.verify_inputs(directory)
         write_record(directory / "handoff-approval.json", {
             "plan_id": spec.plan_id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
             "created_at": now, "expires_at": min(plan.expires_at, now + 900),

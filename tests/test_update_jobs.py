@@ -110,16 +110,21 @@ def prepare_handoff(directory):
 """
 
 
-def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False, handoff=False):
+def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False, handoff=False,
+          extras=(), entrypoint=False):
     package = name.replace("-", "_")
     dist = f"{package}-{version}.dist-info"
     files = {
         f"{package if name != 'nanobot-ai' else 'nanobot'}/__init__.py": f"__version__ = '{version}'\n".encode(),
         f"{dist}/METADATA": (f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+                             + "".join(f"Provides-Extra: {extra}\n" for extra in extras)
                              + "".join(f"Requires-Dist: {requirement}\n" for requirement in requires)).encode(),
         f"{dist}/WHEEL": f"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-{platform}\n".encode(),
     }
     if name == "nanobot-ai":
+        if entrypoint:
+            files["nanobot/__init__.py"] += b"def main(): pass\n"
+            files[f"{dist}/entry_points.txt"] = b"[console_scripts]\nnanobot = nanobot:main\n"
         if broken:
             files["nanobot/__init__.py"] = b"raise RuntimeError('broken release fixture')\n"
         files["nanobot/web/dist/index.html"] = f"verified UI {version}".encode()
@@ -722,7 +727,7 @@ sys.path.insert(0, sys.argv[1])
 from _nanobot_update import update_worker
 original_run = update_worker.subprocess.run
 def run(command, *args, **kwargs):
-    if '--pip' in command:
+    if '--install' in command:
         Path(sys.argv[3]).write_text('ready')
         time.sleep(15)
         raise RuntimeError('Handoff test deadline exceeded')
