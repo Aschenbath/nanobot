@@ -8,35 +8,6 @@ import { requestMutationMock, jsonResponse, settingsPayload, renderSettingsView,
 describe("Settings capabilities", () => {
   installSettingsViewTestHooks();
 
-  it("edits the existing web proxy in web access even while disabled, without a duplicate advanced editor", async () => {
-    let payload = { ...settingsPayload(), runtime_config: {
-      "tools.web.enable": false, "tools.web.proxy": "http://old-proxy.example:8080", "tools.web.user_agent": null,
-    } } as SettingsPayload;
-    requestMutationMock.mockImplementation(async (_method, update) => {
-      payload = { ...payload, runtime_config: { ...payload.runtime_config, ...update.values },
-        requires_restart: true, restart_required_sections: ["runtime"] };
-      return payload;
-    });
-    renderSettingsView({ initialSection: "capabilities", initialSettings: payload });
-    fireEvent.click(within(screen.getByRole("region", { name: "Web access" })).getByRole("button", { name: "Configure" }));
-    fireEvent.click(screen.getByRole("button", { name: "Advanced options" }));
-    const proxy = screen.getByRole("textbox", { name: "Web proxy", exact: true });
-    expect(proxy).toHaveValue("http://old-proxy.example:8080");
-    fireEvent.change(proxy, { target: { value: "http://new-proxy.example:7890" } });
-    await waitFor(() => expect(requestMutationMock).toHaveBeenCalledWith(
-      "settings.runtime_config.update", { values: { "tools.web.proxy": "http://new-proxy.example:7890" } }, 20_000,
-    ));
-    expect(await screen.findByText("Saved. Restart to apply changes.")).toBeVisible();
-    fireEvent.change(proxy, { target: { value: "" } });
-    await waitFor(() => expect(requestMutationMock).toHaveBeenLastCalledWith(
-      "settings.runtime_config.update", { values: { "tools.web.proxy": null } }, 20_000,
-    ));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "Web access" })).getByRole("button", { name: "Close", exact: true }));
-    expect(screen.getByRole("switch", { name: "Web access" })).not.toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Advanced", exact: true }));
-    expect(screen.queryByRole("textbox", { name: "Web proxy", exact: true })).not.toBeInTheDocument();
-  });
-
   it("opens configuration for disabled features without enabling them", () => {
     const payload = settingsPayload();
     payload.image_generation.enabled = false;
@@ -279,6 +250,35 @@ describe("Settings capabilities", () => {
         20_000,
       ),
     );
+  });
+
+  it("edits the existing web proxy in web access even while disabled, without a duplicate advanced editor", async () => {
+    let payload = { ...settingsPayload(), runtime_config: {
+      "tools.web.enable": false, "tools.web.proxy": "http://old-proxy.example:8080", "tools.web.user_agent": null,
+    } } as SettingsPayload;
+    requestMutationMock.mockImplementation(async (_method, update) => {
+      payload = { ...payload, runtime_config: { ...payload.runtime_config, ...update.values },
+        requires_restart: true, restart_required_sections: ["runtime"] };
+      return payload;
+    });
+    renderSettingsView({ initialSection: "capabilities", initialSettings: payload });
+    fireEvent.click(within(screen.getByRole("region", { name: "Web access" })).getByRole("button", { name: "Configure" }));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced options" }));
+    const proxy = screen.getByRole("textbox", { name: "Web proxy", exact: true });
+    expect(proxy).toHaveValue("http://old-proxy.example:8080");
+    fireEvent.change(proxy, { target: { value: "http://new-proxy.example:7890" } });
+    await waitFor(() => expect(requestMutationMock).toHaveBeenCalledWith(
+      "settings.runtime_config.update", { values: { "tools.web.proxy": "http://new-proxy.example:7890" } }, 20_000,
+    ));
+    expect(await screen.findByText("Saved. Restart to apply changes.")).toBeVisible();
+    fireEvent.change(proxy, { target: { value: "" } });
+    await waitFor(() => expect(requestMutationMock).toHaveBeenLastCalledWith(
+      "settings.runtime_config.update", { values: { "tools.web.proxy": null } }, 20_000,
+    ));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Web access" })).getByRole("button", { name: "Close", exact: true }));
+    expect(screen.getByRole("switch", { name: "Web access" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced", exact: true }));
+    expect(screen.queryByRole("textbox", { name: "Web proxy", exact: true })).not.toBeInTheDocument();
   });
 
   it("saves optional-key web search providers without an API key", async () => {
