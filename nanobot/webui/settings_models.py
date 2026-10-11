@@ -40,11 +40,7 @@ from nanobot.providers.oauth_model_catalog import (
     invalidate_oauth_model_catalog,
 )
 from nanobot.providers.registry import PROVIDERS, ProviderSpec, create_dynamic_spec, find_by_name
-from nanobot.providers.routing import (
-    resolve_automatic_model_api,
-    resolve_model_api,
-    resolve_provider_route,
-)
+from nanobot.providers.routing import resolve_automatic_model_api, resolve_model_api
 from nanobot.webui import request_settings
 from nanobot.webui.settings_contracts import (
     QueryParams,
@@ -141,31 +137,6 @@ def _provider_config_updates(query: QueryParams) -> dict[str, Any]:
     if query_has_alias(query, "api_type", "apiType"):
         updates["api_type"] = query_first_alias(query, "api_type", "apiType") or "auto"
     return updates
-
-
-def _preset_with_request_updates(
-    config: Config, preset: ModelPresetConfig, query: QueryParams,
-) -> ModelPresetConfig:
-    updates = {
-        snake: request_settings.restore_request_secrets(
-            request_settings.parse_request_object(query, snake, camel), getattr(preset, snake),
-        )
-        for snake, camel in (
-            ("extra_headers", "extraHeaders"),
-            ("extra_query", "extraQuery"),
-            ("extra_body", "extraBody"),
-        )
-        if query_has_alias(query, snake, camel)
-    }
-    # The provider validator already owns structured JSON validation and safe errors.
-    validated = request_settings.validate_request_config(None, updates)
-    candidate = preset.model_copy(update={key: getattr(validated, key) for key in updates})
-    if any(getattr(candidate, key) for key in _PROVIDER_STRUCTURED_FIELDS):
-        try:
-            resolve_provider_route(config, preset=candidate)
-        except ValueError as exc:
-            raise WebUISettingsError(str(exc)) from None
-    return candidate
 
 
 def mask_secret_hint(secret: str | None) -> str | None:
@@ -1072,6 +1043,33 @@ def model_settings_payload(
         ),
         "providers": providers,
     }
+
+
+def _preset_with_request_updates(
+    config: Config, preset: ModelPresetConfig, query: QueryParams,
+) -> ModelPresetConfig:
+    from nanobot.providers.routing import resolve_provider_route
+
+    updates = {
+        snake: request_settings.restore_request_secrets(
+            request_settings.parse_request_object(query, snake, camel), getattr(preset, snake),
+        )
+        for snake, camel in (
+            ("extra_headers", "extraHeaders"),
+            ("extra_query", "extraQuery"),
+            ("extra_body", "extraBody"),
+        )
+        if query_has_alias(query, snake, camel)
+    }
+    # The provider validator already owns structured JSON validation and safe errors.
+    validated = request_settings.validate_request_config(None, updates)
+    candidate = preset.model_copy(update={key: getattr(validated, key) for key in updates})
+    if any(getattr(candidate, key) for key in _PROVIDER_STRUCTURED_FIELDS):
+        try:
+            resolve_provider_route(config, preset=candidate)
+        except ValueError as exc:
+            raise WebUISettingsError(str(exc)) from None
+    return candidate
 
 
 def update_agent_model_settings(
