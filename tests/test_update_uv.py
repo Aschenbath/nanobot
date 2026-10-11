@@ -28,6 +28,7 @@ from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_manager import read_manager_policy
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan
+from nanobot.update_stop import stop_reviewed_gateways
 from nanobot.update_uv import UV_TRANSACTION_VERSION, cache_digest, uv_environment
 from nanobot.update_worker import JobStatus, Phase, WorkerSpec, inspect_environment
 
@@ -191,6 +192,12 @@ async def test_uv_prepared_job_preserves_owner_and_sealed_inputs(uv_installation
         server.server_close()  # Dependencies must come entirely from prepared inputs.
         if mode == "tamper":
             (cache / "changed-after-preparation").write_text("not part of approved preparation")
+            # Preflight can encounter cache changes after the initial worker
+            # check (for example during release revalidation). Refuse before
+            # posting even a shutdown preparation request to the gateways.
+            with pytest.raises(ValueError, match="cache changed"):
+                await stop_reviewed_gateways(directory)
+            assert not (directory.parent.parent / "stop.json").exists()
             with pytest.raises(ValueError, match="cache changed"):
                 await jobs.start_job(directory, feed)
             assert not (directory / "approval.json").exists()

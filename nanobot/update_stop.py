@@ -204,8 +204,7 @@ async def stop_reviewed_gateways(directory: Path, *, timeout: float = 30) -> Non
             plan.validate_for(plan.installation)
             # Refuse missing/changed staged inputs before disturbing a running
             # gateway. Installation will independently recheck them after exit.
-            for wheel in spec.wheels:
-                await asyncio.to_thread(wheel.verify, directory / "wheels")
+            await asyncio.to_thread(spec.verify_inputs, directory)
             plan.validate_for(plan.installation)
             validate_profiles(plan.profiles, environment)
             if any(item.state == "unconfirmed" or

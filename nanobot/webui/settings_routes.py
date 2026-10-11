@@ -148,6 +148,9 @@ _SYSTEM_ROUTES = {
     "/api/settings/version-check": "version-check",
     "/api/settings/nanobot-update": "update-status",
     "/api/settings/nanobot-update/start": "update-start",
+    "/api/settings/nanobot-update/plan": "update-plan-read",
+    "/api/settings/nanobot-update/plan/create": "update-plan-create",
+    "/api/settings/nanobot-update/job": "update-job-read",
     **{
         path: f"mcp-{action}"
         for path, action in _MCP_PRESET_ACTIONS_BY_PATH.items()
@@ -156,6 +159,7 @@ _SYSTEM_ROUTES = {
 
 _SETTINGS_MUTATION_PATHS = frozenset({
     "/api/settings/nanobot-update/start",
+    "/api/settings/nanobot-update/plan/create",
     "/api/settings/runtime-config/update",
     "/api/settings/update",
     "/api/settings/model-configurations/create",
@@ -306,7 +310,7 @@ class WebUISettingsRouter:
             return await asyncio.to_thread(self._handle_settings_usage)
 
         domain, action = route
-        if action in {"update-status", "update-start"} and self._runtime_surface == "native":
+        if action in {"update-status", "update-start", "update-plan-create", "update-plan-read", "update-job-read"} and self._runtime_surface == "native":
             return self._error_response(409, "Update this installation through Nanobot Desktop.")
         restart_before = (
             await asyncio.to_thread(self._restart_values, action)
@@ -325,6 +329,8 @@ class WebUISettingsRouter:
                     "channel-connect",
                     "update-start",
                     "update-status",
+                    "update-plan-create",
+                    "update-plan-read",
                 }
             ),
         )
@@ -369,7 +375,12 @@ class WebUISettingsRouter:
                     self._restart_changes[action] = result.restart_section
                 # Reversible changes are tracked separately from installation and reload failures.
                 result.payload["requires_restart"] = False
-        return self._render_result(result)
+        response = self._render_result(result)
+        if action in {"update-status", "update-start", "update-plan-create", "update-plan-read", "update-job-read"}:
+            # A saved review is immutable, but its local validity and permission
+            # are not. Never reuse a cached success after an installation changes.
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     def _restart_values(self, action: str) -> dict[str, Any]:
         config = self.settings.config.load()

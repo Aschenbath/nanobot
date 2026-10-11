@@ -43,6 +43,58 @@ backup or post-restart verification until the execution handoff is integrated an
 tested. A plan also does not authorize bypassing uv/pipx, Docker, Desktop or an
 external supervisor; the installation owner remains responsible for its files.
 
+### Gateway review Interface
+
+The optional `webui.update-plans.v1` capability exposes review only. On an authenticated
+WebSocket, `settings.nanobot.update.plan` accepts `channel` (stable by default),
+`restart_running` (false by default), and optional explicit `extras`. It cannot accept
+a download URL, shell command, environment path or caller-supplied plan. A plain HTTP
+request cannot create a plan. This capability does not change `webui.self-update.v1`.
+
+The response names the gateway, exact target, running/installed versions, owner and
+reviewed profiles. `restart_running=true` selects only known, running background
+instances with explicit lifetime and cooperative stop support; an unknown process
+owner requires its external workflow. Selection describes the impact to review. It
+does not authorize shutdown, and stopped profiles are never selected for restart.
+Manager-owned extras are preserved, not replaced by the client's request.
+
+An authenticated `GET /api/settings/nanobot-update/plan?id=<plan-id>` restores the same
+review after refresh. The saved record is immutable and installation-scoped. Reads
+do not resolve a new target or contact the release feed. `validity` reports the local
+snapshot and expiry (`current`, `expired`, `installation_changed`, `profiles_changed`),
+not current release eligibility or permission to execute. All update responses are
+`no-store`; missing or invalid records and discovery failures are explicit errors.
+
+`installation_allowed` preserves the existing local/remote package-install policy.
+`execution_available` is currently false: neither review action installs packages or
+starts the worker. A future apply Interface must consume this exact plan, recheck
+authority and release eligibility, and implement the complete job/recovery lifecycle.
+It must not translate the plan back into the legacy “install latest” request. Desktop
+installations continue to use their distributor's updater rather than these routes.
+
+### Saved job status
+
+The separate optional `webui.update-jobs.read.v1` capability provides authenticated
+`GET /api/settings/nanobot-update/job?id=<plan-id>`. It reads the current installation's
+durable preparation/execution journal and remains `no-store`. Missing jobs return 404;
+invalid identifiers return 400; corrupt or misbound records return 409. It cannot start,
+cancel, repair or clean up a job and does not expose local logs, paths or credentials.
+
+`recorded_phase`, `attempt`, `mutation_started` and `updated_at` describe the last saved
+facts, not whether a worker is alive now. The response also binds the previous/target
+versions and channel to the saved plan. Plan expiry does not erase history. Reading
+this record does not start the installation's Python, check a release endpoint or take
+a runtime lease, so an incomplete-install marker or an active writer does not prevent
+status inspection from a control plane that is still available. A dead gateway still
+needs its external recovery route; this endpoint does not make that gateway reachable.
+Records are scoped by environment path, so a later reinstall at that location may
+still have history. A status read does not validate the new environment's fingerprint
+or authorize resuming a job from its predecessor.
+
+The consumer must not infer retry/cancel permission from a phase or treat `ready` as
+proof that preparation committed. The immutable worker request remains the preparation
+commit record, and execution still validates its complete inputs and current authority.
+
 ### Package-manager settings
 
 For uv and pipx installations, planning reads the owner's existing receipt and
@@ -164,6 +216,20 @@ are not a transfer of Windows byte-range lock ownership. Native uv/pipx executio
 still requires its own verified preparation, lifecycle and recovery path; this
 handoff alone does not enable it.
 
+Preparation now saves the exact plan and a `preparing` journal before downloading or
+resolving dependencies. Native inspection/resolution keeps its preparation leases until
+it actually returns, including after repeated request cancellations. A settled failure
+records `preparation_failed` without installation authority, and a retry must use the
+same immutable plan. Reusing its ID for changed consent is rejected; a new review gets
+a new ID.
+
+An abruptly exited preparer can leave a `preparing` record. That record alone cannot
+prove that its native children stopped, so the same job refuses staging reuse or cleanup
+until separately inspected. This is not a complete abrupt-process recovery mechanism:
+cross-job native-child ownership and a public recovery action still need validation
+before preparation is exposed as an in-app operation. The cancellation tests prove
+settled asyncio cancellation, not that killing a parent kills every child process.
+
 The journal records the attempt, phase, whether mutation began, and a bounded message.
 After pip exits, a fresh interpreter must import the target from the correct environment;
 application files, including bundled WebUI/TUI assets, must match the approved wheel,
@@ -206,6 +272,6 @@ These internal paths are verified with real detached/pip processes and disposabl
 application wheels, including dependency upgrades, caller exit, coordinator loss and
 repair. Preflight/restart routing fixtures do not constitute a complete application
 upgrade E2E. Actual isolated gateway stop and protected restart have separate tests.
-Remaining background-writer accounting, uv/pipx execution, authenticated UI/CLI consent
+Remaining background-writer accounting, application-facing uv execution, pipx execution, authenticated UI/CLI consent
 and reconnection, and native platform acceptance are not complete. No public button
 or CLI flag starts this new handoff yet.

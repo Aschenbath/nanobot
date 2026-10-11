@@ -7,6 +7,7 @@ import inspect
 import json
 import platform
 import re
+import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from zoneinfo import ZoneInfo
 
+import httpx
+from pydantic import ValidationError
 from pydantic.alias_generators import to_snake
 
 from nanobot.build_info import COMMIT
@@ -30,6 +33,15 @@ from nanobot.optional_features import OptionalFeatureError, with_channel_runtime
 from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.security.workspace_access import workspace_sandbox_status
 from nanobot.update import UpdateError, update_blocked_reason
+from nanobot.update_jobs import UpdateJobNotFoundError, read_update_job
+from nanobot.update_plan import (
+    UpdatePlan,
+    UpdatePlanNotFoundError,
+    UpdatePlanRequest,
+    preview_release_update,
+    read_release_plan,
+    review_plan,
+)
 from nanobot.webui.settings_capabilities import network_safety_payload
 from nanobot.webui.settings_contracts import (
     QueryParams,
@@ -534,6 +546,10 @@ class SystemSettingsHandler:
             )
         if action == "version-check":
             return await self._version_check(operations)
+        if action in {"update-plan-create", "update-plan-read"}:
+            return await self._update_plan(request, create=action == "update-plan-create")
+        if action == "update-job-read":
+            return await self._update_job(request)
         if action == "update-status":
             return SettingsRouteResult.success({
                 **self._updates.status(),
@@ -554,6 +570,52 @@ class SystemSettingsHandler:
             except UpdateError as exc:
                 return SettingsRouteResult.failure(409, str(exc))
         return SettingsRouteResult.failure(404, "unknown settings action")
+
+    async def _update_job(self, request: SettingsRequest) -> SettingsRouteResult:
+        plan_id = query_first(request.query, "id") or ""
+        try:
+            UpdatePlan.canonical_id(plan_id)
+        except ValueError:
+            return SettingsRouteResult.failure(400, "Invalid update job identifier")
+        try:
+            job = await asyncio.to_thread(read_update_job, plan_id)
+        except UpdateJobNotFoundError:
+            return SettingsRouteResult.failure(404, "No saved update job is available for this installation.")
+        except (ValueError, OSError, KeyError) as exc:
+            self.logger.warning("could not read the gateway's update job ({})", type(exc).__name__)
+            return SettingsRouteResult.failure(409, "Could not read this update's saved state. No recovery action was started.")
+        return SettingsRouteResult.success({"job": job.model_dump(mode="json")})
+
+    async def _update_plan(self, request: SettingsRequest, *, create: bool) -> SettingsRouteResult:
+        plan_id = query_first(request.query, "id") or ""
+        try:
+            options = UpdatePlanRequest.model_validate(request.payload or {}) if create else None
+            if options is None:
+                UpdatePlan.canonical_id(plan_id)
+        except (ValidationError, ValueError):
+            return SettingsRouteResult.failure(400, "Invalid update plan request")
+        try:
+            if options is not None:
+                plan = await preview_release_update(
+                    options.channel, restart_running=options.restart_running, extras=options.extras,
+                )
+                review = review_plan(plan, plan.installation)
+            else:
+                review = await read_release_plan(plan_id)
+        except UpdatePlanNotFoundError:
+            return SettingsRouteResult.failure(404, "The update plan is no longer available. Check again.")
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError, httpx.HTTPError) as exc:
+            # A parser/subprocess error may contain local configuration or source
+            # credentials. Neither belongs in a remote response.
+            self.logger.warning("could not inspect the gateway's update plan ({})", type(exc).__name__)
+            return SettingsRouteResult.failure(409, "Could not verify an update plan for this installation. No update was started.")
+        return SettingsRouteResult.success({
+            "plan": review.model_dump(mode="json"),
+            "installation_allowed": self.allow_feature_package_install(request),
+            # This optional capability is review-only. Do not route an exact plan
+            # through the old unbound latest-release mutation.
+            "execution_available": False,
+        })
 
     async def _cli_apps(
         self,

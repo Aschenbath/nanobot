@@ -267,6 +267,8 @@ class WorkerSpec:
 
 
 class Phase(str, Enum):
+    PREPARING = "preparing"
+    PREPARATION_FAILED = "preparation_failed"
     READY = "ready"
     CHECKING = "checking"
     STOPPING = "stopping"

@@ -6,9 +6,11 @@ record is immutable; an executor must revalidate it before changing any package 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -25,10 +27,20 @@ from nanobot.installation_lock import installation_access, installation_id, inst
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_manager import ManagerPolicy, read_manager_policy
-from nanobot.update_profiles import ObservedProfile, inspect_profiles, validate_profiles
+from nanobot.update_profiles import (
+    ObservedProfile,
+    ProfileReceipt,
+    inspect_profiles,
+    validate_profiles,
+)
 from nanobot.utils.helpers import atomic_write_lines
 
 Owner = Literal["venv", "uv", "pipx", "source", "container", "system"]
+
+
+def _managed_background(profile: ProfileReceipt, environment: str) -> bool:
+    return (profile.environment == environment and profile.launch_mode == "background"
+            and profile.launch is not None and profile.launch.lifetime == "explicit")
 
 # Read fresh metadata using this installation's Python, not an executable from PATH
 # or this long-lived gateway's cached importlib.metadata state. No config is loaded.
@@ -159,18 +171,16 @@ class UpdatePlan(ReleaseRecord):
             raise ValueError("Shutdown participants must be unique")
         for participant in self.stop_profiles:
             profile = profiles.get(participant)
-            if (profile is None or profile.environment != self.installation.environment
-                    or profile.launch_mode != "background" or profile.launch is None
-                    or profile.launch.lifetime != "explicit" or profile.stop_protocol != 1
+            if (profile is None or not _managed_background(profile, self.installation.environment)
+                    or profile.stop_protocol != 1
                     or not any(item.receipt.id == participant and item.state == "running" for item in self.profiles)):
                 raise ValueError("Shutdown requires a reviewed running gateway with cooperative stop support")
         if len(set(self.restart_profiles)) != len(self.restart_profiles):
             raise ValueError("Restart participants must be unique")
         for participant in self.restart_profiles:
             profile = profiles.get(participant)
-            if (profile is None or profile.environment != self.installation.environment
-                    or profile.launch_mode != "background" or profile.launch is None
-                    or profile.launch.lifetime != "explicit" or not profile.port):
+            if (profile is None or not _managed_background(profile, self.installation.environment)
+                    or not profile.port):
                 raise ValueError("Restart requires a reviewed, explicitly managed background gateway")
         return self
 
@@ -200,6 +210,10 @@ class UpdatePlan(ReleaseRecord):
             raise ValueError("Installation changed since this plan; check again before confirming")
 
 
+class UpdatePlanNotFoundError(FileNotFoundError):
+    """The requested saved plan is absent, not an installation-probe failure."""
+
+
 class UpdatePlans:
     """Persist plans outside replaceable package files, with a small caller Interface."""
 
@@ -224,20 +238,39 @@ class UpdatePlans:
     def load(self, plan_id: str) -> UpdatePlan:
         UpdatePlan.canonical_id(plan_id)
         path = self.directory / f"{plan_id}.json"
-        if path.is_symlink() or path.stat().st_size > 1024 * 1024:
-            raise ValueError("Invalid saved update plan")
-        plan = UpdatePlan.model_validate_json(path.read_bytes())
+        try:
+            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                raise ValueError("Invalid saved update plan")
+            encoded = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise UpdatePlanNotFoundError("The saved update plan is no longer available") from exc
+        plan = UpdatePlan.model_validate_json(encoded)
         if plan.id != plan_id:
             raise ValueError("Saved update plan identity differs")
         return plan
 
     async def prepare(self, installation: InstallationSnapshot, channel: Channel, feed: ReleaseFeed,
-                      *, now: int | None = None) -> UpdatePlan:
+                      *, now: int | None = None, restart_running: bool = False,
+                      extras: list[str] | None = None) -> UpdatePlan:
         target = await feed.latest(channel)
         created_at = int(time.time()) if now is None else now
         profiles = inspect_profiles(installation.environment)
-        extras = installation.manager.extras if installation.manager is not None else None
+        if installation.manager is not None:
+            if extras is not None and extras != installation.manager.extras:
+                raise ValueError("The plan cannot change the installation owner's recorded extras")
+            extras = installation.manager.extras
+        participants: list[str] = []
+        if restart_running:
+            for profile in profiles:
+                if profile.state == "unconfirmed":
+                    raise ValueError("Confirm every gateway's process owner before planning a restart")
+                if profile.state == "running":
+                    if (not _managed_background(profile.receipt, installation.environment) or not profile.receipt.port
+                            or profile.receipt.stop_protocol != 1):
+                        raise ValueError("A running gateway needs its owner's external restart workflow")
+                    participants.append(profile.receipt.id)
         plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, extras=extras, profiles=profiles,
+                          stop_profiles=participants, restart_profiles=participants,
                           created_at=created_at, expires_at=created_at + 15 * 60)
         return self.save(plan)
 
@@ -253,13 +286,106 @@ class UpdatePlans:
         return plan
 
 
-async def preview_release_update(channel: Channel) -> UpdatePlan:
+class UpdatePlanRequest(ReleaseRecord):
+    """An intended change to review, never installation/shutdown permission."""
+
+    channel: Channel = "stable"
+    restart_running: bool = False
+    extras: list[str] | None = None
+
+    @field_validator("extras")
+    @classmethod
+    def explicit_extras(cls, value: list[str] | None) -> list[str] | None:
+        return UpdatePlan.explicit_extras(value)
+
+
+class ProfileReview(ReleaseRecord):
+    id: str
+    workspace: str
+    reviewed_state: Literal["running", "stopped", "unconfirmed"]
+    stop: bool
+    restart: bool
+
+
+class UpdatePlanReview(ReleaseRecord):
+    """Client-safe facts, not execution approval or fresh release eligibility.
+
+    Validity describes the locally observed installation and review lifetime.
+    Reading a review never re-resolves its target or checks the release feed.
+    """
+
+    id: str
+    installation_id: str
+    host: str
+    owner: Owner
+    running_version: str
+    installed_version: str
+    target_version: str
+    channel: Channel
+    action: Literal["upgrade", "downgrade", "restart", "none"]
+    created_at: int
+    expires_at: int
+    validity: Literal["current", "expired", "installation_changed", "profiles_changed"]
+    artifact_size: int
+    extras: list[str] | None
+    owner_restriction: str | None
+    profiles: list[ProfileReview]
+
+
+def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: int | None = None,
+                profiles: list[ObservedProfile] | None = None) -> UpdatePlanReview:
+    checked_at = int(time.time()) if now is None else now
+    validity: Literal["current", "expired", "installation_changed", "profiles_changed"] = "current"
+    if plan.installation.fingerprint != installation.fingerprint:
+        validity = "installation_changed"
+    elif not plan.created_at <= checked_at < plan.expires_at:
+        validity = "expired"
+    elif profiles is not None and profiles != plan.profiles:
+        validity = "profiles_changed"
+    return UpdatePlanReview(
+        id=plan.id, installation_id=plan.installation.installation_id, host=platform.node(),
+        owner=plan.installation.owner, running_version=installation.running_version,
+        installed_version=installation.installed_version, target_version=plan.target.version,
+        channel=plan.channel, action=plan.action, created_at=plan.created_at, expires_at=plan.expires_at,
+        validity=validity, artifact_size=plan.target.artifact.size, extras=plan.extras,
+        owner_restriction=plan.owner_restriction, profiles=[ProfileReview(
+            id=item.receipt.id, workspace=item.receipt.workspace, reviewed_state=item.state,
+            stop=item.receipt.id in plan.stop_profiles, restart=item.receipt.id in plan.restart_profiles,
+        ) for item in plan.profiles],
+    )
+
+
+def _inspect_with_lease() -> InstallationSnapshot:
+    # The native probe runs in a thread and cannot be cancelled by its asyncio
+    # caller. Keep its own shared lease until the child actually exits, even if
+    # a browser disconnect releases the enclosing request's lease first.
+    with installation_access():
+        return inspect_installation()
+
+
+async def preview_release_update(channel: Channel, *, restart_running: bool = False,
+                                 extras: list[str] | None = None) -> UpdatePlan:
     """Build a read-only installation plan for CLI and future gateway handoff."""
     with installation_access():
-        installation = inspect_installation()
+        installation = await asyncio.to_thread(_inspect_with_lease)
         directory = installation_state_dir(installation.environment)
         async with ReleaseFeed(directory / "releases") as feed:
-            return await UpdatePlans(directory / "plans").prepare(installation, channel, feed)
+            plan = await UpdatePlans(directory / "plans").prepare(
+                installation, channel, feed, restart_running=restart_running, extras=extras,
+            )
+        # External package managers do not participate in our lease. Discovery
+        # can be slow: do not return a freshly valid review of a replaced install.
+        plan.validate_for(await asyncio.to_thread(_inspect_with_lease))
+        return plan
+
+
+async def read_release_plan(plan_id: str) -> UpdatePlanReview:
+    """Recover the exact review after refresh; do not query a newer release."""
+    UpdatePlan.canonical_id(plan_id)
+    with installation_access():
+        installation = await asyncio.to_thread(_inspect_with_lease)
+        plan = UpdatePlans(installation_state_dir(installation.environment) / "plans").load(plan_id)
+        return review_plan(plan, installation, profiles=inspect_profiles(installation.environment))
 
 
 def describe_plan(plan: UpdatePlan) -> str:

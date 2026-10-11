@@ -777,7 +777,7 @@ async def test_prepared_worker_has_no_execution_authority(installation, tmp_path
     plan, _, _, _, transport = installation
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
         with pytest.raises(ValueError, match="confirmed extras"):
-            await prepare_job(plan.model_copy(update={"extras": ["not-provided"]}), feed)
+            await prepare_job(plan.model_copy(update={"id": str(uuid4()), "extras": ["not-provided"]}), feed)
         directory = await prepare_job(plan, feed)
     spec = WorkerSpec.read(directory)
     result = subprocess.run([spec.baseline.base_python, "-I", str(directory / "worker.pyz"), str(directory)],
@@ -856,32 +856,121 @@ async def test_broken_release_keeps_recovery_record_and_never_overwrites_an_exte
 
 
 @pytest.mark.asyncio
-async def test_cancelled_preparation_keeps_lease_until_package_manager_exits(installation, monkeypatch, tmp_path):
+@pytest.mark.parametrize("stage", ["baseline", "dependencies", "final-probe"])
+async def test_cancelled_preparation_keeps_lease_until_native_work_exits(installation, monkeypatch, tmp_path, stage):
     from nanobot import update_jobs
 
     plan, _, _, _, transport = installation
     entered, finish = threading.Event(), threading.Event()
-    original = update_jobs._prepare_wheels
+    target = "_prepare_transaction" if stage == "dependencies" else "inspect_environment"
+    original = getattr(update_jobs, target)
+    calls = 0
 
-    def held_preparation(*args):
-        entered.set()
-        assert finish.wait(20)
-        return original(*args)
+    def held_preparation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == (2 if stage == "final-probe" else 1):
+            entered.set()
+            assert finish.wait(20)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(update_jobs, "_prepare_wheels", held_preparation)
+    monkeypatch.setattr(update_jobs, target, held_preparation)
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
         preparing = asyncio.create_task(prepare_job(plan, feed))
         try:
             assert await asyncio.to_thread(entered.wait, 10)
+            assert JobStatus.read(directory).phase == Phase.PREPARING
+            assert UpdatePlan.model_validate_json((directory / "plan.json").read_bytes()) == plan
             preparing.cancel()
             await asyncio.sleep(0)
+            preparing.cancel()  # A second shutdown must not release a native writer.
+            await asyncio.sleep(0)
             assert not preparing.done()
+            assert JobStatus.read(directory).phase == Phase.PREPARING
+            with pytest.raises(InstallationBusyError):
+                with installation_access(updating=True, environment=plan.installation.environment):
+                    pytest.fail("Native preparation lost its installation lease")
             with pytest.raises(BlockingIOError):
                 await prepare_job(plan, feed)
         finally:
             finish.set()
             with pytest.raises(asyncio.CancelledError):
                 await preparing
+        assert JobStatus.read(directory).phase == Phase.PREPARATION_FAILED
+        assert not (directory / "request.json").exists()
+        assert not (directory / "approval.json").exists()
         directory = await prepare_job(plan, feed)
     assert JobStatus.read(directory).phase == Phase.READY
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+async def test_failed_download_retains_private_exact_job_for_retry(installation, monkeypatch, tmp_path):
+    plan, _, _, _, transport = installation
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+
+    async def unavailable(*args):
+        raise httpx.ConnectError("https://user:secret@private.example")
+
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        with monkeypatch.context() as patch:
+            patch.setattr(feed, "download", unavailable)
+            with pytest.raises(httpx.ConnectError):
+                await prepare_job(plan, feed)
+        status = JobStatus.read(directory)
+        assert status.phase == Phase.PREPARATION_FAILED and not status.mutation_started
+        assert "secret" not in (directory / "status.json").read_text()
+        saved = (directory / "plan.json").read_bytes()
+        changed = plan.model_copy(update={"expires_at": plan.expires_at - 1})
+        with pytest.raises(ValueError, match="another reviewed plan"):
+            await prepare_job(changed, feed)
+        assert (directory / "plan.json").read_bytes() == saved
+        assert not (directory / "request.json").exists()
+        assert await prepare_job(plan, feed) == directory
+    assert JobStatus.read(directory).phase == Phase.READY
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+async def test_abrupt_preparer_exit_does_not_authorize_staging_reuse(installation, tmp_path):
+    plan, candidate, _, _, _ = installation
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+    source = Path(__file__).resolve().parents[1]
+    script = f"""
+import asyncio, os, sys
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+import httpx
+from nanobot import update_jobs
+from nanobot.release_feed import ReleaseFeed
+from nanobot.update_plan import UpdatePlan
+from nanobot.releases import release_filenames
+plan = UpdatePlan.model_validate_json({plan.model_dump_json()!r})
+update_jobs._prepare_transaction = lambda *args: os._exit(0)
+def response(request):
+    if request.url.host == 'files.pythonhosted.org':
+        return httpx.Response(200, content=Path({str(candidate)!r}).read_bytes())
+    assert request.url.path == '/pypi/nanobot-ai/0.3.5/json'
+    files = [dict(filename=name, size=plan.target.artifact.size if name == plan.target.artifact.filename else 1,
+                  url='https://files.pythonhosted.org/packages/' + name, yanked=False,
+                  digests=dict(sha256=plan.target.artifact.sha256 if name == plan.target.artifact.filename else 'a' * 64))
+             for name in release_filenames(plan.target.version) if name.endswith(('.whl', '.tar.gz'))]
+    return httpx.Response(200, json=dict(info=dict(name='nanobot-ai', version=plan.target.version,
+                                                  requires_python='>=3.11'), urls=files))
+async def run():
+    async with ReleaseFeed(Path({str(tmp_path / 'feed')!r}), transport=httpx.MockTransport(response)) as feed:
+        await update_jobs.prepare_job(plan, feed)
+    raise AssertionError('The preparer should have exited abruptly')
+asyncio.run(run())
+"""
+    process = await asyncio.to_thread(subprocess.run, [sys.executable, "-I", "-c", script],
+                                      capture_output=True, timeout=30)
+    assert process.returncode == 0, process.stderr.decode()
+    saved_status = (directory / "status.json").read_bytes()
+    assert JobStatus.read(directory).phase == Phase.PREPARING
+    async with ReleaseFeed(tmp_path / "retry-feed") as feed:
+        with pytest.raises(ValueError, match="previous preparation did not settle"):
+            await prepare_job(plan, feed)
+    assert (directory / "status.json").read_bytes() == saved_status
+    assert not (directory / "request.json").exists()
+    assert not (directory / "approval.json").exists()
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"

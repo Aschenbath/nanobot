@@ -11,13 +11,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 from email.parser import BytesParser
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 from urllib.parse import unquote, urlsplit
 from zipfile import ZipFile, ZipInfo
 
@@ -25,9 +28,14 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from pydantic import BaseModel, ConfigDict, Field
 
 from nanobot.data_access import data_access
-from nanobot.installation_lock import file_access, installation_access, installation_state_dir
+from nanobot.installation_lock import (
+    file_access,
+    installation_access,
+    installation_id,
+    installation_state_dir,
+)
 from nanobot.release_feed import ReleaseFeed
-from nanobot.releases import Sha256
+from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_backup import BackupSource, profile_sources, unique_sources
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
@@ -39,9 +47,82 @@ from nanobot.update_worker import (
     WorkerSpec,
     check_environment,
     inspect_environment,
+    read_record,
     write_record,
 )
 from nanobot.utils.atomic_file import atomic_write_lines
+
+_Args = ParamSpec("_Args")
+_Result = TypeVar("_Result")
+
+
+class UpdateJobNotFoundError(FileNotFoundError):
+    """No saved preparation or execution status exists for this installation."""
+
+
+class UpdateJobView(ReleaseRecord):
+    """Last durable facts only: not proof of a live worker or authority to retry."""
+
+    id: str
+    installation_id: str
+    host: str
+    previous_version: str
+    target_version: str
+    channel: Channel
+    recorded_phase: Phase
+    attempt: int
+    mutation_started: bool
+    updated_at: int
+
+
+def read_update_job(plan_id: str) -> UpdateJobView:
+    """Read the journal scoped to this environment path, without probing Python.
+
+    No interpreter probe, network request or runtime lease is required. A failed
+    installation and an active writer must not hide its last recorded state.
+    This does not validate continued release eligibility, worker liveness or
+    that an environment reinstalled at this path is still the reviewed one.
+    """
+    UpdatePlan.canonical_id(plan_id)
+    directory = installation_state_dir() / "jobs" / plan_id
+    if directory.is_symlink():
+        raise ValueError("Invalid update job directory")
+    try:
+        plan = UpdatePlan.model_validate(read_record(directory / "plan.json"))
+        status = JobStatus.read(directory)
+    except FileNotFoundError as exc:
+        raise UpdateJobNotFoundError("No saved update job is available") from exc
+    if plan.id != plan_id or plan.installation.installation_id != installation_id():
+        raise ValueError("Update job belongs to a different installation or plan")
+    # Local diagnostic messages may contain paths or exception details. Clients
+    # receive typed facts and can localize phases, never raw journal messages.
+    return UpdateJobView(
+        id=plan_id, installation_id=plan.installation.installation_id, host=platform.node(),
+        previous_version=plan.installation.installed_version, target_version=plan.target.version,
+        channel=plan.channel, recorded_phase=status.phase, attempt=status.attempt,
+        mutation_started=status.mutation_started, updated_at=status.updated_at,
+    )
+
+
+async def _settled_thread(function: Callable[_Args, _Result], *args: _Args.args,
+                          **kwargs: _Args.kwargs) -> _Result:
+    """Retain the caller's preparation leases until native work actually exits."""
+    work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # Repeated request/shutdown cancellations must not cancel the wrapper
+        # Future and release its leases while the underlying thread still runs.
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not work.cancelled():
+            work.exception()  # Retrieve any native failure; cancellation still wins.
+        raise
 
 
 class _Metadata(BaseModel):
@@ -209,55 +290,78 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
             if spec.plan_sha256 != hashlib.sha256((plan.model_dump_json() + "\n").encode()).hexdigest():
                 raise ValueError("This job already belongs to another approved plan")
             return directory
-        baseline = await asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv)
-        if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
-            plan.installation.environment, plan.installation.python, plan.installation.installed_version,
-            plan.installation.records.get("pyvenv.cfg"),
-        ) or any(plan.installation.records.get(name) != digest for name, digest in baseline.app_records.items()):
-            raise ValueError("The installation changed since this plan was prepared")
-        if native_uv and baseline.manager_receipt_sha != plan.installation.records.get("uv-receipt.toml"):
-            raise ValueError("The uv installation settings changed since this plan was prepared")
-        validate_profiles(plan.profiles, plan.installation.environment)
-        app_wheel = await feed.download(plan.target, root / "downloads")
-        preparing = asyncio.create_task(asyncio.to_thread(_prepare_transaction, plan, app_wheel, directory))
-        try:
-            records, uv = await asyncio.shield(preparing)
-        except asyncio.CancelledError:
-            # Closing a browser/cancelling its request must not release the staging
-            # lease while the package-manager subprocess still writes this job.
-            try:
-                await preparing
-            finally:
-                raise
-        current = await asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv)
-        if current != baseline:
-            raise ValueError("Installation changed while preparing the update")
-        plan.validate_for(plan.installation)
+        if (directory / "status.json").exists() and JobStatus.read(directory).phase == Phase.PREPARING:
+            # A crashed preparer may have left a native child writing staging.
+            # Absence of its Python task/lease is not proof that child exited.
+            raise ValueError("A previous preparation did not settle; inspect this job before retrying or cleaning it up")
         plan_path = directory / "plan.json"
-        atomic_write_lines(plan_path, [plan.model_dump_json()])
-        plan_path.chmod(0o600)
-        archive = directory / "worker.pyz"
-        if archive.exists():
-            archive.unlink()  # Only uncommitted staging: no request/approval exists yet.
-        sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
-        if native_uv:
-            sources.append(BackupSource(str(Path(baseline.environment) / "uv-receipt.toml")))
-        for profile in plan.profiles:
-            receipt = profile.receipt
-            sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
-                                           config=Path(receipt.config), workspace=Path(receipt.workspace)))
-            sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
-        spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
-                          baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv)
-        for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
-            path.chmod(0o600)
-            with path.open("r+b") as stream:
-                os.fsync(stream.fileno())
-        JobStatus(plan.id, Phase.READY, 0, False, "Files prepared; not installed", int(time.time())).save(directory)
-        # The immutable request is the commit record: its presence means every
-        # input and the initial status were flushed successfully.
-        spec.save(directory)
-        return directory
+        encoded = plan.model_dump_json() + "\n"
+        if plan_path.exists() and plan_path.read_bytes() != encoded.encode():
+            raise ValueError("This preparation already belongs to another reviewed plan")
+        if not plan_path.exists():
+            atomic_write_lines(plan_path, [plan.model_dump_json()])
+            plan_path.chmod(0o600)
+        JobStatus(plan.id, Phase.PREPARING, 0, False,
+                  "Checking the installation and preparing the exact package", int(time.time())).save(directory)
+        try:
+            return await _prepare_inputs(plan, feed, root, directory, native_uv=native_uv)
+        except asyncio.CancelledError:
+            JobStatus(plan.id, Phase.PREPARATION_FAILED, 0, False,
+                      "Preparation cancelled after its workers exited; no installation was started",
+                      int(time.time())).save(directory)
+            raise
+        except Exception as exc:
+            # Resolver/network exceptions can contain index credentials or paths.
+            JobStatus(plan.id, Phase.PREPARATION_FAILED, 0, False,
+                      f"Preparation failed ({type(exc).__name__}); no installation was started",
+                      int(time.time())).save(directory)
+            raise
+
+
+async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, directory: Path,
+                          *, native_uv: bool) -> Path:
+    baseline = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv)
+    if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
+        plan.installation.environment, plan.installation.python, plan.installation.installed_version,
+        plan.installation.records.get("pyvenv.cfg"),
+    ) or any(plan.installation.records.get(name) != digest for name, digest in baseline.app_records.items()):
+        raise ValueError("The installation changed since this plan was prepared")
+    if native_uv and baseline.manager_receipt_sha != plan.installation.records.get("uv-receipt.toml"):
+        raise ValueError("The uv installation settings changed since this plan was prepared")
+    validate_profiles(plan.profiles, plan.installation.environment)
+    JobStatus(plan.id, Phase.PREPARING, 0, False,
+              "Downloading and verifying the reviewed package", int(time.time())).save(directory)
+    app_wheel = await feed.download(plan.target, root / "downloads")
+    JobStatus(plan.id, Phase.PREPARING, 0, False,
+              "Preparing dependencies without changing the installation", int(time.time())).save(directory)
+    records, uv = await _settled_thread(_prepare_transaction, plan, app_wheel, directory)
+    current = await _settled_thread(inspect_environment, plan.installation.python, uv=native_uv)
+    if current != baseline:
+        raise ValueError("Installation changed while preparing the update")
+    plan.validate_for(plan.installation)
+    plan_path = directory / "plan.json"
+    archive = directory / "worker.pyz"
+    if archive.exists():
+        archive.unlink()  # Only uncommitted staging: no request/approval exists yet.
+    sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
+    if native_uv:
+        sources.append(BackupSource(str(Path(baseline.environment) / "uv-receipt.toml")))
+    for profile in plan.profiles:
+        receipt = profile.receipt
+        sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
+                                       config=Path(receipt.config), workspace=Path(receipt.workspace)))
+        sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
+    spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), _worker_archive(archive),
+                      baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv)
+    for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
+        path.chmod(0o600)
+        with path.open("r+b") as stream:
+            os.fsync(stream.fileno())
+    JobStatus(plan.id, Phase.READY, 0, False, "Files prepared; not installed", int(time.time())).save(directory)
+    # The immutable request is the commit record: its presence means every
+    # input and the initial status were flushed successfully.
+    spec.save(directory)
+    return directory
 
 
 async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False) -> subprocess.Popen[bytes]:
