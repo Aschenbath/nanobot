@@ -11,6 +11,7 @@ import { modelAPISelection } from "@/components/settings/models/modelAPI";
 import {
   CUSTOM_PROVIDER_CREATION_KEY,
   providerFormFromRow,
+  providerJsonValue,
   type CustomProviderDraft,
 } from "@/components/settings/models/providerForm";
 import type { ModelSettingsState } from "@/components/settings/models/useModelSettingsState";
@@ -197,6 +198,11 @@ export function useModelSettingsActions({
           temperature: form.temperature,
           reasoningEffort: form.reasoningEffort || null,
           api: form.api ?? undefined,
+          ...(settings.model_request_overrides_supported ? {
+            extraHeaders: form.extraHeaders,
+            extraQuery: form.extraQuery,
+            extraBody: form.extraBody,
+          } : {}),
         });
         const createdPreset = payload.created_model_preset;
         const nextOrder = createdPreset ? [...modelCallOrder, createdPreset] : null;
@@ -261,6 +267,11 @@ export function useModelSettingsActions({
           reasoningEffort !== selectedPreset.reasoning_effort ? reasoningEffort : undefined,
         api: modelAPISelection(form.api) !== modelAPISelection(selectedPreset.api)
           ? form.api : undefined,
+        ...(settings.model_request_overrides_supported ? {
+          extraHeaders: form.extraHeaders !== providerJsonValue(selectedPreset.extra_headers) ? form.extraHeaders : undefined,
+          extraQuery: form.extraQuery !== providerJsonValue(selectedPreset.extra_query) ? form.extraQuery : undefined,
+          extraBody: form.extraBody !== providerJsonValue(selectedPreset.extra_body) ? form.extraBody : undefined,
+        } : {}),
       });
       applyPayload(payload);
       setForm(agentDraftFromPayload(payload, nextName));
@@ -295,6 +306,9 @@ export function useModelSettingsActions({
       provider,
       model: "",
       api: null,
+      extraHeaders: "",
+      extraQuery: "",
+      extraBody: "",
       maxTokens: primaryPreset?.max_tokens ?? settings.agent.max_tokens,
       contextWindowTokens: normalizeContextWindowTokens(
         primaryPreset?.context_window_tokens ?? settings.agent.context_window_tokens,

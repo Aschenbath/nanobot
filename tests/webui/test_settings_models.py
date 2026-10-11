@@ -7,11 +7,55 @@ import pytest
 from nanobot.config.schema import Config
 from nanobot.webui.settings_models import (
     WebUISettingsError,
+    create_model_configuration,
     model_settings_payload,
     provider_models_payload,
     update_agent_model_settings,
+    update_model_configuration,
     update_provider_settings,
 )
+
+
+def test_preset_request_overrides_redact_roundtrip_and_clear():
+    config = Config()
+    config.providers.openai.api_key = "fixture"
+    name = create_model_configuration(config, {
+        "name": ["custom"], "provider": ["openai"], "model": ["gpt-4o"],
+        "extra_headers": ['{"Authorization":"private-value","X-Route":"one"}'],
+        "extra_body": ['{"metadata":{"api_key":"private-body","route":"one"}}'],
+    }, oauth_status=_oauth_status)
+    payload = model_settings_payload(config, oauth_status=_oauth_status)
+    row = next(row for row in payload["model_presets"] if row["name"] == name)
+    assert row["extra_headers"]["Authorization"] == "••••••••"
+    assert row["extra_body"]["metadata"]["api_key"] == "••••••••"
+    assert "private-value" not in str(payload)
+    assert "private-body" not in str(payload)
+    assert update_model_configuration(config, {
+        "name": [name], "extraHeaders": ['{"Authorization":"••••••••","X-Route":"two"}'],
+    }, oauth_status=_oauth_status)
+    assert config.model_presets[name].extra_headers == {"Authorization": "private-value", "X-Route": "two"}
+    assert update_model_configuration(config, {
+        "name": [name], "extra_headers": [""], "extra_body": ["{}"],
+    }, oauth_status=_oauth_status)
+    assert config.model_presets[name].extra_headers is None
+    assert config.model_presets[name].extra_body is None
+    with pytest.raises(WebUISettingsError, match="JSON object"):
+        update_model_configuration(config, {"name": [name], "extra_query": ["[]"]}, oauth_status=_oauth_status)
+    assert config.model_presets[name].extra_query is None
+
+
+def test_preset_provider_switch_clears_secrets():
+    config = Config()
+    config.providers.openai.api_key = "fixture"
+    config.providers.anthropic.api_key = "fixture"
+    name = create_model_configuration(config, {
+        "name": ["custom"], "provider": ["openai"], "model": ["gpt-4o"],
+        "extra_headers": ['{"Authorization":"private-value"}'],
+    }, oauth_status=_oauth_status)
+    update_model_configuration(config, {
+        "name": [name], "provider": ["anthropic"], "model": ["claude-sonnet-4-6"],
+    }, oauth_status=_oauth_status)
+    assert config.model_presets[name].extra_headers is None
 
 
 def _oauth_status(_spec: Any) -> dict[str, Any]:
@@ -60,6 +104,7 @@ def test_model_domain_owns_dto_and_config_updates() -> None:
         "model_configuration_migratable",
         "model_api_resolution_supported",
         "provider_api_configuration_supported",
+        "model_request_overrides_supported",
         "providers",
     }
     assert payload["agent"]["model"] == "openai/gpt-5.4"

@@ -819,6 +819,7 @@
       "installing": "Installation des dépendances…"
     },
     "models": {
+      "requestOverridesHint": "Modifiez uniquement les valeurs de ce préréglage. Les autres utilisent les paramètres du fournisseur. Videz un champ pour rétablir cette valeur. Changer de fournisseur efface ces réglages.",
       "otherPresets": "Préréglages de secours",
       "catalogAuthRequired": "L’autorisation a expiré. Veuillez vous reconnecter.",
       "catalogUnavailable": "Actualisation impossible. Cliquez pour réessayer",

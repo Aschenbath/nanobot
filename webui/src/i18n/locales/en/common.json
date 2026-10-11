@@ -693,6 +693,7 @@
       "voiceInput": "Transcription"
     },
     "models": {
+      "requestOverridesHint": "Set only what this preset needs. Other values use the provider settings. Clear an entry to inherit it again. Changing the provider clears these overrides.",
       "otherPresets": "Fallback presets",
       "catalogAuthRequired": "Authorization expired. Please sign in again.",
       "catalogUnavailable": "Refresh failed. Click to retry",

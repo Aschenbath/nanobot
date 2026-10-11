@@ -24,8 +24,8 @@ function parameterSummary(value: string, t: TFunction): string {
 
 export function ProviderParameterFields({ fields, form, onChange }: {
   fields: ProviderAdvancedField[];
-  form: ProviderForm;
-  onChange: (value: Partial<ProviderForm>) => void;
+  form: Pick<ProviderForm, "extraHeaders" | "extraQuery" | "extraBody">;
+  onChange: (value: Partial<Pick<ProviderForm, "extraHeaders" | "extraQuery" | "extraBody">>) => void;
 }) {
   const { t } = useTranslation();
   const visible = PARAMETER_FIELDS.filter((item) => fields.includes(item.field));

@@ -40,7 +40,11 @@ from nanobot.providers.oauth_model_catalog import (
     invalidate_oauth_model_catalog,
 )
 from nanobot.providers.registry import PROVIDERS, ProviderSpec, create_dynamic_spec, find_by_name
-from nanobot.providers.routing import resolve_automatic_model_api, resolve_model_api
+from nanobot.providers.routing import (
+    resolve_automatic_model_api,
+    resolve_model_api,
+    resolve_provider_route,
+)
 from nanobot.webui.settings_contracts import (
     QueryParams,
     SettingsRequest,
@@ -93,6 +97,7 @@ class ModelSettingsPayload(TypedDict):
     model_configuration_migratable: bool
     model_api_resolution_supported: bool
     provider_api_configuration_supported: bool
+    model_request_overrides_supported: bool
     providers: list[dict[str, Any]]
 
 
@@ -265,6 +270,31 @@ def _validated_provider_config(
             message = str(error.get("msg", "invalid value"))
             raise WebUISettingsError(f"{field}: {message}" if field else message) from exc
         raise WebUISettingsError(str(exc)) from exc
+
+
+def _preset_with_request_updates(
+    config: Config, preset: ModelPresetConfig, query: QueryParams,
+) -> ModelPresetConfig:
+    updates = {
+        snake: _restore_redacted_provider_secret_values(
+            _provider_json_setting(query, snake, camel), getattr(preset, snake),
+        )
+        for snake, camel in (
+            ("extra_headers", "extraHeaders"),
+            ("extra_query", "extraQuery"),
+            ("extra_body", "extraBody"),
+        )
+        if query_has_alias(query, snake, camel)
+    }
+    # The provider validator already owns structured JSON validation and safe errors.
+    validated = _validated_provider_config(None, updates)
+    candidate = preset.model_copy(update={key: getattr(validated, key) for key in updates})
+    if any(getattr(candidate, key) for key in _PROVIDER_STRUCTURED_FIELDS):
+        try:
+            resolve_provider_route(config, preset=candidate)
+        except ValueError as exc:
+            raise WebUISettingsError(str(exc)) from None
+    return candidate
 
 
 def mask_secret_hint(secret: str | None) -> str | None:
@@ -1129,6 +1159,10 @@ def model_settings_payload(
                 "temperature": preset.temperature,
                 "reasoning_effort": preset.reasoning_effort,
                 "api": preset.api.model_dump(mode="json") if preset.api is not None else None,
+                **{
+                    field: _redact_provider_secret_values(getattr(preset, field))
+                    for field in _PROVIDER_STRUCTURED_FIELDS
+                },
                 "reasoning_effort_values": reasoning_effort_values_for(
                     resolved_preset_provider,
                     preset.model,
@@ -1158,6 +1192,7 @@ def model_settings_payload(
             "tool_hint_max_length": defaults.tool_hint_max_length,
         },
         "model_presets": model_presets,
+        "model_request_overrides_supported": True,
         "model_call_order": model_call_order,
         "model_call_order_editable": model_call_order_editable,
         "model_configuration_migratable": _legacy_model_configuration_migratable(
@@ -1301,7 +1336,7 @@ def create_model_configuration(
         reasoning_effort = (
             query_first_alias(query, "reasoning_effort", "reasoningEffort") or ""
         ).strip() or None
-    config.model_presets[name] = ModelPresetConfig(
+    candidate = ModelPresetConfig(
         model=model,
         provider=provider,
         max_tokens=max_tokens if max_tokens is not None else base.max_tokens,
@@ -1314,6 +1349,7 @@ def create_model_configuration(
         reasoning_effort=reasoning_effort,
         api=_parse_preset_api(config, model, provider, query_first(query, "api")),
     )
+    config.model_presets[name] = _preset_with_request_updates(config, candidate, query)
     if activate_as_primary:
         config.agents.defaults.model_preset = name
         config.agents.defaults.fallback_models = []
@@ -1361,6 +1397,9 @@ def update_model_configuration(
         _validate_configured_provider(config, provider, oauth_status)
         if preset.provider != provider:
             preset.provider = provider
+            preset.extra_headers = None
+            preset.extra_query = None
+            preset.extra_body = None
             changed = True
             identity_changed = True
 
@@ -1402,6 +1441,10 @@ def update_model_configuration(
             changed = True
     elif identity_changed:
         preset.api = None
+    candidate = _preset_with_request_updates(config, preset, query)
+    if candidate != preset:
+        config.model_presets[name] = candidate
+        changed = True
     return changed
 
 
@@ -1508,6 +1551,9 @@ def migrate_model_configurations(
             ),
             reasoning_effort=fallback.reasoning_effort,
             api=fallback.api,
+            extra_headers=fallback.extra_headers,
+            extra_query=fallback.extra_query,
+            extra_body=fallback.extra_body,
         )
         fallback_models.append(name)
         created.append(name)

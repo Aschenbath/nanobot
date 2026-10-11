@@ -819,6 +819,7 @@
       "installing": "Memasang paket yang diperlukan…"
     },
     "models": {
+      "requestOverridesHint": "Isi hanya nilai khusus prasetel ini. Nilai lain mengikuti pengaturan penyedia. Kosongkan untuk mewarisi lagi. Mengganti penyedia menghapus penggantian ini.",
       "otherPresets": "Preset cadangan",
       "catalogAuthRequired": "Otorisasi kedaluwarsa. Silakan masuk lagi.",
       "catalogUnavailable": "Pembaruan gagal. Klik untuk mencoba lagi",

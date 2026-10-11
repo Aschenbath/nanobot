@@ -819,6 +819,7 @@
       "installing": "正在安裝所需套件…"
     },
     "models": {
+      "requestOverridesHint": "只填寫這個預設需要變更的項目，其餘使用供應商設定。清空後恢復繼承；更換供應商會清空這些覆寫。",
       "otherPresets": "備用預設",
       "catalogAuthRequired": "授權已失效，請重新登入。",
       "catalogUnavailable": "更新失敗，點擊重試",

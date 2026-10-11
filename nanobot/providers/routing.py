@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from nanobot.config.schema import Config, ModelAPIConfig, ModelPresetConfig, ProviderConfig
 from nanobot.providers.model_api import ModelAPICapabilities, ProviderAPI, RequestAPI
 from nanobot.providers.registry import ProviderSpec, create_dynamic_spec, find_by_name
+from nanobot.providers.request_overrides import apply_request_overrides, request_override_fields
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,10 @@ def resolve_provider_route(
     model_api = resolve_model_api(spec, provider_config, preset.api) if spec is not None else None
     if model_api is not None and model_api.preferred_api == "anthropic_messages":
         backend = "anthropic"
+    for field in ("extra_headers", "extra_query", "extra_body"):
+        if getattr(preset, field) and field not in request_override_fields(backend):
+            raise ValueError(f"Model preset {field} is not supported by '{provider_name}'.")
+    provider_config = apply_request_overrides(provider_config, preset)
     if (
         provider_config
         and provider_config.proxy

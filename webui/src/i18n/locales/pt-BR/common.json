@@ -507,6 +507,7 @@
       "voiceInput": "Transcrição"
     },
     "models": {
+      "requestOverridesHint": "Altere apenas os valores deste perfil. Os demais usam as configurações do provedor. Esvazie um campo para herdar novamente. Trocar o provedor apaga estes ajustes.",
       "otherPresets": "Presets alternativos",
       "catalogAuthRequired": "A autorização expirou. Entre novamente.",
       "catalogUnavailable": "Falha ao atualizar. Clique para tentar novamente",

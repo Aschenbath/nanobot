@@ -21,6 +21,7 @@ import type {
 } from "@/components/settings/contracts";
 import { agentDraftFromPayload } from "@/components/settings/models/ModelsSettings";
 import { modelAPISelection } from "@/components/settings/models/modelAPI";
+import { providerJsonValue } from "@/components/settings/models/providerForm";
 import { useModelSettingsActions } from "@/components/settings/models/useModelSettingsActions";
 import {
   useProviderFormsSync,
@@ -300,7 +301,10 @@ export function useSettingsController({
       form.contextWindowTokens !== normalizeContextWindowTokens(selectedPreset.context_window_tokens) ||
       form.temperature !== selectedPreset.temperature ||
       form.reasoningEffort !== (selectedPreset.reasoning_effort ?? "") ||
-      modelAPISelection(form.api) !== modelAPISelection(selectedPreset.api)
+      modelAPISelection(form.api) !== modelAPISelection(selectedPreset.api) ||
+      form.extraHeaders !== providerJsonValue(selectedPreset.extra_headers) ||
+      form.extraQuery !== providerJsonValue(selectedPreset.extra_query) ||
+      form.extraBody !== providerJsonValue(selectedPreset.extra_body)
     );
   }, [form, modelPresetEditingName, settings]);
 

@@ -819,6 +819,7 @@
       "installing": "必要なパッケージをインストール中…"
     },
     "models": {
+      "requestOverridesHint": "このプリセットで変更する項目だけ入力します。他はプロバイダー設定を使います。空にすると継承に戻ります。プロバイダーを変更すると上書き設定は消去されます。",
       "otherPresets": "フォールバックプリセット",
       "catalogAuthRequired": "認証が失効しました。再度ログインしてください。",
       "catalogUnavailable": "更新できません。クリックして再試行",

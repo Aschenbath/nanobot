@@ -819,6 +819,7 @@
       "installing": "Instalando dependencias…"
     },
     "models": {
+      "requestOverridesHint": "Cambie solo los valores de este preajuste. Los demás usan la configuración del proveedor. Vacíe un campo para heredar su valor. Cambiar de proveedor borra estos ajustes.",
       "otherPresets": "Preajustes alternativos",
       "catalogAuthRequired": "La autorización ha caducado. Inicia sesión de nuevo.",
       "catalogUnavailable": "No se pudo actualizar. Haz clic para reintentar",

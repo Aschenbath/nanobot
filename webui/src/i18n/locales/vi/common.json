@@ -819,6 +819,7 @@
       "installing": "Đang cài các gói cần thiết…"
     },
     "models": {
+      "requestOverridesHint": "Chỉ nhập các giá trị riêng cho cấu hình này. Các giá trị khác dùng thiết lập nhà cung cấp. Xóa để kế thừa lại. Đổi nhà cung cấp sẽ xóa các giá trị ghi đè.",
       "otherPresets": "Cấu hình dự phòng",
       "catalogAuthRequired": "Quyền truy cập đã hết hạn. Vui lòng đăng nhập lại.",
       "catalogUnavailable": "Cập nhật thất bại. Nhấp để thử lại",

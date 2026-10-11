@@ -693,6 +693,7 @@
       "voiceInput": "语音转写"
     },
     "models": {
+      "requestOverridesHint": "只填写这个预设需要改变的项，其余使用提供商设置。清空后恢复继承；更换提供商会清空这些覆盖。",
       "otherPresets": "备用预设",
       "catalogAuthRequired": "授权已失效，请重新登录。",
       "catalogUnavailable": "刷新失败，点击重试",

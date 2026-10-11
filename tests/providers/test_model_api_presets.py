@@ -1,5 +1,6 @@
 """Preset API declarations control requests through OpenAI-compatible gateways."""
 
+import asyncio
 import json
 
 import httpx
@@ -113,6 +114,85 @@ async def bind_transport():
     yield bind
     for client in clients:
         await client.close()
+
+
+@pytest.mark.parametrize("preset_name", ["chat", "responses", "messages"])
+async def test_preset_overrides_isolate_requests_and_preserve_prompt_prefix(bind_transport, preset_name):
+    config = _config()
+    connection = config.get_provider(preset=config.model_presets[preset_name])
+    connection.extra_headers = {"X-Route": "shared", "X-Keep": "yes"}
+    connection.extra_query = {"route": "shared", "keep": "yes"}
+    connection.extra_body = {"metadata": {"shared": "yes"}, "store": False}
+    before = connection.model_dump()
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _answer(request)
+
+    baseline = config.model_presets[preset_name]
+    override = baseline.model_copy(deep=True)
+    override.extra_headers = {"x-route": "preset"}
+    override.extra_query = {"route": "preset"}
+    override.extra_body = {"metadata": {"local": "yes"}}
+    shared = make_provider(config, preset=baseline)
+    custom = make_provider(config, preset=override)
+    for provider in (shared, custom):
+        if not isinstance(provider, AnthropicProvider):
+            await provider._ensure_client()
+        bind_transport(provider, handler)
+    signature = provider_signature(config, preset=override)
+    # Editing the config cannot change a previously constructed provider.
+    override.extra_body["metadata"]["local"] = "later"
+    assert signature != provider_signature(config, preset=override)
+    messages = [{"role": "system", "content": "stable"}, {"role": "user", "content": "hello"}]
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "Read", "parameters": {"type": "object"}}}]
+    await asyncio.gather(shared.chat(messages, tools=tools), custom.chat(messages, tools=tools))
+    await shared.chat(messages, tools=tools)
+    by_route = {request.headers["x-route"]: request for request in requests}
+    base_body = json.loads(by_route["shared"].content)
+    changed_body = json.loads(by_route["preset"].content)
+    assert changed_body.pop("metadata") == {"local": "yes"}
+    assert base_body.pop("metadata") == {"shared": "yes"}
+    assert changed_body == base_body  # Includes system/history and serialized tool definitions.
+    assert by_route["preset"].headers.get_list("x-route") == ["preset"]
+    assert all(request.headers["x-keep"] == "yes" for request in requests)
+    assert by_route["preset"].url.params["route"] == "preset"
+    assert by_route["shared"].url.params["route"] == "shared"
+    assert connection.model_dump() == before
+
+
+def test_preset_override_fallbacks_and_roundtrip(tmp_path):
+    from nanobot.config.loader import load_config, save_config
+    from nanobot.providers.factory import _resolve_fallback_presets
+    from nanobot.providers.routing import resolve_provider_route
+
+    config = _config()
+    primary = config.model_presets["chat"]
+    primary.extra_headers = {"X-Route": "primary"}
+    config.model_presets["responses"].extra_headers = {"X-Route": "named"}
+    config.agents.defaults.fallback_models = [
+        "responses", InlineFallbackConfig(model="gpt-6-luna", provider="tenant", extra_headers={"X-Route": "inline"}),
+    ]
+    config_path = tmp_path / "config.json"
+    save_config(config, config_path)
+    loaded = load_config(config_path)
+    assert loaded.model_presets["chat"] == primary
+    fallbacks = _resolve_fallback_presets(loaded, primary)
+    assert [resolve_provider_route(loaded, preset=p).provider_config.extra_headers for p in fallbacks] == [
+        {"X-Route": "named"}, {"X-Route": "inline"},
+    ]
+    old_signature = provider_signature(loaded, preset_name="chat")
+    loaded.model_presets["responses"].extra_headers = {"X-Route": "changed"}
+    assert provider_signature(loaded, preset_name="chat") != old_signature
+
+
+def test_unsupported_preset_overrides_fail_before_client_creation():
+    config = Config()
+    with pytest.raises(ValueError, match="extra_headers is not supported"):
+        validate_provider_setup(config, preset=ModelPresetConfig(
+            provider="openai_codex", model="gpt-6-luna", extra_headers={"X-Route": "unsupported"},
+        ))
 
 
 @pytest.mark.parametrize("stream", [False, True])
