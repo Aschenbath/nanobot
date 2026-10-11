@@ -31,6 +31,17 @@ If `nanobot agent -m "Hello!"` fails, fix that before debugging WebUI, Telegram,
 
 `nanobot status` does not call the model. If provider/model setup is incomplete, it points to WebUI **Settings → Models** or the CLI setup wizard, then prints the command to check again.
 
+## Empty topics after a WebUI restart
+
+The Restart button in WebUI settings does not create a conversation or add messages
+to an existing conversation. Reopening WebUI or reconnecting to the gateway also
+does not save a topic until a message or another session action creates it.
+
+Older gateway versions could save an empty topic when the Restart button had no
+current chat. Update the gateway to stop creating these topics. Existing topics
+are not deleted by the update; check their contents before removing them. A typed
+`/restart` command remains part of that chat's display history.
+
 ## Session storage overlaps the workspace
 
 Sessions live at `<config-dir>/sessions/<workspace-id>/`, outside the agent workspace. If startup reports a conflict, compare the printed paths. A valid layout is `bot/config.json`, `bot/sessions/`, and `bot/workspace/`.
