@@ -50,7 +50,9 @@ from nanobot.update_worker import (
     WorkerSpec,
     check_environment,
     inspect_environment,
+    inspect_job_environment,
     read_record,
+    verify_target_handoff,
     write_record,
 )
 from nanobot.utils.atomic_file import atomic_write_lines
@@ -197,10 +199,10 @@ def _stage_app(plan: UpdatePlan, app_wheel: Path, directory: Path) -> StagedWhee
     destination = wheels / artifact.filename
     if not destination.exists():
         shutil.copyfile(app_wheel, destination)
-    app.verify(wheels)
-    with ZipFile(app_wheel) as archive:
-        if plan.restart_profiles and "nanobot/update_restart.py" not in archive.namelist():
-            raise ValueError("This target does not support protected gateway restart")
+    verified = app.verify(wheels)
+    with ZipFile(verified) as archive:
+        if plan.restart_profiles:
+            verify_target_handoff(archive)
         metadata = BytesParser().parsebytes(archive.read(f"nanobot_ai-{app.version}.dist-info/METADATA"))
         available = {canonicalize_name(extra) for extra in metadata.get_all("Provides-Extra", [])}
         if not set(plan.extras or []).issubset(available):
@@ -422,15 +424,16 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
         if state.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.SUCCEEDED}:
             raise ValueError("This job is already finished; it cannot be started again")
         restarting = state.phase in runtime_phases
+        if state.mutation_started and not repair:
+            raise ValueError("This interrupted job requires an explicit repair confirmation")
+        if repair and not state.mutation_started:
+            raise ValueError("Repair is only available after this job began replacing files")
+        current = await settled_update_work(inspect_job_environment, directory, spec)
         with (installation_access(updating=not restarting, allow_incomplete=restarting,
                                   environment=spec.baseline.environment),
               nullcontext() if state.phase == Phase.FINALIZING else
               data_access((source.path for source in spec.backup_sources), updating=not restarting, job_id=spec.plan_id)):
-            if state.mutation_started and not repair:
-                raise ValueError("This interrupted job requires an explicit repair confirmation")
-            if repair and not state.mutation_started:
-                raise ValueError("Repair is only available after this job began replacing files")
-            check_environment(spec, repairing=state.mutation_started)
+            check_environment(spec, repairing=state.mutation_started, current=current)
             if not restarting:
                 require_stopped_profiles(plan.profiles, spec.baseline.environment)
             spec.verify_inputs(directory)

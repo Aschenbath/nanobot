@@ -120,7 +120,7 @@ def prepare_handoff(directory):
 
 
 def wheel(directory, name, version, *, requires=(), platform="any", broken=False, restart=False, handoff=False,
-          extras=(), entrypoint=False):
+          extras=(), entrypoint=False, restart_contract=b'{"schema_version":1,"handoff_protocols":[1]}'):
     package = name.replace("-", "_")
     dist = f"{package}-{version}.dist-info"
     files = {
@@ -140,6 +140,8 @@ def wheel(directory, name, version, *, requires=(), platform="any", broken=False
         files["nanobot/tui/bin/fixture"] = b"fixture, not a native execution claim"
         if restart:
             files["nanobot/update_restart.py"] = _RESTART_PROBE.encode()
+            if restart_contract is not None:
+                files["nanobot/update_contract.json"] = restart_contract
         if handoff:
             files["nanobot/update_handoff.py"] = _HANDOFF_PROBE.encode()
     records = []
@@ -171,14 +173,19 @@ def installation(tmp_path, monkeypatch, request):
     for version in ("1.0.0", "2.0.0"):
         wheel(artifacts, "fixture-update-dep", version)
     mode = getattr(request, "param", False)
+    restart_contract = b'{"schema_version":1,"handoff_protocols":[1]}'
+    if isinstance(mode, dict):
+        restart_contract = mode["restart_contract"]
+        mode = "handoff"
     previous = wheel(artifacts, "nanobot-ai", "0.3.4", requires=["fixture-update-dep==1.0.0"],
                      handoff=mode == "handoff")
     subprocess.run([python, "-I", "-m", "pip", "install", "--disable-pip-version-check", str(previous)],
                    check=True, capture_output=True, timeout=60)
     platform = next(tag.platform for tag in sys_tags() if tag.platform in PLATFORMS.values())
     candidate = wheel(artifacts, "nanobot-ai", "0.3.5", requires=["fixture-update-dep>=2.0.0"], platform=platform,
-                      broken=getattr(request, "param", False) is True,
-                      restart=mode in ("restart", "handoff"))
+                      broken=mode is True,
+                      restart=mode in ("restart", "handoff"),
+                      restart_contract=restart_contract)
     baseline = inspect_environment(python)
     site = Path(subprocess.check_output([python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
     snapshot = InstallationSnapshot(
@@ -287,7 +294,52 @@ async def wait_for(predicate):
             await asyncio.sleep(0.02)
 
 
-@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+@pytest.mark.parametrize("installation", [
+    {"restart_contract": None},  # An older target had the Python file but no startup contract.
+    {"restart_contract": b'{"schema_version":1,"handoff_protocols":[2]}'},
+    {"restart_contract": b'{"schema_version":1,"handoff_protocols":[true]}'},
+    {"restart_contract": b'{"schema_version":1,"handoff_protocols":['},
+], ids=["undeclared", "incompatible", "malformed", "truncated"], indirect=True)
+async def test_target_restart_contract_is_checked_before_preparation_commits(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        with pytest.raises(ValueError, match="external update procedure"):
+            await prepare_job(plan, feed)
+    root = installation_state_dir(plan.installation.environment)
+    directory = root / "jobs" / plan.id
+    assert JobStatus.read(directory).phase == Phase.PREPARATION_FAILED
+    assert not (directory / "request.json").exists()
+    assert not (directory / "approval.json").exists()
+    assert not (directory / "preflight-entered.json").exists()
+    assert not (root / "stop.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.parametrize("installation", [{"restart_contract": None}], indirect=True)
+async def test_previously_staged_target_cannot_bypass_restart_contract(installation, tmp_path, monkeypatch):
+    from nanobot import update_jobs
+
+    plan, _, _, _, transport = installation
+    # Model a job committed by the older filename-only preparer. Execution must
+    # inspect the real staged wheel rather than trusting a saved READY phase.
+    with monkeypatch.context() as patch:
+        patch.setattr(update_jobs, "verify_target_handoff", lambda archive: None)
+        async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+            directory = await prepare_job(plan, feed)
+    before = JobStatus.read(directory)
+    assert before.phase == Phase.READY
+    with pytest.raises(ValueError, match="external update procedure"):
+        start_handoff(directory, once=True)
+    assert ExecutionConfirmation.read(directory) is None
+    assert not (directory / "handoff-approval.json").exists()
+    assert not (directory / "preflight-entered.json").exists()
+    assert JobStatus.read(directory) == before
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
+@pytest.mark.parametrize("installation", [
+    "handoff", {"restart_contract": b'{"schema_version":1,"handoff_protocols":[2,1]}'},
+], ids=["current-contract", "future-with-current-support"], indirect=True)
 @pytest.mark.parametrize("refuse", [False, True])
 async def test_confirmed_handoff_is_consumed_once_even_after_failure(installation, tmp_path, refuse):
     plan, _, _, _, transport = installation
@@ -547,6 +599,10 @@ async def test_old_runtime_preflight_revalidates_before_shutdown(installation, t
 
     monkeypatch.setattr(update_handoff, "ReleaseFeed", ObservedFeed)
     monkeypatch.setattr(update_handoff, "stop_reviewed_gateways", stop)
+    # This test exercises release/stop ordering in the test interpreter. Real
+    # frozen-child startup and lease ownership have separate native coverage.
+    baseline = WorkerSpec.read(directory).baseline
+    monkeypatch.setattr(update_handoff, "current_environment", lambda **kwargs: baseline)
     JobStatus(plan.id, Phase.CHECKING, 0, False, "Testing preflight", int(time.time())).save(directory)
     if refuse:
         with pytest.raises(RuntimeError):
@@ -680,9 +736,11 @@ with installation_access():
             ("nanobot-ai", "0.3.5"), ("fixture-update-dep", "2.0.0"),
         }
         assert await prepare_job(plan, feed) == directory
-        # Installer configuration cannot redirect the actual write to another env.
+        # Installer configuration cannot redirect writes or the final dependency
+        # check into another interpreter (and an unprotected pip grandchild).
         unintended = tmp_path / "not-the-approved-environment"
         monkeypatch.setenv("PIP_TARGET", str(unintended))
+        monkeypatch.setenv("PIP_PYTHON", str(unintended / "python"))
         await wait_worker(await start_job(directory, feed))
     status = JobStatus.read(directory)
     assert status.phase == Phase.INSTALLED and status.attempt == 1 and status.mutation_started
@@ -1236,7 +1294,9 @@ async def test_execution_leases_cover_site_and_atexit(installation, tmp_path, re
     root = installation_state_dir(plan.installation.environment)
     leases = {
         "--prepare-handoff": [str(root / "runtime.lock"), str(root / "handoff-child.lock")],
+        "--inspect": [str(root / "runtime.lock"), str(root.parent / "data-locks/maintenance.lock")],
         "--install": [str(root / "runtime.lock"), str(root.parent / "data-locks/maintenance.lock")],
+        "--verify": [str(root / "runtime.lock"), str(root.parent / "data-locks/maintenance.lock")],
         "--restart": [str(root / "runtime.lock")],
     }
     hook = site / "execution_lease_test.pth"
@@ -1277,3 +1337,207 @@ async def test_execution_leases_cover_site_and_atexit(installation, tmp_path, re
             pass
     finally:
         hook.unlink()
+
+
+@pytest.mark.parametrize("stage", ["site", "atexit"])
+async def test_admission_probe_keeps_its_leases_after_caller_loss(installation, tmp_path, stage):
+    """Kill a disposable start_job caller, not the interpreter doing its probe."""
+    plan, _, site, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        ready, release = tmp_path / "inspection-ready", tmp_path / "inspection-release"
+        hook = site / "inspection_lifetime_test.pth"
+        action = "hold()" if stage == "site" else "atexit.register(hold)"
+        script = (
+            "import atexit, os, sys, time\nfrom pathlib import Path\n"
+            "def hold():\n"
+            f"    Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "    deadline = time.monotonic() + 20\n"
+            f"    while not Path({str(release)!r}).exists():\n"
+            "        if time.monotonic() > deadline: raise RuntimeError('Inspection wait expired')\n"
+            "        time.sleep(0.01)\n"
+            f"if '--inspect' in sys.argv: {action}\n"
+        )
+        hook.write_text(f"import builtins; builtins.exec({script!r}, {{}})\n")
+        caller = (
+            "import asyncio\nfrom pathlib import Path\n"
+            "from nanobot.update_jobs import start_job\n"
+            "class Feed:\n"
+            "    async def revalidate(self, target): pass\n"
+            f"asyncio.run(start_job(Path({str(directory)!r}), Feed()))\n"
+        )
+        process = subprocess.Popen([sys.executable, "-c", caller], cwd=Path(__file__).parents[1],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            async with asyncio.timeout(15):
+                while not ready.exists():
+                    assert process.poll() is None
+                    await asyncio.sleep(0.01)
+            process.kill()
+            await asyncio.to_thread(process.wait, 10)
+            assert GatewayRuntime().process_is_running(int(ready.read_text()))
+            with pytest.raises(InstallationBusyError):
+                with installation_access(updating=True, environment=plan.installation.environment):
+                    pytest.fail("The inspection lost its installation lease with its caller")
+            with pytest.raises(InstallationBusyError):
+                with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+                    pytest.fail("The inspection lost its data lease with its caller")
+            with pytest.raises(InstallationBusyError):
+                await start_job(directory, feed)
+            assert JobStatus.read(directory).phase == Phase.READY
+            assert not (directory / "approval.json").exists()
+            assert not pending_update_path(plan.installation.environment).exists()
+        finally:
+            release.touch()
+            if process.poll() is None:
+                process.kill()
+            await asyncio.to_thread(process.wait, 10)
+            async with asyncio.timeout(20):
+                while True:
+                    try:
+                        with installation_access(updating=True, environment=plan.installation.environment):
+                            break
+                    except InstallationBusyError:
+                        await asyncio.sleep(0.01)
+            hook.unlink()
+        await wait_worker(await start_job(directory, feed))
+        assert JobStatus.read(directory).phase == Phase.INSTALLED
+
+
+@pytest.mark.parametrize("stage", ["site", "dependencies", "atexit"])
+async def test_verification_keeps_its_leases_after_coordinator_loss(installation, tmp_path, stage):
+    """Pause actual site/pip/atexit in a disposable target, not a mocked subprocess."""
+    plan, _, site, _, transport = installation
+    ready, release = tmp_path / "verification-ready", tmp_path / "verification-release"
+    hook = site / "verification_lifetime_test.pth"
+    launcher = site / "pip/__main__.py"
+    original = launcher.read_text()
+    hold = (
+        "import os, time\nfrom pathlib import Path\n"
+        "def hold():\n"
+        f"    Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "    deadline = time.monotonic() + 20\n"
+        f"    while not Path({str(release)!r}).exists():\n"
+        "        if time.monotonic() > deadline: raise RuntimeError('Verification wait expired')\n"
+        "        time.sleep(0.01)\n"
+    )
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        if stage == "dependencies":
+            launcher.write_text(hold + "import sys\nif sys.argv[1:] == ['check']: hold()\n"
+                                + f"exec(compile({original!r}, __file__, 'exec'))\n")
+        else:
+            action = "hold()" if stage == "site" else "atexit.register(hold)"
+            script = hold + "import atexit, sys\n" + f"if '--verify' in sys.argv: {action}\n"
+            hook.write_text(f"import builtins; builtins.exec({script!r}, {{}})\n")
+        process = await start_job(directory, feed)
+        try:
+            async with asyncio.timeout(15):
+                while not ready.exists():
+                    assert process.poll() is None, JobStatus.read(directory)
+                    await asyncio.sleep(0.01)
+            assert JobStatus.read(directory).phase == Phase.VERIFYING
+            process.kill()
+            await asyncio.to_thread(process.wait, 10)
+            assert GatewayRuntime().process_is_running(int(ready.read_text()))
+            with pytest.raises(InstallationBusyError):
+                with installation_access(updating=True, environment=plan.installation.environment):
+                    pytest.fail("A live verification lost its installation lease")
+            with pytest.raises(InstallationBusyError, match="data is in use"):
+                with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+                    pytest.fail("A live verification lost its data lease")
+            with pytest.raises(InstallationBusyError):
+                await start_job(directory, feed, repair=True)
+            assert JobStatus.read(directory).phase == Phase.VERIFYING
+        finally:
+            release.touch()
+            if process.poll() is None:
+                process.kill()
+            await asyncio.to_thread(process.wait, 10)
+            async with asyncio.timeout(20):
+                while True:
+                    try:
+                        with installation_access(updating=True, environment=plan.installation.environment):
+                            break
+                    except InstallationBusyError:
+                        await asyncio.sleep(0.01)
+            hook.unlink(missing_ok=True)
+            launcher.write_text(original)
+        # The orphan does not announce success or release the durable fence.
+        assert JobStatus.read(directory).phase == Phase.VERIFYING
+        assert pending_update_path(plan.installation.environment).exists()
+        backup = (directory / "backup/data.zip").read_bytes()
+        await wait_worker(await start_job(directory, feed, repair=True))
+        assert JobStatus.read(directory).phase == Phase.INSTALLED
+        assert (directory / "backup/data.zip").read_bytes() == backup
+        assert not pending_update_path(plan.installation.environment).exists()
+
+
+async def test_verification_requires_its_own_completion_checkpoint(installation, tmp_path):
+    plan, _, site, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        hook = site / "verification_exit_test.pth"
+        # A previously successful verification record cannot bless a new
+        # interpreter that exits 0 during site initialization.
+        write_record(directory / "verification.json", {"id": uuid4().hex})
+        hook.write_text("import sys; sys.exit(0) if '--verify' in sys.argv else None\n")
+        try:
+            process = await start_job(directory, feed)
+            assert await asyncio.to_thread(process.wait, 40) != 0
+            status = JobStatus.read(directory)
+            assert status.phase == Phase.FAILED and status.mutation_started
+            assert "verification did not finish" in status.message
+            assert pending_update_path(plan.installation.environment).exists()
+        finally:
+            hook.unlink()
+
+
+async def test_installed_cleanup_recovery_reverifies_without_reinstalling(installation, tmp_path, monkeypatch):
+    """Exit after the real result write, before its pending/data fences are removed."""
+    plan, _, site, _, transport = installation
+    original_popen = subprocess.Popen
+    wrapper = """
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from _nanobot_update import update_worker
+original_save = update_worker.JobStatus.save
+def save(status, directory):
+    original_save(status, directory)
+    if status.phase == update_worker.Phase.INSTALLED:
+        os._exit(91)
+update_worker.JobStatus.save = save
+update_worker.run_job(Path(sys.argv[2]))
+"""
+
+    def launch(command, **kwargs):
+        if len(command) == 4 and str(command[2]).endswith("worker.pyz"):
+            command = [command[0], "-I", "-c", wrapper, command[2], command[3]]
+        return original_popen(command, **kwargs)
+
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        with monkeypatch.context() as patch:
+            patch.setattr(subprocess, "Popen", launch)
+            process = await start_job(directory, feed)
+            assert await asyncio.to_thread(process.wait, 40) == 91
+    before = JobStatus.read(directory)
+    assert before.phase == Phase.INSTALLED and before.attempt == 1
+    pending = pending_update_path(plan.installation.environment)
+    assert pending.exists()
+    checkpoint = (directory / "verification.json").read_bytes()
+    record = site / "nanobot_ai-0.3.5.dist-info/RECORD"
+    record_time = record.stat().st_mtime_ns
+    backup = (directory / "backup/data.zip").read_bytes()
+    spec = WorkerSpec.read(directory)
+    recovery = subprocess.Popen([spec.baseline.base_python, "-I", str(directory / "worker.pyz"), str(directory)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    await wait_worker(recovery)
+    assert JobStatus.read(directory) == before
+    assert (directory / "verification.json").read_bytes() != checkpoint
+    assert record.stat().st_mtime_ns == record_time
+    assert (directory / "backup/data.zip").read_bytes() == backup
+    assert not pending.exists()
+    with data_access([Path(plan.profiles[0].receipt.data_dir) / "sessions"]):
+        pass

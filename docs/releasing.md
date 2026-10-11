@@ -15,6 +15,24 @@ Use this checklist with the [Release Packaging Contract](../CONTRIBUTING.md#rele
 9. Build all five native TUI targets using the same scripts as the publication workflow. Include ad-hoc signatures for macOS before packaging. Verify every archive's checksum, manifest, executable architecture, required notices/licenses, and embedded source contents. Run platform-specific smoke tests where supported; record cross-compiled-only targets as such and link exact-head CI evidence instead of claiming native execution everywhere. Bundle these archives into the five platform wheels using the command below. Check all final wheels with `twine check`, validate their RECORDs, tags and installed executable permissions, and test first launch with an empty cache and `NANOBOT_TUI_NO_DOWNLOAD=1`. The installed executable must come from `site-packages/nanobot/tui/bin/`, not the checkout or a cache.
 10. Merge the release-preparation PR only after its current checks and reviews pass. Confirm the merged source tree matches the tested candidate; if it does not, rebuild and recheck before tagging. Reconcile the final changelog and documentation source references. The tag must point to this verified commit, not an unchecked later `main` tip.
 
+### Protected updater handoff compatibility
+
+Packages that support restarting a gateway through the standalone updater include
+`nanobot/update_contract.json`. Its schema version 1 declares `handoff_protocols` as
+a list of positive integer protocol IDs. The current implementation supports protocol
+1: worker request schema 4, frozen `-I -S` startup with child-owned installation
+leases, scoped data-startup grants, and activation bound to the exact restarted run.
+This contract is separate from the package version and WebUI protocol.
+
+Before publishing an update that advertises protocol 1, run the preparation, frozen
+worker and actual-gateway restart tests against its packaged code. Verify the manifest
+is included in both sdist and wheel. A declaration is not proof that a changed
+implementation honors it. Retain a protocol only while its entire handoff contract
+is supported; assign a new ID for incompatible request, startup or activation behavior.
+An older updater may use a future package only if that package still supports its
+protocol. Missing, malformed and non-overlapping declarations require the external
+installation-owner update procedure; they must be refused before gateway shutdown.
+
 ### OpenAI API selector compatibility window
 
 The temporary `providers.openai.apiType` / `api_type` conversion is supported for exactly two consecutive releases: the first release containing `nanobot/config/provider_api_migration.py` and the next release. Record the first release tag and the final supported tag in release notes. Config saves write the new `api` declaration; there is no legacy runtime selector.

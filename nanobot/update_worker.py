@@ -1,10 +1,10 @@
 """Standalone, offline installer worker for an already prepared update.
 
 This file and its stdlib-only helpers are copied to an immutable zipapp outside
-site-packages before mutation. The coordinator uses the base Python. Its installer child
-owns the runtime lease itself, so killing the coordinator cannot release that lease
-while the installer is still changing files. Only lease-protected child entrypoints import
-the installed nanobot runtime for pre-install shutdown or post-install restart.
+site-packages before mutation. The coordinator uses the base Python. Its installer and
+verification children own their runtime leases, so coordinator loss cannot release a
+lease while they are still using the installation. Only lease-protected child entrypoints
+import the installed nanobot runtime for shutdown, verification or restart.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from email.parser import BytesParser
 from enum import Enum
 from pathlib import Path
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 from nanobot.data_access import data_access
@@ -45,6 +45,7 @@ from nanobot.utils.atomic_file import atomic_write_lines
 
 _REQUEST_SCHEMA_VERSION = 4
 _MAX_REQUEST_BYTES = 16 * 1024 * 1024
+_HANDOFF_PROTOCOL = 1
 
 _PROBE = """
 import hashlib, json, re, sys
@@ -55,7 +56,7 @@ cfg = root / 'pyvenv.cfg'
 if sys.prefix == sys.base_prefix or not cfg.is_file():
     raise SystemExit('A dedicated virtual environment is required')
 owners = [name for name in ('uv-receipt.toml', 'pipx_metadata.json') if (root / name).exists()]
-if owners != (['uv-receipt.toml'] if sys.argv[1] == 'uv' else []):
+if owners != (['uv-receipt.toml'] if manager == 'uv' else []):
     raise SystemExit('This environment belongs to another package manager')
 if 'include-system-site-packages = true' in cfg.read_text().lower():
     raise SystemExit('Shared system packages are not supported by this worker')
@@ -72,11 +73,11 @@ try:
                    for name in ('RECORD', 'direct_url.json')}
 except PackageNotFoundError:
     app_version, app_records = '', {}
-print(json.dumps(dict(environment=str(root), python=str(Path(sys.executable).absolute()),
+snapshot = dict(environment=str(root), python=str(Path(sys.executable).absolute()),
     base_python=str(Path(sys._base_executable).resolve()),
     receipt_sha=hashlib.sha256(cfg.read_bytes()).hexdigest(), distributions=items, versions=versions,
     app_version=app_version, app_records=app_records,
-    manager_receipt_sha=hashlib.sha256((root / owners[0]).read_bytes()).hexdigest() if owners else None)))
+    manager_receipt_sha=hashlib.sha256((root / owners[0]).read_bytes()).hexdigest() if owners else None)
 """
 
 
@@ -126,6 +127,33 @@ def write_record(path: Path, record: object, *, max_bytes: int = 1024 * 1024) ->
     path.chmod(0o600)
 
 
+def verify_target_handoff(wheel: ZipFile) -> None:
+    """Read the target's declared restart contract without executing its code.
+
+    Protocol 1 covers request schema 4, protected -I -S gateway startup, scoped
+    data grants and exact-run activation. A matching package version or Python
+    filename does not establish that contract. See docs/releasing.md.
+    """
+    message = ("This release cannot use this updater's protected restart. "
+               "Use the installation owner's external update procedure instead.")
+    try:
+        wheel.getinfo("nanobot/update_restart.py")
+        entry = wheel.getinfo("nanobot/update_contract.json")
+        if entry.file_size > 4096:
+            raise ValueError(message)
+        record = _object(json.loads(wheel.read(entry)))
+    except (KeyError, ValueError, UnicodeError) as exc:
+        raise ValueError(message) from exc
+    protocols = record.get("handoff_protocols")
+    if (type(record.get("schema_version")) is not int or record["schema_version"] != 1
+            or not isinstance(protocols, list)):
+        raise ValueError(message)
+    values = cast(list[object], protocols)
+    if (not 1 <= len(values) <= 32 or not all(type(value) is int and value > 0 for value in values)
+            or _HANDOFF_PROTOCOL not in values):
+        raise ValueError(message)
+
+
 @dataclass(frozen=True)
 class EnvironmentSnapshot:
     environment: str
@@ -153,12 +181,20 @@ class EnvironmentSnapshot:
 
 
 def inspect_environment(python: str, *, uv: bool = False, process: PreparationProcess | None = None) -> EnvironmentSnapshot:
-    arguments = ["-c", _PROBE, "uv" if uv else "pip"]
+    probe = "manager = __import__('sys').argv[1]\n" + _PROBE + "\nprint(json.dumps(snapshot))\n"
+    arguments = ["-c", probe, "uv" if uv else "pip"]
     result = (process.run(python, arguments, timeout=15) if process is not None else
               subprocess.run([python, "-I", *arguments], capture_output=True, text=True, timeout=15))
     if result.returncode:
         raise ValueError("Could not verify the selected package environment; use its installation owner")
     return EnvironmentSnapshot.parse(json.loads(result.stdout))
+
+
+def current_environment(*, uv: bool = False) -> EnvironmentSnapshot:
+    """Inspect in an already initialized, lease-owning target child, without a grandchild."""
+    scope: dict[str, object] = {"manager": "uv" if uv else "pip"}
+    exec(compile(_PROBE, "<update environment probe>", "exec"), scope)
+    return EnvironmentSnapshot.parse(scope["snapshot"])
 
 
 @dataclass(frozen=True)
@@ -268,7 +304,10 @@ class WorkerSpec:
 
     def verify_inputs(self, directory: Path) -> None:
         for wheel in self.wheels:
-            wheel.verify(directory / "wheels")
+            path = wheel.verify(directory / "wheels")
+            if self.restart_profiles and wheel.name == "nanobot-ai":
+                with ZipFile(path) as archive:
+                    verify_target_handoff(archive)
         if self.uv is not None:
             self.uv.verify(self.baseline.environment, directory)
 
@@ -388,17 +427,17 @@ def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = No
                     "--prepare-handoff", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     approval = _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+    current = inspect_job_environment(directory, spec)
     with (installation_access(updating=True, environment=spec.baseline.environment),
           data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
-        check_environment(spec, repairing=False)
+        check_environment(spec, repairing=False, current=current)
         spec.verify_inputs(directory)
         # Stopping a process did not grant installation authority. Only successful
         # preflight, child exit and exclusive installation/data leases get here.
         write_record(directory / "approval.json", approval)
 
 
-def check_environment(spec: WorkerSpec, *, repairing: bool) -> None:
-    current = inspect_environment(spec.baseline.python, uv=spec.uv is not None)
+def check_environment(spec: WorkerSpec, *, repairing: bool, current: EnvironmentSnapshot) -> None:
     if (current.environment, current.python, current.base_python, current.receipt_sha, current.manager_receipt_sha) != (
         spec.baseline.environment, spec.baseline.python, spec.baseline.base_python, spec.baseline.receipt_sha,
         spec.baseline.manager_receipt_sha,
@@ -426,6 +465,39 @@ def _pending_owner(spec: WorkerSpec) -> None:
         raise ValueError("Another incomplete update owns this installation")
 
 
+def inspect_job_environment(directory: Path, spec: WorkerSpec) -> EnvironmentSnapshot:
+    """Inspect a staged job without borrowing its caller's runtime/data leases.
+
+    Call with the worker lease held, but not exclusive runtime/data leases. The
+    child owns those while loading site and retains them through exit cleanup.
+    The caller still checks the snapshot under its final admission leases, and
+    the installer repeats that check in-process immediately before mutation.
+    """
+    result = subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
+                             "--inspect", str(directory)], capture_output=True, text=True, timeout=15)
+    if result.returncode == 11:
+        raise InstallationBusyError("The update's installation or data is in use; wait for its current owner")
+    if result.returncode:
+        raise ValueError("Could not verify the selected package environment; use its installation owner")
+    return EnvironmentSnapshot.parse(json.loads(result.stdout))
+
+
+def _inspection_child(directory: Path) -> None:
+    spec = WorkerSpec.read(directory)
+    status = JobStatus.read(directory)
+    restarting = status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED}
+    child_leases.enter_context(installation_access(
+        updating=not restarting, allow_incomplete=restarting, environment=spec.baseline.environment))
+    # Finalization can already have released the data reservation while the
+    # verified gateway is serving requests. It only needs the runtime read lease.
+    if status.phase != Phase.FINALIZING:
+        child_leases.enter_context(data_access(
+            (source.path for source in spec.backup_sources), updating=not restarting, job_id=spec.plan_id))
+    _pending_owner(spec)
+    initialize_runtime(spec.baseline.python, spec.baseline.environment)
+    print(json.dumps(asdict(current_environment(uv=spec.uv is not None))))
+
+
 def _installer_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
     installation = child_leases.enter_context(installation_access(updating=True, environment=spec.baseline.environment))
@@ -438,13 +510,13 @@ def _installer_child(directory: Path, confirmation_id: str | None = None) -> Non
     _check_approval(directory, spec, confirmation_id=confirmation_id)
     _pending_owner(spec)
     initialize_runtime(spec.baseline.python, spec.baseline.environment)
-    check_environment(spec, repairing=status.mutation_started)
-    wheels = [str(wheel.verify(directory / "wheels")) for wheel in spec.wheels]
+    check_environment(spec, repairing=status.mutation_started, current=current_environment(uv=spec.uv is not None))
+    spec.verify_inputs(directory)
+    wheels = [str(directory / "wheels" / wheel.filename) for wheel in spec.wheels]
     uv_cache = None
     if spec.uv is not None:
         if os.name != "posix":
             raise ValueError("Native uv lease handoff is not available on this platform")
-        spec.uv.verify(spec.baseline.environment, directory)
         uv_cache = spec.uv.working_cache(directory)
     verify_backup(directory, spec.backup_sources, hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
                   unchanged=not status.mutation_started)
@@ -476,7 +548,7 @@ def _installer_child(directory: Path, confirmation_id: str | None = None) -> Non
     # Keep pip in this lease-owning process on every platform. Inherited Windows
     # handles cannot transfer byte-range locks; a POSIX wrapper can also die
     # before a spawned installer. Only verified local wheels are accepted, so
-    # no build child can outlive it. Verification belongs to the coordinator.
+    # no build child can outlive it. A separate protected child verifies afterwards.
     arguments = ["--disable-pip-version-check", "--no-input", "install",
                  "--no-index", "--no-deps", "--only-binary=:all:", "--no-compile",
                  "--force-reinstall", *wheels]
@@ -487,23 +559,56 @@ def _installer_child(directory: Path, confirmation_id: str | None = None) -> Non
 
 
 def _verify(spec: WorkerSpec, directory: Path) -> None:
-    probe = (
-        "import json,nanobot; from pathlib import Path; "
-        "print(json.dumps([nanobot.__version__,str(Path(nanobot.__file__).resolve())]))"
-    )
-    result = subprocess.run([spec.baseline.python, "-I", "-c", probe], capture_output=True,
-                            text=True, timeout=30)
-    if result.returncode:
+    # The coordinator must not hold the runtime/data leases here: this child
+    # acquires its own before site/imports and keeps them through dependency
+    # checks and atexit, even if the coordinator disappears.
+    verification_id = uuid4().hex
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}
+    env["PIP_CONFIG_FILE"] = os.devnull
+    result = subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
+                             "--verify", str(directory), verification_id], timeout=90,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    if result.returncode == 10:
         raise ValueError("The installed nanobot package does not import")
-    version, package = json.loads(result.stdout)
-    if version != spec.version or not Path(package).is_relative_to(spec.baseline.environment):
+    if result.returncode:
+        raise ValueError("Installed package or dependency verification failed")
+    try:
+        checkpoint = read_record(directory / "verification.json", max_bytes=2048)
+    except (OSError, ValueError) as exc:
+        raise ValueError("Installed package verification did not finish") from exc
+    if checkpoint.get("id") != verification_id:
+        raise ValueError("Installed package verification did not finish")
+
+
+def _verification_child(directory: Path, verification_id: str) -> None:
+    if UUID(verification_id).hex != verification_id:
+        raise ValueError("Invalid verification identity")
+    spec = WorkerSpec.read(directory)
+    installation = child_leases.enter_context(installation_access(updating=True, environment=spec.baseline.environment))
+    data = child_leases.enter_context(data_access(
+        (source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id))
+    status = JobStatus.read(directory)
+    if not status.mutation_started or status.phase not in {Phase.VERIFYING, Phase.INSTALLED}:
+        raise ValueError("This job is not awaiting installed-package verification")
+    if read_record(pending_update_path(spec.baseline.environment)).get("job_id") != spec.plan_id:
+        raise ValueError("This job no longer owns installed-package verification")
+    spec.verify_inputs(directory)
+    initialize_runtime(spec.baseline.python, spec.baseline.environment)
+    try:
+        import nanobot
+    except Exception:
+        # A dedicated exit code preserves an actionable diagnosis without
+        # persisting arbitrary import exceptions, paths or package output.
+        raise SystemExit(10) from None
+    package = Path(nanobot.__file__).resolve()
+    if nanobot.__version__ != spec.version or not package.is_relative_to(spec.baseline.environment):
         raise ValueError("Installed package version or location differs from the approved target")
     app = next(wheel for wheel in spec.wheels if wheel.name == "nanobot-ai")
     with ZipFile(directory / "wheels" / app.filename) as wheel:
         for item in wheel.infolist():
             if item.is_dir() or not item.filename.startswith("nanobot/"):
                 continue
-            installed = Path(package).parent.parent / item.filename
+            installed = package.parent.parent / item.filename
             if not installed.is_file() or installed.is_symlink():
                 raise ValueError("An installed application file is missing")
             with installed.open("rb") as actual, wheel.open(item) as expected:
@@ -513,24 +618,32 @@ def _verify(spec: WorkerSpec, directory: Path) -> None:
                 if hashlib.file_digest(actual, "sha256").digest() != digest.digest():
                     raise ValueError("Installed application files differ from the verified wheel")
     if spec.uv is not None:
-        spec.uv.verify(spec.baseline.environment, directory)
-        current = inspect_environment(spec.baseline.python, uv=True)
+        current = current_environment(uv=True)
         if (current.environment, current.python, current.base_python, current.receipt_sha) != (
             spec.baseline.environment, spec.baseline.python, spec.baseline.base_python, spec.baseline.receipt_sha,
         ):
             raise ValueError("uv changed the prepared interpreter or environment ownership")
         if current.versions != spec.uv.versions:
             raise ValueError("The installed uv dependencies differ from the prepared transaction")
+        if os.name != "posix":
+            raise ValueError("Native uv lease handoff is not available on this platform")
         command = [spec.uv.executable, "pip", "check", "--no-config", "--no-cache", "--offline", "--python", spec.baseline.python]
         env = uv_environment(tools=Path(spec.baseline.environment).parent,
                              binaries=Path(spec.uv.binaries), cache=directory / ".uv-check-cache")
-    else:
-        command = [spec.baseline.python, "-I", "-m", "pip", "check"]
-        env = None
-    result = subprocess.run(command,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, env=env)
-    if result.returncode:
-        raise ValueError("Installed dependency verification failed")
+        # This checkpoint plus the native command's successful exit proves the
+        # verification path ran. Exit 0 from site/import hooks alone does not.
+        write_record(directory / "verification.json", {"id": verification_id}, max_bytes=2048)
+        with installation.inherit_for_exec(), data.inherit_for_exec():
+            os.execve(spec.uv.executable, command, env)
+    # Like installation, pip check runs in the same process that owns the
+    # leases, not in an unprotected subprocess of a protected wrapper.
+    sys.argv = ["pip", "check"]
+    try:
+        runpy.run_module("pip", run_name="__main__")
+    except SystemExit as exc:
+        if exc.code not in {None, 0}:
+            raise
+    write_record(directory / "verification.json", {"id": verification_id}, max_bytes=2048)
 
 
 def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | None = None) -> JobStatus:
@@ -571,19 +684,28 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                 _handoff(directory, spec, confirmation_id)
             if status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
                 return _restart_runtime(directory, spec, confirmation_id)
+            if status.phase == Phase.INSTALLED:
+                # Recover a crash after saving the result but before removing
+                # the startup fence. Verification owns independent leases.
+                with (installation_access(updating=True, environment=spec.baseline.environment),
+                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
+                    _pending_owner(spec)
+                    needs_verification = pending_update_path(spec.baseline.environment).exists()
+                if needs_verification:
+                    _verify(spec, directory)
+                with (installation_access(updating=True, environment=spec.baseline.environment),
+                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+                    _pending_owner(spec)
+                    pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
+                    data.release_reservation()
+                return status
+            _check_approval(directory, spec, confirmation_id=confirmation_id)
+            current = inspect_job_environment(directory, spec)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
                 _pending_owner(spec)
-                if status.phase == Phase.INSTALLED:
-                    # Recover a crash after persisting the result but before removing
-                    # the startup fence. No reinstall or new consent is necessary.
-                    if pending_update_path(spec.baseline.environment).exists():
-                        _verify(spec, directory)
-                        pending_update_path(spec.baseline.environment).unlink()
-                    data.release_reservation()
-                    return status
                 _check_approval(directory, spec, confirmation_id=confirmation_id)
-                check_environment(spec, repairing=status.mutation_started)
+                check_environment(spec, repairing=status.mutation_started, current=current)
                 spec.verify_inputs(directory)
                 JobStatus(spec.plan_id, Phase.BACKING_UP, status.attempt, status.mutation_started,
                           "Preserving the original scoped data backup", int(time.time())).save(directory)
@@ -606,7 +728,10 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                 status = JobStatus.read(directory)
                 JobStatus(spec.plan_id, Phase.VERIFYING, status.attempt, True,
                           "Checking the installed package and dependencies", int(time.time())).save(directory)
-                _verify(spec, directory)
+            _verify(spec, directory)
+            with (installation_access(updating=True, environment=spec.baseline.environment),
+                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+                _pending_owner(spec)
                 status = JobStatus(spec.plan_id, Phase.RESTARTING if spec.restart_profiles else Phase.INSTALLED,
                                    status.attempt, True,
                                    "Files installed and checked; running gateway not yet verified", int(time.time()))
@@ -708,6 +833,12 @@ def cancel_job(directory: Path) -> JobStatus:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--inspect":
+        try:
+            _inspection_child(Path(sys.argv[2]).resolve())
+        except InstallationBusyError:
+            raise SystemExit(11) from None
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--prepare-native":
         run_preparation_child(Path(sys.argv[2]).resolve())
         return
@@ -722,6 +853,9 @@ def main() -> None:
         return
     if len(sys.argv) in {3, 4} and sys.argv[1] == "--install":
         _installer_child(Path(sys.argv[2]).resolve(), sys.argv[3] if len(sys.argv) == 4 else None)
+        return
+    if len(sys.argv) == 4 and sys.argv[1] == "--verify":
+        _verification_child(Path(sys.argv[2]).resolve(), sys.argv[3])
         return
     if len(sys.argv) == 3 and sys.argv[1] in {"--status", "--cancel"}:
         directory = Path(sys.argv[2]).resolve()

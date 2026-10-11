@@ -15,7 +15,13 @@ from nanobot.installation_lock import installation_state_dir
 from nanobot.release_feed import ReleaseFeed
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_stop import stop_reviewed_gateways
-from nanobot.update_worker import JobStatus, Phase, WorkerSpec, check_environment
+from nanobot.update_worker import (
+    JobStatus,
+    Phase,
+    WorkerSpec,
+    check_environment,
+    current_environment,
+)
 
 
 async def _prepare(directory: Path) -> None:
@@ -26,7 +32,9 @@ async def _prepare(directory: Path) -> None:
         raise ValueError("Shutdown preflight requires an unchanged prepared job")
     try:
         plan.validate_for(plan.installation)
-        await asyncio.to_thread(check_environment, spec, repairing=False)
+        # This process already owns the old runtime's lease, including startup
+        # and atexit. Do not create an unprotected nested interpreter here.
+        check_environment(spec, repairing=False, current=current_environment(uv=spec.uv is not None))
         async with ReleaseFeed(installation_state_dir(spec.baseline.environment) / "feed") as feed:
             await feed.revalidate(plan.target)
         plan.validate_for(plan.installation)
