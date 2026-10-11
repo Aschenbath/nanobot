@@ -499,7 +499,7 @@
         },
         "tools_web_proxy": {
           "label": "Web proxy",
-          "help": "Proxy URL; leave blank for the default network.\n\nProxy URL for web tools. Leave empty to use the default network configuration."
+          "help": "Used for the agent's web search and page reading. Leave blank to use the default network settings, including proxy environment variables.\n\n127.0.0.1 refers to the machine that runs nanobot. This setting does not change model, MCP, or browser connections."
         },
         "tools_web_user_agent": {
           "label": "User agent",

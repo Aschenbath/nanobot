@@ -416,7 +416,7 @@
         "tools_exec_allowed_env_keys": {"label": "環境變數", "help": "額外傳給命令的變數名，每行一個\n\n除必需變數外，還要從主機傳遞給命令的環境變數名稱，每行一個。"},
         "tools_exec_allow_patterns": {"label": "允許命令", "help": "只允許完整匹配規則的命令\n\n每行一個正規表示式。填寫後，只允許每段命令都完整匹配規則的命令執行，且優先於內建和自定義拒絕規則；工作區和網路限制仍生效。"},
         "tools_exec_deny_patterns": {"label": "禁止命令", "help": "阻止匹配規則的命令\n\n每行一個正規表示式，與內建拒絕規則一同檢查。完整匹配允許規則的命令會跳過這些檢查。"},
-        "tools_web_proxy": {"label": "網頁代理", "help": "網頁代理地址，留空用預設網路\n\n網頁搜尋和讀取使用的代理地址，留空使用預設網路設定。"},
+        "tools_web_proxy": {"label": "網頁代理", "help": "用於智慧體搜尋和讀取網頁。留空使用預設網路設定，包括環境變數中的代理。\n\n127.0.0.1 指執行 nanobot 的機器，不是開啟網頁的手機。本設定不影響模型、MCP 或瀏覽器的連線。"},
         "tools_web_user_agent": {"label": "User-Agent", "help": "網頁請求標識，留空使用預設值\n\n網頁請求使用的 User-Agent 標識，留空使用預設值。"},
         "tools_restrict_to_workspace": {"label": "目錄限制", "help": "全域性目錄限制，WebUI 許可權另設\n\n設定全域性工作區訪問限制；WebUI 中每個對話的許可權單獨設定。"},
         "tools_ssrf_whitelist": {"label": "允許 IP", "help": "允許訪問的 IP 或 CIDR，每行一項\n\n允許網頁等出站請求訪問這些受限地址。每行填寫一個 IP 地址或 CIDR 網段。"},

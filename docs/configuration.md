@@ -1699,6 +1699,13 @@ Keep whitelist entries as narrow as possible, such as a single host CIDR (`192.1
 
 HTTP/SSE MCP connections use the same process-wide proxy environment behavior as `web_fetch`: proxied targets use the configured proxy, and URLs excluded by `NO_PROXY` remain DNS-pinned direct connections.
 
+In WebUI, open **Settings → Capabilities → Web access → Configure → Advanced options**
+to set the web proxy. This setting applies to the agent's web search and page reading,
+not model providers, MCP, or your browser. `127.0.0.1` refers to the machine that runs
+nanobot, not the phone or computer that opens WebUI. Clear the field to use the default
+network settings, which can include proxy environment variables. After saving, restart
+nanobot when WebUI requests it. You can configure the proxy before enabling web access.
+
 > [!TIP]
 > Use `proxy` in `tools.web` to route web requests through a proxy:
 > ```json

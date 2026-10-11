@@ -518,7 +518,9 @@ export function SettingsPage({
               olostepFeature={featureCatalog.find((feature) => feature.name === "olostep")}
               olostepInstalling={nanobotFeatureAction === "enable:olostep"}
               capabilityError={nanobotFeaturesError}
-            />
+            >
+              {settings.runtime_config ? runtimeConfiguration("network") : null}
+            </WebSettings>
           </div>
         );
       case "channels":
