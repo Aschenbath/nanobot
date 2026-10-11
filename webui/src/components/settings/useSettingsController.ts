@@ -20,6 +20,7 @@ import type {
   SettingsSectionKey,
 } from "@/components/settings/contracts";
 import { agentDraftFromPayload } from "@/components/settings/models/ModelsSettings";
+import { modelAPISelection } from "@/components/settings/models/modelAPI";
 import { useModelSettingsActions } from "@/components/settings/models/useModelSettingsActions";
 import {
   useProviderFormsSync,
@@ -97,12 +98,12 @@ export function useSettingsController({
   const [localPrefs, setLocalPrefs] = useState<LocalPreferences>(() => readLocalPreferences());
   const modelState = useModelSettingsState(initialSettings);
   const {
-    editingProviderKeys, expandedProvider, form, modelCallOrder, modelCallOrderSaving,
+    editingProviderKeys, form, modelCallOrder, modelCallOrderSaving,
     modelConfigurationSaving, modelMigrationSaving, modelPresetBeforeCreateRef,
     modelPresetCreating, modelPresetEditingName, modelPresetNameError, modelPresetPendingDelete,
     providerForms, providerOAuthCompleting,
     providerOAuthDialogError, providerOAuthFlow, providerOAuthFlowRef, providerOAuthResponse,
-    providerSaving, saving, setForm,
+    providerSaving, providerOperation, saving, setForm,
     setModelCallOrder, setModelPresetCreating, setModelPresetEditingName, setModelPresetNameError,
     setModelPresetPendingDelete,
     setProviderForms, setProviderOAuthCompleting, setProviderOAuthDialogError,
@@ -298,7 +299,8 @@ export function useSettingsController({
       form.maxTokens !== selectedPreset.max_tokens ||
       form.contextWindowTokens !== normalizeContextWindowTokens(selectedPreset.context_window_tokens) ||
       form.temperature !== selectedPreset.temperature ||
-      form.reasoningEffort !== (selectedPreset.reasoning_effort ?? "")
+      form.reasoningEffort !== (selectedPreset.reasoning_effort ?? "") ||
+      modelAPISelection(form.api) !== modelAPISelection(selectedPreset.api)
     );
   }, [form, modelPresetEditingName, settings]);
 
@@ -448,7 +450,7 @@ export function useSettingsController({
     createCustomProvider,
     handleDeleteModelConfiguration,
     handleMigrateModelConfigurations,
-    handleToggleProvider,
+    resetProviderDraft,
     runProviderOAuth,
     saveModelSettings,
     saveProvider,
@@ -521,7 +523,6 @@ export function useSettingsController({
     customMcpForm,
     editingProviderKeys,
     error,
-    expandedProvider,
     featureCatalog,
     form,
     handleApiServiceAction,
@@ -540,7 +541,7 @@ export function useSettingsController({
     handleMigrateModelConfigurations,
     handleNanobotFeatureAction,
     handleSaveCustomMcp,
-    handleToggleProvider,
+    resetProviderDraft,
     handleWebSearchProviderChange,
     hostEngineApplying,
     imageGenerationDirty,
@@ -586,6 +587,7 @@ export function useSettingsController({
     providerOAuthFlow,
     providerOAuthResponse,
     providerSaving,
+    providerOperation,
     remoteBrowserAccess,
     resetWebSearchDraft,
     restartViaSettingsSurface,
