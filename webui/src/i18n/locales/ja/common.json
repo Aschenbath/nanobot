@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "インストール方法別の更新手順",
+    "recoveryTitle": "ゲートウェイのコンピュータで復旧",
+    "recoveryDescription": "nanobot を実行しているコンピュータの端末で実行してください。保存済みの更新を表示し、修復前に確認します。元のバックアップを保持してください。",
     "confirm": "nanobot を更新しますか？",
     "reviewingTitle": "更新を確認中…",
     "preparing": "更新をダウンロード中…",

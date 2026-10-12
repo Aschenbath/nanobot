@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "Instruções de atualização para sua instalação",
+    "recoveryTitle": "Recuperar no computador do gateway",
+    "recoveryDescription": "Execute este comando no terminal do computador que executa o nanobot. Ele mostra a atualização salva antes de pedir confirmação para repará-la. Preserve o backup original.",
     "confirm": "Atualizar nanobot agora?",
     "reviewingTitle": "Verificando atualização…",
     "preparing": "Baixando atualização…",

@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "Petunjuk pembaruan untuk instalasi Anda",
+    "recoveryTitle": "Pulihkan di komputer gateway",
+    "recoveryDescription": "Jalankan perintah ini di terminal komputer yang menjalankan nanobot. Pembaruan tersimpan akan ditampilkan sebelum meminta konfirmasi perbaikan. Simpan cadangan asli.",
     "confirm": "Perbarui nanobot sekarang?",
     "reviewingTitle": "Memeriksa pembaruan…",
     "preparing": "Mengunduh pembaruan…",

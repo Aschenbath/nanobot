@@ -40,7 +40,7 @@ WINDOWS = os.name == "nt"
 BASE_PYTHON = sys._base_executable
 
 
-def _wheel(directory, version, *, platform="any", package="nanobot-ai", extras=()):
+def _wheel(directory, version, *, platform="any", package="nanobot-ai", extras=(), installer_receipt=False):
     module = package.replace("-", "_") if package != "nanobot-ai" else "nanobot"
     wheel_name = package.replace("-", "_")
     metadata = f"{wheel_name}-{version}.dist-info"
@@ -71,6 +71,10 @@ if __name__ == "__main__":
     files[f"{metadata}/METADATA"] += "".join(f"Provides-Extra: {extra}\n" for extra in extras)
     files[f"{metadata}/WHEEL"] = files[f"{metadata}/WHEEL"].replace("py3-none-any", f"py3-none-{platform}")
     files[f"{metadata}/entry_points.txt"] = f"[console_scripts]\n{module} = {module}.__main__:main\n"
+    if installer_receipt:
+        files["nanobot/installation_receipt.py"] = (SCRIPTS.parent / "nanobot/installation_receipt.py").read_text()
+        files["nanobot/utils/__init__.py"] = ""
+        files["nanobot/utils/atomic_file.py"] = (SCRIPTS.parent / "nanobot/utils/atomic_file.py").read_text()
     record = []
     path = directory / f"{wheel_name}-{version}-py3-none-{platform}.whl"
     with ZipFile(path, "w") as wheel:
@@ -165,8 +169,9 @@ def sandbox(tmp_path):
 
 @pytest.mark.parametrize("manager", ["uv", "pipx"])
 def test_installer_starts_and_upgrades_same_persistent_manager_environment(sandbox, manager):
-    _expose(sandbox, manager)
+    executable = _expose(sandbox, manager)
     _wheel(sandbox["wheels"], "0.0.1")
+    _run([executable, *(["tool"] if manager == "uv" else []), "install", "--python", BASE_PYTHON, "nanobot-ai"], sandbox)
     prefix = (sandbox["root"] / "uv-tools/nanobot-ai" if manager == "uv"
               else sandbox["root"] / "pipx/venvs/nanobot-ai")
     for version in ("0.0.1", "0.0.2"):
@@ -192,11 +197,29 @@ def test_rerunning_installer_preserves_uv_version_constraint(sandbox):
     assert "==0.0.1" in receipt.read_text(encoding="utf-8")
 
 
+def test_fresh_default_records_dedicated_environment_even_with_uv_available(sandbox):
+    _expose(sandbox, "uv")
+    _wheel(sandbox["wheels"], "0.0.1", installer_receipt=True)
+    identity = _identity(_installer(sandbox))
+    prefix = sandbox["root"] / "managed"
+    assert Path(identity["prefix"]).resolve() == prefix
+    receipt = prefix / "nanobot-install.json"
+    original = receipt.read_bytes()
+    assert json.loads(original) == {"schema_version": 1, "owner": "nanobot-installer",
+                                    "environment": str(prefix), "extras": []}
+    _wheel(sandbox["wheels"], "0.0.2", installer_receipt=True)
+    assert _identity(_installer(sandbox))["version"] == "0.0.2"
+    assert receipt.read_bytes() == original
+    assert not (sandbox["root"] / "uv-tools/nanobot-ai").exists()
+
+
 @pytest.mark.parametrize("original", ["pipx", "managed"])
 def test_existing_owner_wins_when_uv_is_installed_later(sandbox, original):
     if original == "pipx":
-        _expose(sandbox, "pipx")
+        executable = _expose(sandbox, "pipx")
     _wheel(sandbox["wheels"], "0.0.1")
+    if original == "pipx":
+        _run([executable, "install", "--python", BASE_PYTHON, "nanobot-ai"], sandbox)
     before = _identity(_installer(sandbox))
     _expose(sandbox, "uv")
     _wheel(sandbox["wheels"], "0.0.2")
@@ -222,8 +245,9 @@ def test_multiple_existing_installations_need_an_explicit_owner(sandbox):
 
 
 def test_activated_manager_environment_is_not_updated_with_pip(sandbox):
-    _expose(sandbox, "uv")
+    executable = _expose(sandbox, "uv")
     _wheel(sandbox["wheels"], "0.0.1")
+    _run([executable, "tool", "install", "--python", BASE_PYTHON, "nanobot-ai"], sandbox)
     before = _identity(_installer(sandbox))
     sandbox["env"]["PYTHON"] = before["python"]
     _wheel(sandbox["wheels"], "0.0.2")
@@ -250,21 +274,21 @@ def test_python_install_uses_same_environment_and_quoted_launcher(sandbox, activ
 
 
 @pytest.mark.parametrize("manager", ["uv", "pipx"])
-def test_failed_install_does_not_fall_through_to_another_environment(sandbox, manager):
+def test_failed_default_install_does_not_fall_through_to_available_manager(sandbox, manager):
     _expose(sandbox, manager)
-    # Offline and no candidate: this runs the manager's real failed-install path.
+    # Offline and no candidate: only the default dedicated environment is tried.
     result = _installer(sandbox, check=False)
     assert result.returncode != 0
-    # Windows PowerShell wraps native failure records to the host's text width.
-    assert "no other installation was attempted" in " ".join((result.stdout + result.stderr).split())
-    assert not (sandbox["root"] / "managed").exists()
+    assert (sandbox["root"] / "managed").exists()
+    assert not (sandbox["root"] / "uv-tools/nanobot-ai").exists()
+    assert not (sandbox["root"] / "pipx/venvs/nanobot-ai").exists()
     assert "INSTALLER_PROBE" not in result.stdout
 
 
 def test_dry_run_does_not_create_tool_environment(sandbox):
     _expose(sandbox, "uv")
     result = _installer(sandbox, "--dry-run")
-    assert "persistent uv tool environment" in result.stdout
+    assert "dedicated virtual environment" in result.stdout
     assert not (sandbox["root"] / "uv-tools").exists()
     assert "INSTALLER_PROBE" not in result.stdout
 
@@ -298,7 +322,7 @@ def _owner_environment(sandbox, owner, *, existing):
         prefix = sandbox["root"] / ("uv-tools/nanobot-ai" if owner == "uv" else "pipx/venvs/nanobot-ai")
         sandbox["env"]["UV_PYTHON"] = BASE_PYTHON
         if existing:
-            _installer(sandbox)
+            _run([executable, *(["tool"] if owner == "uv" else []), "install", "--python", BASE_PYTHON, "nanobot-ai"], sandbox)
     return executable, prefix
 
 
@@ -397,6 +421,8 @@ def test_public_installer_accepts_verified_exact_preview(sandbox, owner, existin
         executable, prefix = _owner_environment(sandbox, owner, existing=existing)
         if owner == "pip":
             sandbox["env"]["PYTHON"] = executable
+        elif not existing:
+            prefix = sandbox["root"] / "managed"
     manifest, artifact = _preview_manifest(sandbox)
     result = _installer(sandbox, *_wheel_arguments(sandbox, artifact))
     identity = _identity(result)
@@ -699,6 +725,8 @@ def test_public_installer_download_to_owner_upgrade_over_https(sandbox, release_
             _installer(sandbox)
     else:
         _, prefix = _owner_environment(sandbox, owner, existing=existing)
+        if not existing:
+            prefix = sandbox["root"] / "managed"
     sandbox["env"].update(network)
     result = _installer(sandbox, *_release_arguments(manifest.version, digest))
     identity = _identity(result)

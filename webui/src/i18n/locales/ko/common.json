@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "설치 방식별 업데이트 안내",
+    "recoveryTitle": "게이트웨이 컴퓨터에서 복구",
+    "recoveryDescription": "nanobot이 실행 중인 컴퓨터의 터미널에서 실행하세요. 저장된 업데이트를 표시한 후 복구 여부를 확인합니다. 원본 백업을 보관하세요.",
     "confirm": "nanobot을 업데이트할까요?",
     "reviewingTitle": "업데이트 확인 중…",
     "preparing": "업데이트 다운로드 중…",

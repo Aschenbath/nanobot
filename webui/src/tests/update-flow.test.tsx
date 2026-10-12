@@ -100,12 +100,25 @@ describe("Real update consent and recovery", () => {
     render(view());
     fireEvent.click(screen.getByText("Update entry"));
     expect(await screen.findByText(/Open this gateway on localhost/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Update & restart" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Update & restart" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
     expect(api.prepareUpdate).not.toHaveBeenCalled();
   });
   it("does not offer the flow to older hosts without its optional capability", () => {
     render(view("gateway-a", false));
     expect(screen.getByText("Update entry")).toBeDisabled();
     expect(api.createUpdateReview).not.toHaveBeenCalled();
+  });
+  it("shows the saved host recovery command after mutation failure without executing it", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    const command = `python3 -I -S ~/.nanobot/updates/recover.py ${id} --repair`;
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("failed", "confirmed"), mutation_started: true, recovery_command: command,
+    } });
+    render(view());
+    expect(await screen.findByDisplayValue(command)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeDisabled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+    expect(JSON.parse(sessionStorage.getItem("nanobot.pending-update-recovery.v1") || "{}").command).toBe(command);
   });
 });

@@ -665,6 +665,9 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
     response = await fetch(gateway, JOB + "?id=" + plan_id)
     assert response.status_code == 200
     job = json.loads(response.body)["job"]
+    recovery = job.pop("recovery_command")
+    assert plan.id in recovery and recovery.endswith(" --repair")
+    assert "recover.py" in recovery
     assert job == {
         "id": plan_id, "installation_id": fixture.snapshot.installation_id,
         "host": platform.node(), "previous_version": "0.3.4",
@@ -772,5 +775,12 @@ async def test_plan_cannot_invent_restart_ownership_or_replace_manager_extras(re
     else:
         payload["extras"] = []
     response = await fixture.gateway().http.dispatch_webui_mutation(connection(), "settings.nanobot.update.plan", payload)
-    assert response.status_code == 409
-    assert not (fixture.directory / "plans").exists()
+    if problem == "extras":
+        assert response.status_code == 409
+        assert not (fixture.directory / "plans").exists()
+    else:
+        assert response.status_code == 200
+        payload = json.loads(response.body)
+        assert payload["execution_available"] is False
+        assert payload["plan"]["execution_blocked_reason"] == "external_restart"
+        assert not any(profile["restart"] for profile in payload["plan"]["profiles"])

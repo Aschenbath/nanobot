@@ -127,8 +127,6 @@ function Get-InstallMethod {
         Fail "Multiple nanobot installations were found. Use the intended environment's package manager; this installer changed none of them."
     }
     if ($Existing.Count -eq 1) { return $Existing[0] }
-    if (Get-Command uv -ErrorAction SilentlyContinue) { return "uv" }
-    if (Get-Command pipx -ErrorAction SilentlyContinue) { return "pipx" }
     return "managed"
 }
 
@@ -273,6 +271,7 @@ function Install-WithManagedVenv {
 
     $VenvDir = if ($env:NANOBOT_VENV) { $env:NANOBOT_VENV } else { Join-Path $HomeDir ".nanobot\venv" }
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    $FreshEnvironment = $false
 
     if (-not (Test-Path $VenvPython)) {
         Write-Info "Creating a dedicated virtual environment at $VenvDir..."
@@ -284,6 +283,7 @@ function Install-WithManagedVenv {
         if ($LASTEXITCODE -ne 0) {
             Show-InstallFailureHint
         }
+        $FreshEnvironment = $true
     }
 
     if (-not (Test-Python $VenvPython)) {
@@ -298,6 +298,13 @@ function Install-WithManagedVenv {
     }
 
     Select-InstalledPython $VenvPython $VenvDir
+    if ($FreshEnvironment) {
+        & $script:NanobotPython -I -c "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('nanobot.installation_receipt') else 1)"
+        if ($LASTEXITCODE -eq 0) {
+            & $script:NanobotPython -I -m nanobot.installation_receipt --register-fresh
+            if ($LASTEXITCODE -ne 0) { Fail "Could not record the new installation's update settings." }
+        }
+    }
 }
 
 $PreviousOutputEncoding = [Console]::OutputEncoding

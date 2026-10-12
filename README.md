@@ -100,7 +100,9 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1 | iex
 ```
 
-The default command installs or upgrades `nanobot-ai` from PyPI. On a fresh local desktop, it then starts `nanobot webui` so you can configure the first provider and model in **Settings → Models**. SSH, headless, existing-config, and older-release paths keep the terminal setup wizard. The installer avoids system-wide pip installs by using an active virtual environment, `uv`, `pipx`, or a managed venv under `~/.nanobot/venv`. It also prints the exact command it used to run nanobot; reuse that full command below if `nanobot` is not on `PATH`.
+The default command installs or upgrades `nanobot-ai` from PyPI. A fresh install uses a dedicated environment under `~/.nanobot/venv`, even if uv or pipx is available. On a fresh local desktop, it starts `nanobot webui` so you can configure the first provider and model in **Settings → Models**. Installer-managed WebUI launches keep the gateway running in the background; closing the browser or terminal does not stop it. Use the printed `gateway stop` command to stop that instance. SSH, headless, existing-config, and older-release paths keep the terminal setup wizard.
+
+Existing uv, pipx and installer-managed installations retain their owner, extras and constraints. An active ordinary venv remains an explicit installation target; it is not adopted as installer-managed. The installer avoids system-wide pip and prints the exact command used to run nanobot; reuse it if `nanobot` is not on `PATH`. See [updates and recovery](docs/updating.md) for supported in-app updates and other installation methods.
 
 To preview the plan without changing your environment, pass `--dry-run`.
 

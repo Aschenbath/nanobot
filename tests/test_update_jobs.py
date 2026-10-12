@@ -289,6 +289,60 @@ async def wait_worker(process):
     assert code == 0
 
 
+async def test_standalone_repair_survives_missing_dependency_and_expired_approval(installation, tmp_path):
+    plan, _, site, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        pip_entry = site / "pip/__main__.py"
+        original = pip_entry.read_text()
+        # Real interrupted mutation: lose a dependency before pip completes.
+        pip_entry.write_text(
+            f"from pathlib import Path\nPath({str(site / 'fixture_update_dep/__init__.py')!r}).unlink()\n"
+            "raise SystemExit(99)\n")
+        process = await start_job(directory, feed)
+        assert await asyncio.to_thread(process.wait, 40) != 0
+        pip_entry.write_text(original)
+    status = JobStatus.read(directory)
+    assert status.mutation_started and status.attempt == 1
+    backup = (directory / "backup/data.zip").read_bytes()
+    approval = read_record(directory / "approval.json")
+    approval.update(created_at=int(time.time()) - 1800, expires_at=int(time.time()) - 900)
+    write_record(directory / "approval.json", approval)
+    launcher = directory.parents[2] / "recover.py"
+    command = [sys._base_executable, "-I", "-S", str(launcher), plan.id]
+    viewed = await asyncio.to_thread(subprocess.run, command, capture_output=True, text=True, timeout=40)
+    assert viewed.returncode == 0, viewed.stderr
+    assert "Inspection only" in viewed.stdout
+    assert JobStatus.read(directory) == status
+    # A still-running installation owner cannot be overridden by local repair.
+    with installation_access(environment=plan.installation.environment, allow_incomplete=True):
+        refused = await asyncio.to_thread(subprocess.run, [*command, "--repair", "--yes"],
+                                          capture_output=True, text=True, timeout=40)
+    assert refused.returncode != 0
+    assert JobStatus.read(directory) == status
+    repaired = await asyncio.to_thread(subprocess.run, [*command, "--repair", "--yes"],
+                                      capture_output=True, text=True, timeout=40)
+    assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+    assert JobStatus.read(directory).phase == Phase.INSTALLED
+    assert JobStatus.read(directory).attempt == 2
+    assert (site / "fixture_update_dep/__init__.py").read_text() == "__version__ = '2.0.0'\n"
+    assert (directory / "backup/data.zip").read_bytes() == backup
+    assert not pending_update_path(plan.installation.environment).exists()
+
+
+async def test_standalone_repair_cannot_turn_preparation_into_installation(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    result = await asyncio.to_thread(subprocess.run, [
+        sys._base_executable, "-I", "-S", str(directory.parents[2] / "recover.py"), plan.id, "--repair", "--yes",
+    ], capture_output=True, text=True, timeout=40)
+    assert result.returncode != 0
+    assert JobStatus.read(directory).phase == Phase.READY
+    assert not (directory / "approval.json").exists()
+    assert inspect_environment(plan.installation.python).app_version == "0.3.4"
+
+
 async def wait_for(predicate):
     async with asyncio.timeout(40):
         while not predicate():
@@ -707,7 +761,8 @@ async def test_old_runtime_preflight_revalidates_before_shutdown(installation, t
 
 
 @pytest.mark.parametrize("installation", ["restart"], indirect=True)
-async def test_installed_runtime_failure_repairs_handoff_without_reinstalling(installation, tmp_path, monkeypatch):
+@pytest.mark.parametrize("standalone", [False, True])
+async def test_installed_runtime_failure_repairs_handoff_without_reinstalling(installation, tmp_path, monkeypatch, standalone):
     plan, _, site, requests, transport = installation
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
         directory = await prepare_job(plan, feed)
@@ -739,7 +794,16 @@ async def test_installed_runtime_failure_repairs_handoff_without_reinstalling(in
         with pytest.raises(ValueError, match="explicit repair"):
             await start_job(directory, feed)
         failure.unlink()
-        await wait_worker(await start_job(directory, feed, repair=True))
+        if standalone:
+            approval = read_record(directory / "approval.json")
+            approval.update(created_at=int(time.time()) - 1800, expires_at=int(time.time()) - 900)
+            write_record(directory / "approval.json", approval)
+            result = await asyncio.to_thread(subprocess.run, [
+                sys._base_executable, "-I", "-S", str(directory.parents[2] / "recover.py"), plan.id, "--repair", "--yes",
+            ], capture_output=True, text=True, timeout=40)
+            assert result.returncode == 0, result.stdout + result.stderr
+        else:
+            await wait_worker(await start_job(directory, feed, repair=True))
     assert not requests
     assert JobStatus.read(directory).phase == Phase.SUCCEEDED
     assert JobStatus.read(directory).attempt == 1

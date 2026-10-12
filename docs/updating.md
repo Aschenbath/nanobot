@@ -15,14 +15,39 @@ worker installs offline, verifies the files and dependencies, and restarts those
 gateways. “Update complete” requires both a successful journal and a reconnected
 gateway actually running the target version. It is never inferred from a timer.
 
-The initial inline route supports compatible POSIX uv 0.11.16 **registry** tool
-installations started with `nanobot gateway --background`. It preserves recorded
-extras, constraints and additional packages. Direct-wheel/path installations, pipx,
-source checkouts, containers, Desktop and externally supervised services must use
-their installation owner's workflow. A uv tool installed from a fixed wheel URL
-retains that URL during upgrade; it must not be treated as an overridable registry
-requirement. Plain virtual environments need explicit extras in an operator-created
-plan; the WebUI does not guess those extras or silently discard them.
+Fresh official-installer environments record their base-package selection and start
+`nanobot webui` with a persistent background gateway. These installations can use the
+inline route without manual extras or launcher configuration. The receipt stays with
+that environment and is checked again before mutation. Existing unrecorded venvs are
+not silently adopted. Explicit `nanobot webui --detach` also starts a persistent
+gateway; ordinary `webui` launches outside installer-managed environments retain
+their previous on-demand lifetime. `--detach --dev` is unsupported.
+
+Compatible POSIX uv 0.11.16 **registry** tool installations started with
+`nanobot gateway --background` or `nanobot webui --detach` also support the inline
+route. It preserves recorded extras, constraints and additional packages. Other
+owners use the workflow below; an update indicator never promises universal in-app
+installation.
+
+## Installation owners
+
+| Installation | Update route | Restart and recovery owner |
+| --- | --- | --- |
+| Fresh official installer | WebUI **Update & restart**, for a compatible prebuilt release | Detached nanobot worker; standalone recovery below |
+| Existing uv registry tool | Inline only for the verified uv/platform combination above; otherwise `uv tool upgrade nanobot-ai` | Same uv environment and its original gateway launcher |
+| pipx | `pipx upgrade nanobot-ai`; retain pins, suffixes and injected packages | pipx and the original launcher |
+| Ordinary pip venv | Stop its gateways, back up data, then run that venv's Python with `-m pip install --upgrade 'nanobot-ai[<your existing extras>]'` (omit brackets for the base package) | That exact venv; the UI does not infer optional extras |
+| Source checkout | Review/pull the selected ref, update its environment and build WebUI/TUI using the contribution instructions | Checkout owner; preserve local changes |
+| Docker / Compose | Pull/build the chosen image and recreate the service, retaining the existing data volumes | Container/deployment owner; never pip-install into the running container |
+| OS package, service manager or Desktop | Use the distributor/deployment's update operation | Original package/service owner |
+
+Do not switch owners as a workaround for an error. Fixed wheel URLs/paths retain
+their pinned source; explicitly select and verify a new artifact using the release
+handoff instructions instead of assuming a registry upgrade overrides it. Suffixed,
+locked or custom-manager installations require their actual recorded options.
+For every external update: stop the affected writers first, retain a data backup,
+update through the original owner, restart through the original launcher, and verify
+the **running** version. Package-manager success alone is not a running-gateway check.
 
 Updating is explicit, never scheduled by checking for updates. All running gateways
 sharing the installation are included in the confirmation; stopped profiles are not
@@ -34,8 +59,47 @@ be confirmed again; a lost execution response is resolved by reading the same jo
 not creating or executing a second update. A recorded pre-mutation handoff failure
 can be explicitly retried using its existing confirmation. If the gateway remains
 offline, the page cannot prove the worker's status: retain the job and backup and use
-local diagnostics. Automatic rollback and a public repair CLI for a broken installation
-are not provided by this change; see the recovery limitations below.
+the standalone recovery command below. Automatic data rollback is never attempted.
+
+## Standalone recovery
+
+Before shutdown, preparation saves a stdlib-only launcher at
+`~/.nanobot/updates/recover.py`, outside the environment being updated. The WebUI
+retains the exact job ID and displays the host's command after failure or prolonged
+reconnection. Run it **on the gateway computer, as the original OS user**:
+
+```sh
+python3 -I -S ~/.nanobot/updates/recover.py <job-id>
+python3 -I -S ~/.nanobot/updates/recover.py <job-id> --repair
+```
+
+Windows PowerShell:
+
+```powershell
+python -I -S "$env:USERPROFILE\.nanobot\updates\recover.py" <job-id>
+python -I -S "$env:USERPROFILE\.nanobot\updates\recover.py" <job-id> --repair
+```
+
+Use the Python 3.11+ command used by your installer (`py` is another common Windows
+launcher). Inspection is read-only. `--repair` displays the exact saved version,
+environment and backup location and asks for confirmation. `--yes` is available for
+an operator who has already reviewed those facts. It launches the **original frozen
+worker with the original base Python**, not the broken application's CLI.
+
+Repair can renew expired launch consent only for an already admitted exact job. It
+verifies the immutable request, original backup and staged bytes, refuses live owners
+or unrelated environment changes, and reuses the same target without network access.
+An installed job with a restart failure retries restart, not package installation.
+This is local recovery of previously verified bytes, not a new release-eligibility
+check. A prepared-only job is not installation authority. If shutdown failed before
+admission, no packages changed: restart the intact gateway with its original launcher
+and review a new update, or use the bounded handoff retry below while its plan is valid.
+
+Keep the original job directory and backup until verified recovery. Missing/changed
+backup, a removed base Python, disk damage or an independently modified environment
+requires operator repair; the tool refuses to guess or overwrite it. Do not install
+another version over a pending job, delete its fence, or restore a backup into live
+data. Downgrades and data restoration remain explicit owner-managed operations.
 
 ## Review an exact release
 
@@ -292,9 +356,9 @@ A stopped job can be cancelled only before mutation. Failed/interrupted mutation
 its startup fence and exact inputs. Explicit repair rechecks eligibility and cannot
 overwrite a different version installed by another updater. Within a valid approval,
 the copied worker can retry or show `--status <job-directory>` without importing a
-broken nanobot installation. After expiry it refuses execution: a control-plane approval
-must be renewed for the same reviewed job. There is not yet a finished public recovery
-CLI for the case where that control plane is itself unavailable.
+broken nanobot installation. Normal execution refuses expired approval. The standalone
+recovery launcher above provides fresh, explicit local consent for the same admitted
+job when the application control plane is unavailable.
 
 ### Detached shutdown and installation
 
@@ -362,7 +426,5 @@ the update or restart succeeded. It neither restarts previously stopped profiles
 outside the plan nor selects a new latest release.
 
 These commands require an intact application environment. They refuse an incomplete
-installation marker and are **not** the standalone recovery solution for broken
-dependencies, expired plans or post-mutation repair. The frozen worker's status
-inspection remains separate; a complete public recovery route for that case is
-still required before enabling the finished update experience.
+installation marker and are **not** the recovery solution for broken dependencies
+or post-mutation repair. Use the independent `recover.py` entrypoint above instead.

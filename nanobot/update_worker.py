@@ -78,6 +78,8 @@ snapshot = dict(environment=str(root), python=str(Path(sys.executable).absolute(
     base_python=str(Path(sys._base_executable).resolve()),
     receipt_sha=hashlib.sha256(cfg.read_bytes()).hexdigest(), distributions=items, versions=versions,
     app_version=app_version, app_records=app_records,
+    installer_receipt_sha=hashlib.sha256((root / 'nanobot-install.json').read_bytes()).hexdigest()
+        if (root / 'nanobot-install.json').is_file() else None,
     manager_receipt_sha=hashlib.sha256((root / owners[0]).read_bytes()).hexdigest() if owners else None)
 """
 
@@ -166,6 +168,7 @@ class EnvironmentSnapshot:
     app_version: str
     app_records: dict[str, str]
     manager_receipt_sha: str | None = None
+    installer_receipt_sha: str | None = None
 
     @classmethod
     def parse(cls, value: object) -> EnvironmentSnapshot:
@@ -178,7 +181,8 @@ class EnvironmentSnapshot:
                                              _object(data["distributions"]).items()},
                    {name: _text(value) for name, value in _object(data["versions"]).items()}, version,
                    {name: _sha(digest) for name, digest in _object(data["app_records"]).items()},
-                   _sha(data["manager_receipt_sha"]) if data.get("manager_receipt_sha") is not None else None)
+                   _sha(data["manager_receipt_sha"]) if data.get("manager_receipt_sha") is not None else None,
+                   _sha(data["installer_receipt_sha"]) if data.get("installer_receipt_sha") is not None else None)
 
 
 def inspect_environment(python: str, *, uv: bool = False, process: PreparationProcess | None = None) -> EnvironmentSnapshot:
@@ -442,6 +446,8 @@ def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = No
 
 
 def check_environment(spec: WorkerSpec, *, repairing: bool, current: EnvironmentSnapshot) -> None:
+    if current.installer_receipt_sha != spec.baseline.installer_receipt_sha:
+        raise ValueError("Installer selection changed outside this update")
     if (current.environment, current.python, current.base_python, current.receipt_sha, current.manager_receipt_sha) != (
         spec.baseline.environment, spec.baseline.python, spec.baseline.base_python, spec.baseline.receipt_sha,
         spec.baseline.manager_receipt_sha,
@@ -650,11 +656,38 @@ def _verification_child(directory: Path, verification_id: str) -> None:
     write_record(directory / "verification.json", {"id": verification_id}, max_bytes=2048)
 
 
-def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | None = None) -> JobStatus:
+def _approve_recovery(directory: Path, spec: WorkerSpec, status: JobStatus) -> None:
+    """Fresh local consent resumes only a previously admitted, immutable job.
+
+    Never repeats shutdown or resolves a release. Before mutation, the original
+    handoff must already have admitted this worker (approval.json). After mutation
+    the same installation/data reservation and backup remain authoritative.
+    """
+    if status.phase in {Phase.CANCELLED, Phase.PREPARATION_FAILED, Phase.PREPARING, Phase.PREPARATION_REQUESTED}:
+        raise ValueError("This job cannot be repaired; no installation was admitted")
+    _check_approval(directory, spec, check_expiry=False)
+    spec.verify_inputs(directory)
+    current = inspect_job_environment(directory, spec)
+    check_environment(spec, repairing=status.mutation_started, current=current)
+    if status.mutation_started:
+        verify_backup(directory, spec.backup_sources,
+                      hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(), unchanged=False)
+    now = int(time.time())
+    write_record(directory / "approval.json", {
+        "plan_id": spec.plan_id,
+        "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+        "created_at": now, "expires_at": now + 900,
+    })
+
+
+def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | None = None,
+            recover: bool = False) -> JobStatus:
     """Execute one approved offline job. 'installed' does not mean restarted."""
     spec = WorkerSpec.read(directory)
     root = installation_state_dir(spec.baseline.environment)
     with file_access(root / "worker.lock", exclusive=True):
+        if recover and (handoff or confirmation_id is not None):
+            raise ValueError("Repair cannot initiate a second shutdown handoff")
         if confirmation_id is not None:
             if not handoff:
                 raise ValueError("A confirmation only starts the reviewed shutdown handoff")
@@ -678,6 +711,11 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
         status = JobStatus.read(directory)
         if status.phase == Phase.CANCELLED:
             raise ValueError("This update job was cancelled")
+        if recover:
+            with file_access(root / "handoff-child.lock", exclusive=True):
+                if status.phase == Phase.SUCCEEDED:
+                    return status
+                _approve_recovery(directory, spec, status)
         if handoff and (status.mutation_started or status.phase not in {
             Phase.READY, Phase.CHECKING, Phase.STOPPING, Phase.HANDOFF_FAILED,
         }):
@@ -867,13 +905,15 @@ def main() -> None:
         status = cancel_job(directory) if sys.argv[1] == "--cancel" else JobStatus.read(directory)
         print(json.dumps(asdict(status)))
         return
+    recover = len(sys.argv) == 3 and sys.argv[1] == "--recover"
     handoff = len(sys.argv) == 3 and sys.argv[1] == "--handoff"
     confirmed = len(sys.argv) == 4 and sys.argv[1] == "--confirmed-handoff"
-    if len(sys.argv) != 2 and not handoff and not confirmed:
+    if len(sys.argv) != 2 and not handoff and not confirmed and not recover:
         raise SystemExit("Use this worker with its exact saved job directory")
-    directory = Path(sys.argv[2] if handoff or confirmed else sys.argv[1]).resolve()
+    directory = Path(sys.argv[2] if handoff or confirmed or recover else sys.argv[1]).resolve()
     try:
-        result = run_job(directory, handoff=handoff or confirmed, confirmation_id=sys.argv[3] if confirmed else None)
+        result = run_job(directory, handoff=handoff or confirmed, confirmation_id=sys.argv[3] if confirmed else None,
+                         recover=recover)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Update did not finish: {type(exc).__name__}. Consult the saved job status.", file=sys.stderr)
         raise SystemExit(1) from exc

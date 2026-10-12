@@ -4,12 +4,14 @@ Run with that venv's ``python -I`` and exact expected version/commit. This check
 installed identity, real loopback asset responses and native TUI protocol startup.
 Optionally start a loopback-only gateway with a disposable, unconfigured profile.
 Neither mode uses a model or claims interactive UI, migration or updater coverage.
+With --install-wheel, first exercise the public installer in a disposable home.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import http.client
 import importlib.metadata
 import json
@@ -208,6 +210,45 @@ async def verify_installed_release(
     }
 
 
+def install_and_probe(wheel: Path, *, version: str, commit: str, gateway: bool, report: Path | None) -> None:
+    """Exercise the public fresh installer with a real native wheel, no toolchain."""
+    wheel = wheel.resolve(strict=True)
+    scripts = Path(__file__).resolve().parent
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="nanobot-release-install-") as temporary:
+        root = Path(temporary).resolve()
+        system = {key: value for key, value in os.environ.items()
+                  if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
+        system.update(HOME=str(root), USERPROFILE=str(root), PYTHON=sys._base_executable,
+                      NANOBOT_VENV=str(root / "managed"), NANOBOT_BIN_DIR=str(root / "bin"),
+                      NANOBOT_SKIP_WIZARD="1", PIP_CONFIG_FILE=os.devnull, PIP_ONLY_BINARY=":all:",
+                      PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_INPUT="1", PYTHONUTF8="1",
+                      XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"),
+                      XDG_DATA_HOME=str(root / "data"), APPDATA=str(root / "config"),
+                      LOCALAPPDATA=str(root / "data"), TMPDIR=str(root), TMP=str(root), TEMP=str(root))
+        if os.name == "nt":
+            system["PATH"] = str(Path(system["SYSTEMROOT"]) / "System32")
+            shell = Path(system["SYSTEMROOT"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            command = [str(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                       str(scripts / "install.ps1"), "-Wheel", str(wheel), "-Sha256", digest]
+            python = root / "managed/Scripts/python.exe"
+        else:
+            system["PATH"] = "/usr/bin:/bin"
+            command = ["/bin/sh", str(scripts / "install.sh"), "--wheel", str(wheel), "--sha256", digest]
+            python = root / "managed/bin/python"
+        subprocess.run(command, check=True, cwd=root, env=system, timeout=600)
+        receipt = json.loads((root / "managed/nanobot-install.json").read_bytes())
+        if receipt != {"schema_version": 1, "owner": "nanobot-installer",
+                       "environment": str((root / "managed").resolve()), "extras": []}:
+            raise ValueError("The public installer did not establish its managed update identity")
+        command = [str(python), "-I", str(Path(__file__).resolve()), "--version", version, "--commit", commit]
+        if gateway:
+            command.append("--gateway")
+        if report:
+            command.extend(["--report", str(report)])
+        subprocess.run(command, check=True, cwd=root, env=system, timeout=120)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -215,7 +256,17 @@ def main() -> None:
     parser.add_argument("--gateway", action="store_true",
                         help="Also start a disposable loopback gateway; no model calls or user config")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--install-wheel", type=Path,
+                        help="First run the public installer against this exact wheel in a disposable home")
     args = parser.parse_args()
+    if args.install_wheel is not None:
+        if not sys.flags.isolated:
+            parser.error("Run the installer probe with python -I")
+        if args.report is not None and args.report.exists():
+            parser.error("Use a new report path; prior evidence must not be overwritten")
+        install_and_probe(args.install_wheel, version=args.version, commit=args.commit,
+                          gateway=args.gateway, report=args.report.resolve() if args.report else None)
+        return
     if not sys.flags.isolated or sys.prefix == sys.base_prefix:
         parser.error("Run the disposable installation's python -I, not the build/source interpreter")
     report = args.report.resolve() if args.report else None

@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "查看此安装方式的更新说明",
+    "recoveryTitle": "在网关电脑上恢复",
+    "recoveryDescription": "在运行 nanobot 的电脑上打开终端并运行此命令。它会先显示原更新记录，再询问是否恢复。请保留原备份。",
     "confirm": "现在更新 nanobot？",
     "reviewingTitle": "正在检查更新…",
     "preparing": "正在下载更新…",

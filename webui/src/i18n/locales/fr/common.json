@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "Instructions de mise à jour de votre installation",
+    "recoveryTitle": "Récupérer sur l’ordinateur de la passerelle",
+    "recoveryDescription": "Exécutez cette commande dans un terminal sur l’ordinateur qui héberge nanobot. Elle affiche la mise à jour enregistrée avant de demander confirmation. Conservez la sauvegarde d’origine.",
     "confirm": "Mettre à jour nanobot ?",
     "reviewingTitle": "Vérification de la mise à jour…",
     "preparing": "Téléchargement…",

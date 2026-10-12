@@ -9,6 +9,7 @@ import { ApiError, createUpdateReview, readUpdateReview, readUpdateJob, prepareU
 import type { NanobotClient } from "@/lib/nanobot-client";
 
 const STORAGE_KEY = "nanobot.pending-update.v1";
+const RECOVERY_KEY = "nanobot.pending-update-recovery.v1";
 const terminal = new Set(["preparation_failed", "handoff_failed", "restart_failed", "succeeded", "failed", "cancelled"]);
 const UpdateFlowContext = createContext<{ open: (() => void) | undefined }>({ open: undefined });
 
@@ -19,7 +20,7 @@ function savedJob(): string | null {
   } catch { return null; }
 }
 function remember(id: string | null) {
-  try { if (id) sessionStorage.setItem(STORAGE_KEY, id); else sessionStorage.removeItem(STORAGE_KEY); } catch { /* Memory state still works. */ }
+  try { if (id) sessionStorage.setItem(STORAGE_KEY, id); else { sessionStorage.removeItem(STORAGE_KEY); sessionStorage.removeItem(RECOVERY_KEY); } } catch { /* Memory state still works. */ }
 }
 
 export function UpdateFlowProvider({ client, token, enabled, children }: {
@@ -35,6 +36,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
   const [offline, setOffline] = useState(false);
   const [delayed, setDelayed] = useState(false);
   const [pollAttempt, setPollAttempt] = useState(0);
+  const [recovery, setRecovery] = useState("");
   const generation = useRef(0);
   const approved = useRef<string | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
@@ -51,6 +53,12 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     setJob(null);
     setError("");
     const id = enabled ? savedJob() : null;
+    // Retain a plain-text host command for an offline gateway, never consent.
+    // It is displayed, not executed by the browser.
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(RECOVERY_KEY) || "null");
+      setRecovery(saved?.id === id && typeof saved.command === "string" ? saved.command : "");
+    } catch { setRecovery(""); }
     setPendingId(id);
     setOpen(!!id);
   }, [client, token, enabled]);
@@ -83,6 +91,10 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
         const { job: next } = await readUpdateJob(token, pendingId);
         if (!active) return;
         setJob(next);
+        if (next.recovery_command) {
+          setRecovery(next.recovery_command);
+          try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify({ id: next.id, command: next.recovery_command })); } catch { /* Still available until reload. */ }
+        }
         setOffline(false);
         setDelayed(false);
         missingSince = 0;
@@ -131,6 +143,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     setError("");
     setJob(null);
     setReview(null);
+    setRecovery("");
     setPendingId(null);
     remember(null);
     try {
@@ -214,14 +227,23 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}
         </div>
-        <div className={`mt-6 grid ${done ? "grid-cols-1" : "grid-cols-2"} gap-2.5`}>
-          {!done && <Button variant="secondary" className="h-10 dark:bg-foreground/10 dark:hover:bg-foreground/15" onClick={close}>
+        {pendingId && recovery && (delayed || failed) && <div className="mt-4 space-y-2 border-t pt-4">
+          <p className="text-sm font-medium">{t("updates.recoveryTitle")}</p>
+          <p className="text-xs leading-5 text-muted-foreground">{t("updates.recoveryDescription")}</p>
+          <textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}
+            onFocus={event => event.currentTarget.select()}
+            className="w-full resize-none rounded-lg border bg-muted/40 p-2 font-mono text-xs leading-5" />
+        </div>}
+        {blocked && <a className="mt-3 text-sm text-blue-600 underline-offset-4 hover:underline" href="https://github.com/HKUDS/nanobot/blob/main/docs/updating.md#installation-owners"
+          target="_blank" rel="noreferrer">{t("updates.ownerGuide")}</a>}
+        <div className={`mt-6 grid ${done || blocked ? "grid-cols-1" : "grid-cols-2"} gap-2.5`}>
+          {!done && !blocked && <Button variant="secondary" className="h-10 dark:bg-foreground/10 dark:hover:bg-foreground/15" onClick={close}>
             {t(done || failed || error || blocked ? "updates.close" : busy ? "updates.hide" : "updates.cancel")}
           </Button>}
-          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700" disabled={busy || !!blocked || (failed && !!job?.mutation_started)}
-            onClick={primary}>
+          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700" disabled={!blocked && (busy || (failed && !!job?.mutation_started))}
+            onClick={blocked ? close : primary}>
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />}
-            {t(done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
+            {t(blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
           </Button>
         </div>
       </AlertDialogContent>

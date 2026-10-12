@@ -1,5 +1,7 @@
 """WebUI CLI command."""
 
+import hashlib
+import sys
 from pathlib import Path
 
 import typer
@@ -91,6 +93,7 @@ def webui(
         help="Run the Vite development server with live frontend updates",
     ),
     no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser"),
+    detach: bool = typer.Option(False, "--detach", help="Keep the gateway running and return to the terminal"),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -105,6 +108,14 @@ def webui(
         GatewayInstance,
         GatewayRuntime,
     )
+    from nanobot.installation_receipt import RECEIPT_NAME, managed_extras
+
+    receipt = Path(sys.prefix) / RECEIPT_NAME
+    if receipt.exists() and not dev:
+        managed_extras(str(Path(sys.prefix).resolve()), hashlib.sha256(receipt.read_bytes()).hexdigest())
+        detach = True
+    if detach and dev:
+        raise typer.BadParameter("--detach cannot keep a Vite development server alive")
 
     cli_terminal._ensure_interactive_tty_mode()
     config_path = _resolve_webui_config_path(config)
@@ -252,6 +263,25 @@ def webui(
 
     gateway_ready = _gateway_health_ready(runtime_config.gateway.host, effective_gateway_port)
     webui_ready = _webui_endpoint_reachable(webui_url)
+    if detach:
+        status = runtime.status()
+        if (gateway_ready or webui_ready) and not status.running:
+            raise typer.BadParameter("The existing gateway has another owner; use its launch command")
+        if changed_webui and status.running:
+            result = runtime.restart(start_options, timeout_s=20)
+            if result.ok:
+                # Restart retains the old lifetime. Explicit detachment must
+                # promote an on-demand gateway before the last client leaves.
+                result = runtime.start_background(start_options)
+        else:
+            result = runtime.start_background(start_options)
+        if not result.ok and result.message != "gateway_already_running":
+            console.print(f"[red]Gateway could not start: {result.message}[/red]")
+            raise typer.Exit(1)
+        print_shared_gateway_controls()
+        if not no_open and not _open_webui_browser(webui_url, wait=False):
+            _print_webui_manual_access(runtime_config, config_path, webui_url)
+        return
     if gateway_ready and webui_ready:
         lease = GatewayClientLease(runtime, kind="webui")
         lease.acquire()

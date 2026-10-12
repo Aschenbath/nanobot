@@ -112,13 +112,7 @@ select_install_method() {
   fi
   [ "$existing_count" -le 1 ] || fail "Multiple nanobot installations were found. Use the intended environment's package manager; this installer changed none of them."
   if [ -z "$install_method" ]; then
-    if command -v uv >/dev/null 2>&1; then
-      install_method="uv"
-    elif command -v pipx >/dev/null 2>&1; then
-      install_method="pipx"
-    else
-      install_method="managed"
-    fi
+    install_method="managed"
   fi
 }
 
@@ -258,11 +252,13 @@ install_with_managed_venv() {
 
   venv_dir="${NANOBOT_VENV:-$HOME/.nanobot/venv}"
   venv_python="$venv_dir/bin/python"
+  fresh_environment="0"
 
   if [ ! -x "$venv_python" ]; then
     info "Creating a dedicated virtual environment at $venv_dir..."
     mkdir -p "$(dirname "$venv_dir")"
     "$python_bin" -m venv "$venv_dir" || return 1
+    fresh_environment="1"
   fi
 
   "$venv_python" - <<'PY' >/dev/null 2>&1 || fail "The managed venv uses Python older than 3.11. Remove it or set NANOBOT_VENV to a new path."
@@ -275,6 +271,9 @@ PY
   "$venv_python" -m pip install --upgrade "$install_target" || return 1
 
   select_installed_python "$venv_python" "$venv_dir"
+  if [ "$fresh_environment" = "1" ] && "$nanobot_python" -I -c 'import importlib.util; raise SystemExit(0 if importlib.util.find_spec("nanobot.installation_receipt") else 1)'; then
+    "$nanobot_python" -I -m nanobot.installation_receipt --register-fresh || return 1
+  fi
   write_managed_wrapper
 }
 

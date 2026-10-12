@@ -89,6 +89,28 @@ Do not publish to PyPI while a required TUI artifact or verification is missing.
 
 ## Installer identity checks
 
+Fresh installs now use the official installer's dedicated venv regardless of which
+optional manager is on PATH. Only a newly created base-package environment gets
+`nanobot-install.json`; existing venvs/uv/pipx are never adopted or moved. This is an
+intentional default change for new installations, not a migration of old users.
+The receipt opts `webui` into persistent background launch and records the extras
+used by the in-app update planner. Unrecorded installs keep their previous lifecycle.
+Mention this and the instance-specific stop command in release notes.
+
+The Linux/Windows native CI jobs build the native platform wheel, invoke the actual
+public installer with a verified wheel in a private home without Bun/Node/Git on
+PATH, require the fresh managed receipt, then probe installed WebUI assets, native
+TUI and the running gateway. Only small reports are retained; no candidate binaries
+are uploaded by these PR checks. The job runs for Python/WebUI changes too, because
+a working native executable alone is not packaged-application acceptance. These
+checks complement the real offline interrupted-install/recovery tests; they are
+not five-platform native E2E or public-download evidence.
+
+The release gate also requires an actual packaged old-to-new update with disposable
+configuration and sessions, retained backup and verified restarted version. Record
+which OS ran that journey separately from installer fixtures and startup probes.
+Do not call a skipped platform or a structurally valid cross-build a native pass.
+
 Run `pytest tests/test_install_scripts.py` with `uv` and `pipx` available. These
 checks use private homes, offline fixture wheels and actual package managers; they
 do not start a gateway or install the real application. Unix uses `install.sh` and

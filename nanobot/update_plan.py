@@ -23,6 +23,7 @@ from pydantic import Field, field_validator, model_validator
 
 import nanobot
 from nanobot.installation_lock import installation_access, installation_id, installation_state_dir
+from nanobot.installation_receipt import RECEIPT_NAME, managed_extras
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_manager import ManagerPolicy, read_manager_policy
@@ -51,7 +52,7 @@ from importlib.metadata import distribution
 d = distribution('nanobot-ai')
 prefix = Path(sys.prefix).resolve()
 records = {}
-for name in ('pyvenv.cfg', 'uv-receipt.toml', 'pipx_metadata.json'):
+for name in ('pyvenv.cfg', 'uv-receipt.toml', 'pipx_metadata.json', 'nanobot-install.json'):
     path = prefix / name
     if path.is_file():
         records[name] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -259,15 +260,20 @@ class UpdatePlans:
             if extras is not None and extras != installation.manager.extras:
                 raise ValueError("The plan cannot change the installation owner's recorded extras")
             extras = installation.manager.extras
+        elif installation.owner == "venv" and RECEIPT_NAME in installation.records:
+            recorded_extras = managed_extras(installation.environment, installation.records[RECEIPT_NAME])
+            if extras is not None and extras != recorded_extras:
+                raise ValueError("The plan cannot change the installer's recorded extras")
+            extras = recorded_extras
         participants: list[str] = []
         if restart_running:
             for profile in profiles:
-                if profile.state == "unconfirmed":
-                    raise ValueError("Confirm every gateway's process owner before planning a restart")
                 if profile.state == "running":
                     if (not _managed_background(profile.receipt, installation.environment) or not profile.receipt.port
                             or profile.receipt.stop_protocol != 1):
-                        raise ValueError("A running gateway needs its owner's external restart workflow")
+                        # Review must still explain an external owner's workflow.
+                        # Such a plan is ineligible for inline execution below.
+                        continue
                     participants.append(profile.receipt.id)
         plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, extras=extras, profiles=profiles,
                           stop_profiles=participants, restart_profiles=participants,

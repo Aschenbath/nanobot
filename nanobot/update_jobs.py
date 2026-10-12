@@ -35,6 +35,7 @@ from nanobot.installation_lock import (
     installation_id,
     installation_state_dir,
 )
+from nanobot.installation_receipt import RECEIPT_NAME
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_backup import BackupSource, profile_sources, unique_sources
@@ -80,6 +81,7 @@ class UpdateJobView(ReleaseRecord):
     updated_at: int
     execution_confirmation_id: str | None = None
     running_version: str = ""
+    recovery_command: str = ""
 
 
 def read_update_job(plan_id: str) -> UpdateJobView:
@@ -113,6 +115,9 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         mutation_started=status.mutation_started, updated_at=status.updated_at,
         execution_confirmation_id=confirmation.id if confirmation else None,
         running_version=__version__,
+        recovery_command=(f'python -I -S "$env:USERPROFILE\\.nanobot\\updates\\recover.py" {plan_id} --repair'
+                          if os.name == "nt" else
+                          f'python3 -I -S ~/.nanobot/updates/recover.py {plan_id} --repair'),
     )
 
 
@@ -300,6 +305,15 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
     validate_preparation(plan)
     native_uv = plan.installation.owner == "uv"
     root = installation_state_dir(plan.installation.environment)
+    # A stable stdlib-only entrypoint survives missing application dependencies.
+    # It selects the immutable per-job worker, not code in site-packages.
+    recovery = root.parent / "recover.py"
+    source = Path(__file__).with_name("update_recovery.py").read_text()
+    if recovery.exists() and (recovery.is_symlink() or not recovery.read_text().startswith(
+            '\"\"\"nanobot standalone recovery launcher, protocol 1.')):
+        raise ValueError("The recovery launcher path is already owned by another file")
+    atomic_write_lines(recovery, source.splitlines())
+    recovery.chmod(0o600)
     with installation_access(environment=plan.installation.environment), file_access(root / "prepare.lock", exclusive=True):
         directory = root / "jobs" / plan.id
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -355,6 +369,8 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
         raise ValueError("The installation changed since this plan was prepared")
     if native_uv and baseline.manager_receipt_sha != plan.installation.records.get("uv-receipt.toml"):
         raise ValueError("The uv installation settings changed since this plan was prepared")
+    if baseline.installer_receipt_sha != plan.installation.records.get(RECEIPT_NAME):
+        raise ValueError("The installer selection changed since this plan was prepared")
     validate_profiles(plan.profiles, plan.installation.environment)
     JobStatus(plan.id, Phase.PREPARING, 0, False,
               "Downloading and verifying the reviewed package", int(time.time())).save(directory)
@@ -371,6 +387,8 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
     sources = [BackupSource(str(Path(baseline.environment) / "pyvenv.cfg"))]
     if native_uv:
         sources.append(BackupSource(str(Path(baseline.environment) / "uv-receipt.toml")))
+    if baseline.installer_receipt_sha is not None:
+        sources.append(BackupSource(str(Path(baseline.environment) / RECEIPT_NAME)))
     for profile in plan.profiles:
         receipt = profile.receipt
         sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),

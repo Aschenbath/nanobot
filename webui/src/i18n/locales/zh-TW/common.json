@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "查看此安裝方式的更新說明",
+    "recoveryTitle": "在閘道電腦上復原",
+    "recoveryDescription": "在執行 nanobot 的電腦上開啟終端機並執行此命令。它會先顯示原更新記錄，再詢問是否復原。請保留原備份。",
     "confirm": "現在更新 nanobot？",
     "reviewingTitle": "正在檢查更新…",
     "preparing": "正在下載更新…",

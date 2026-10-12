@@ -1,5 +1,8 @@
 {
   "updates": {
+    "ownerGuide": "Update instructions for your installation",
+    "recoveryTitle": "Recover on the gateway computer",
+    "recoveryDescription": "Run this command in a terminal on the computer running nanobot. It reviews the saved job before asking to repair. Keep the original backup.",
     "confirm": "Update nanobot now?",
     "reviewingTitle": "Checking the update…",
     "preparing": "Downloading the update…",

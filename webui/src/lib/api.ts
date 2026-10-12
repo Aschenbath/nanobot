@@ -811,6 +811,7 @@ export interface UpdateJob {
   recorded_phase: UpdateJobPhase;
   mutation_started: boolean;
   execution_confirmation_id: string | null;
+  recovery_command?: string;
 }
 export function createUpdateReview(transport: WebUIMutationTransport): Promise<UpdateReviewResponse> {
   return mutation(transport, "settings.nanobot.update.plan", { restart_running: true }, 60_000);
