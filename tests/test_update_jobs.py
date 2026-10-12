@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -30,6 +31,7 @@ from nanobot.installation_lock import (
     installation_state_dir,
     pending_update_path,
 )
+from nanobot.process_runtime import process_is_running
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_backup import BackupSource
@@ -954,6 +956,7 @@ with installation_access():
 async def test_planning_probe_retains_lease_after_caller_loss(installation, tmp_path, stage):
     plan, _, site, _, _ = installation
     ready, release = tmp_path / "planning-ready", tmp_path / "planning-continue"
+    caller_pid = tmp_path / "planning-caller-pid"
     hook = site / "hold_planning_probe.py"
     hook.write_text(
         "import atexit,os,time\nfrom pathlib import Path\n"
@@ -968,9 +971,10 @@ async def test_planning_probe_retains_lease_after_caller_loss(installation, tmp_
     pth = site / "hold_planning_probe.pth"
     pth.write_text("import hold_planning_probe\n")
     caller = (
-        "import sys\nfrom nanobot.update_plan import inspect_installation\n"
+        "import os,sys\nfrom pathlib import Path\nfrom nanobot.update_plan import inspect_installation\n"
         f"sys.prefix={plan.installation.environment!r}\n"
         f"sys.executable={plan.installation.python!r}\n"
+        f"Path({str(caller_pid)!r}).write_text(str(os.getpid()))\n"
         "inspect_installation()\n"
     )
     process = subprocess.Popen([sys.executable, "-c", caller], cwd=Path(__file__).resolve().parents[1],
@@ -984,9 +988,11 @@ async def test_planning_probe_retains_lease_after_caller_loss(installation, tmp_
             await asyncio.sleep(0.025)
         assert ready.exists()
         child_pid = int(ready.read_text())
-        process.kill()
+        # Kill the actual caller, not a Windows venv redirector. The planning
+        # child must survive; killing the whole process tree would not prove it.
+        os.kill(int(caller_pid.read_text()), signal.SIGTERM)
         process.wait(timeout=5)
-        os.kill(child_pid, 0)
+        assert process_is_running(child_pid)
         with pytest.raises(InstallationBusyError):
             with installation_access(updating=True, environment=plan.installation.environment):
                 pytest.fail("A live planning probe lost its lease with its caller")
