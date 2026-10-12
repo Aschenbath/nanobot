@@ -7,7 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from scripts.verify_installed_release import gateway_probe, webui_assets
+from scripts.verify_installed_release import gateway_probe, host_environment, webui_assets
+
+
+def test_isolation_retains_windows_cpu_identity_without_developer_paths():
+    environment = {"SYSTEMROOT": r"C:\Windows", "PROCESSOR_ARCHITECTURE": "AMD64",
+                   "PROCESSOR_ARCHITEW6432": "AMD64", "PATH": r"C:\dev\bun",
+                   "PYTHONPATH": r"C:\checkout", "NANOBOT_TUI_BIN": r"C:\old\tui.exe"}
+    expected = {key: environment[key] for key in (
+        "SYSTEMROOT", "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+    )}
+    assert host_environment(environment) == expected
+    # The installer and installed-package probe apply this boundary separately.
+    assert host_environment(host_environment(environment)) == expected
 
 
 @pytest.fixture

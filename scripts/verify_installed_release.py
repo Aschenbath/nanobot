@@ -29,6 +29,14 @@ import time
 from pathlib import Path, PurePosixPath
 
 
+def host_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Retain OS identity at both isolation boundaries, not user tools/config."""
+    return {key: value for key, value in environment.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+                               "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+                               "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS"}}
+
+
 def webui_assets(directory: Path) -> set[str]:
     """Check Vite's complete manifest, including lazy chunks, before HTTP probing."""
     manifest = json.loads((directory / "asset-manifest.json").read_text(encoding="utf-8"))
@@ -110,7 +118,11 @@ def gateway_probe(version: str, directory: Path) -> dict[str, object]:
                 if process.poll() is None:
                     # Windows termination is cleanup, not graceful-shutdown proof.
                     if os.name == "nt":
-                        process.terminate()
+                        # A venv python.exe is a redirector: killing it alone
+                        # leaves the actual interpreter and its listeners alive.
+                        taskkill = Path(os.environ["SYSTEMROOT"]) / "System32/taskkill.exe"
+                        subprocess.run([str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                                       check=True, capture_output=True, timeout=10)
                     else:
                         process.send_signal(signal.SIGINT)
                     try:
@@ -220,10 +232,7 @@ def install_and_probe(wheel: Path, *, version: str, commit: str, gateway: bool, 
         # platform.machine() on Windows reads these OS-provided variables.
         # Removing them creates an artificial unknown-architecture host, not a
         # clean installation. Keep host identity, never user package/tool paths.
-        system = {key: value for key, value in os.environ.items()
-                  if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
-                                     "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
-                                     "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS"}}
+        system = host_environment(dict(os.environ))
         system.update(HOME=str(root), USERPROFILE=str(root), PYTHON=sys._base_executable,
                       NANOBOT_VENV=str(root / "managed"), NANOBOT_BIN_DIR=str(root / "bin"),
                       NANOBOT_SKIP_WIZARD="1", PIP_CONFIG_FILE=os.devnull, PIP_ONLY_BINARY=":all:",
@@ -282,7 +291,7 @@ def main() -> None:
         root = Path(temporary).resolve()
         empty_path = root / "empty-path"
         empty_path.mkdir()
-        env = {key: original_env[key] for key in ("SYSTEMROOT", "WINDIR") if key in original_env}
+        env = host_environment(original_env)
         env.update({
             "PATH": str(empty_path), "HOME": str(root), "USERPROFILE": str(root),
             "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache"),
