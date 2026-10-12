@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "Mettre à jour nanobot ?",
+    "reviewingTitle": "Vérification de la mise à jour…",
+    "preparing": "Téléchargement…",
+    "installing": "Installation…",
+    "working": "Mise à jour de nanobot…",
+    "reconnecting": "Reconnexion…",
+    "done": "Mise à jour terminée",
+    "failed": "Mise à jour inachevée",
+    "confirmDescription": "La mise à jour vers v{{version}} redémarrera nanobot sur {{host}}. Terminez les tâches en cours avant de continuer.",
+    "reviewing": "Vérification de l’installation et de la version exacte. Aucun fichier n’est modifié.",
+    "workingDescription": "Préparation et vérification des fichiers, puis sauvegarde et redémarrage de la passerelle sélectionnée.",
+    "reconnectingDescription": "En attente de reconnexion à la passerelle mise à jour. Ne lancez pas une autre mise à jour.",
+    "delayed": "La reconnexion prend du temps. La progression est enregistrée ; vous pouvez fermer et revérifier plus tard.",
+    "doneDescription": "La version v{{version}} est maintenant exécutée.",
+    "preparationFailed": "La préparation ou l’arrêt a échoué. Aucun paquet n’a été modifié. Terminez les tâches puis revérifiez.",
+    "repairRequired": "L’installation ou le redémarrage a échoué. Sauvegarde et journal sont conservés. Suivez la procédure de récupération, sans lancer une autre installation.",
+    "reviewFailed": "Impossible de vérifier la mise à jour. Vérifiez la connexion et le lancement en arrière-plan pris en charge par l’installation d’origine.",
+    "confirmationUnknown": "La demande a peut-être été acceptée. Vérification de la progression avant toute nouvelle action.",
+    "statusFailed": "Impossible de lire le journal. Reconnectez-vous à la même passerelle puis revérifiez.",
+    "sharedInstallation": "Les {{count}} passerelles actives partageant cette installation seront redémarrées.",
+    "cancel": "Annuler",
+    "close": "Fermer",
+    "hide": "Masquer",
+    "return": "Terminé",
+    "wait": "Patientez",
+    "checkAgain": "Revérifier",
+    "apply": "Mettre à jour et redémarrer",
+    "blocked": {
+      "review_changed": "Cette vérification a changé ou expiré. Fermez puis revérifiez.",
+      "not_upgrade": "La cible n’est pas une mise à niveau. Aucun fichier ne sera modifié.",
+      "installation_owner": "Utilisez le gestionnaire de paquets ou l’outil de déploiement d’origine.",
+      "installation_policy": "La source, les options ou les contraintes de version nécessitent la méthode d’installation d’origine.",
+      "external_restart": "Ce lancement ne permet pas un redémarrage ici. Lancez nanobot gateway --background puis revérifiez.",
+      "permission": "Ouvrez localhost sur la passerelle ou autorisez l’installation distante de paquets."
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "Vérification de version",
@@ -920,6 +957,12 @@
       "noDescription": "Aucune description disponible."
     },
     "about": {
+      "updateNotice": "Mise à jour disponible",
+      "viewUpdateDetails": "Voir les détails",
+      "updateNow": "Mettre à jour",
+      "dismissUpdate": "Masquer cet avis",
+      "updateInstructions": "Mettez à jour sur l’ordinateur qui exécute nanobot, avec la méthode d’installation d’origine. Cette page n’installe ni ne redémarre rien.",
+      "installationGuide": "Guide d’installation",
       "documentation": "Documentation",
       "sourceCode": "Code source",
       "reportIssue": "Signaler un problème",

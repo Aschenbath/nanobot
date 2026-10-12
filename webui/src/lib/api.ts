@@ -784,6 +784,51 @@ export function updateNanobot(transport: WebUIMutationTransport, dev: boolean): 
   return mutation<NanobotUpdateStatus>(transport, "settings.nanobot.update", { dev });
 }
 
+export interface UpdateReview {
+  id: string;
+  installation_id: string;
+  host: string;
+  running_version: string;
+  target_version: string;
+  action: "upgrade" | "downgrade" | "restart" | "none";
+  validity: "current" | "expired" | "installation_changed" | "profiles_changed";
+  execution_blocked_reason: string | null;
+  profiles: { id: string; workspace: string; reviewed_state: string; stop: boolean; restart: boolean }[];
+}
+export interface UpdateReviewResponse {
+  plan: UpdateReview;
+  installation_allowed: boolean;
+  execution_available: boolean;
+}
+export type UpdateJobPhase = "preparation_requested" | "preparing" | "preparation_failed" | "ready"
+  | "checking" | "stopping" | "handoff_failed" | "backing_up" | "installing" | "verifying"
+  | "installed" | "restarting" | "activating" | "finalizing" | "restart_failed" | "succeeded" | "failed" | "cancelled";
+export interface UpdateJob {
+  id: string;
+  installation_id: string;
+  target_version: string;
+  running_version: string;
+  recorded_phase: UpdateJobPhase;
+  mutation_started: boolean;
+  execution_confirmation_id: string | null;
+}
+export function createUpdateReview(transport: WebUIMutationTransport): Promise<UpdateReviewResponse> {
+  return mutation(transport, "settings.nanobot.update.plan", { restart_running: true }, 60_000);
+}
+export function readUpdateReview(token: string, id: string): Promise<UpdateReviewResponse> {
+  return request(`/api/settings/nanobot-update/plan?id=${encodeURIComponent(id)}`, token, undefined, API_READ_TIMEOUT_MS);
+}
+export function readUpdateJob(token: string, id: string): Promise<{ job: UpdateJob }> {
+  return request(`/api/settings/nanobot-update/job?id=${encodeURIComponent(id)}`, token, undefined, API_READ_TIMEOUT_MS);
+}
+export function prepareUpdate(transport: WebUIMutationTransport, id: string): Promise<{ job: UpdateJob }> {
+  return mutation(transport, "settings.nanobot.update.prepare", { id });
+}
+export function executeUpdate(transport: WebUIMutationTransport, id: string, previousConfirmation?: string): Promise<{ job: UpdateJob }> {
+  return mutation(transport, previousConfirmation ? "settings.nanobot.update.retry" : "settings.nanobot.update.execute",
+    { id, confirm_restart: true, ...(previousConfirmation ? { previous_confirmation_id: previousConfirmation } : {}) });
+}
+
 export async function fetchWorkspaceDirectories(
   token: string,
   path: string,

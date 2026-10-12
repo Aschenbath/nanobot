@@ -62,6 +62,8 @@ class ManagerPolicy(ReleaseRecord):
             return "The package is pinned by its installation owner. Review that pin before updating."
         if self.locked:
             return "The environment uses an owner-managed lock file. Update through that lock workflow."
+        if self.manager == "uv" and self.source == "artifact":
+            return "This uv tool is bound to a wheel URL. Change its source through the installation owner's workflow."
         if self.source in {"source", "unrecognized"} or self.extras is None:
             return "The recorded installation source needs manual review by its owner."
         if not SpecifierSet(self.version_constraint).contains(version, prereleases=True):

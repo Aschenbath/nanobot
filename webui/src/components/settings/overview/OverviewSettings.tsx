@@ -4,7 +4,7 @@ import {
   ImageGenerationIcon,
   VoiceIcon,
 } from "@/components/icons/product-icons";
-import { useContext, useState, type Dispatch, type SetStateAction } from "react";
+import { useContext, type Dispatch, type SetStateAction } from "react";
 import {
   ArrowUpCircle,
   BookOpen,
@@ -21,7 +21,6 @@ import { useTranslation } from "react-i18next";
 import { HostNavigationContext } from "@/components/remote/HostSwitcher";
 import { StarLink } from "@/components/StarPrompt";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
-import { NanobotUpdate } from "@/components/settings/overview/NanobotUpdate";
 import { DEFAULT_TRANSCRIPTION_SETTINGS } from "@/components/settings/capabilities/TranscriptionSettings";
 import type { SettingsSectionKey } from "@/components/settings/contracts";
 import { settingsProviderConfigured } from "@/components/settings/shared/ModelControls";
@@ -35,7 +34,6 @@ import { ToggleButton } from "@/components/settings/ToggleButton";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
-import { checkVersion } from "@/lib/api";
 import type {
   FileEditDisplayMode,
   LocalActivityMode,
@@ -44,7 +42,8 @@ import type {
 import { providerBrand, providerDisplayLabel } from "@/lib/provider-brand";
 import type { SettingsPayload } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useClient } from "@/providers/ClientProvider";
+import { useUpdateFlow } from "@/providers/UpdateFlowProvider";
+import { useVersionCheck } from "@/providers/VersionCheckProvider";
 
 export function OverviewSettings({
   settings,
@@ -139,18 +138,15 @@ export function OverviewSettings({
   );
 }
 
-type VersionInfoProps = { currentVersion?: string; currentCommit?: string | null };
+type VersionInfoProps = { currentVersion?: string; currentCommit?: string | null; onRequestUpdate?: () => void };
 
-export function AboutSettings({ settings, onUpdateInstalled }: {
-  settings: SettingsPayload;
-  onUpdateInstalled?: () => void;
-}) {
+export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { settings: SettingsPayload; onRequestUpdate?: () => void }) {
   const { t } = useTranslation();
   const hostPicker = useContext(HostNavigationContext);
-  const { webuiCapabilities } = useClient();
+  const flow = useUpdateFlow();
+  const onRequestUpdate = requestUpdate ?? flow.open;
   const currentVersion = settings.version?.current;
   const currentCommit = settings.version?.commit;
-  const nativeHost = (settings.surface ?? settings.runtime_surface) === "native";
   const environment = settings.environment;
   const reportIssueUrl = new URL("https://github.com/HKUDS/nanobot/issues/new");
   reportIssueUrl.searchParams.set("template", "bug_report.yml");
@@ -181,9 +177,8 @@ export function AboutSettings({ settings, onUpdateInstalled }: {
       <div className="flex flex-col items-center gap-4 py-6 text-center">
         <img src="/brand/nanobot_mark.svg" alt="" className="h-16 w-16 select-none" draggable={false} />
         <h1><img src="/brand/nanobot_wordmark.svg" alt="nanobot" className="h-auto w-40 select-none dark:brightness-150" draggable={false} /></h1>
-        <VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit} />
+        <VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit} onRequestUpdate={onRequestUpdate} />
       </div>
-      {!nativeHost && webuiCapabilities.includes("webui.self-update.v1") && <NanobotUpdate onInstalled={onUpdateInstalled} />}
       <SettingsGroup>
         {links.map(({ key, icon: Icon, href }) => (
           <a key={key} href={href} target="_blank" rel="noopener noreferrer"
@@ -201,38 +196,10 @@ export function AboutSettings({ settings, onUpdateInstalled }: {
   );
 }
 
-function VersionCheckRow({ currentVersion, currentCommit }: VersionInfoProps) {
+function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: VersionInfoProps) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const { token } = useClient();
-  const [checking, setChecking] = useState(false);
-  const [result, setResult] = useState<
-    | { type: "up-to-date" }
-    | { type: "update"; latestVersion: string; pypiUrl?: string }
-    | { type: "error"; message: string }
-    | null
-  >(null);
-
-  const handleCheck = async () => {
-    setChecking(true);
-    setResult(null);
-    try {
-      const res = await checkVersion(token);
-      if (res.updateAvailable) {
-        setResult({
-          type: "update",
-          latestVersion: res.updateAvailable.latestVersion,
-          pypiUrl: res.updateAvailable.pypiUrl,
-        });
-      } else {
-        setResult({ type: "up-to-date" });
-      }
-    } catch (err) {
-      setResult({ type: "error", message: (err as Error).message });
-    } finally {
-      setChecking(false);
-    }
-  };
+  const { checking, result, check, dismiss, dismissedVersion } = useVersionCheck();
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -259,7 +226,7 @@ function VersionCheckRow({ currentVersion, currentCommit }: VersionInfoProps) {
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void handleCheck()}
+          onClick={() => void check()}
           disabled={checking}
           className="rounded-full"
         >
@@ -279,7 +246,8 @@ function VersionCheckRow({ currentVersion, currentCommit }: VersionInfoProps) {
           </span>
         ) : null}
         {result?.type === "update" ? (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-blue-600 dark:text-blue-300">
+          <div className="mt-2 max-w-sm rounded-panel bg-settings-surface p-4 text-start">
+          <div className="flex items-center gap-1.5 text-[13px] font-medium text-blue-600 dark:text-blue-300" role="status">
             <ArrowUpCircle className="h-3 w-3" aria-hidden />
             {t("settings.about.updateAvailable", {
               defaultValue: "Update available v{{version}}",
@@ -296,7 +264,16 @@ function VersionCheckRow({ currentVersion, currentCommit }: VersionInfoProps) {
                 <ExternalLink className="h-2.5 w-2.5" aria-hidden />
               </a>
             ) : null}
-          </span>
+          </div>
+          {!onRequestUpdate && <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{t("settings.about.updateInstructions")}</p>}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {onRequestUpdate ? <Button size="sm" onClick={onRequestUpdate}
+              className="bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">{t("settings.about.updateNow")}</Button> :
+              <Button size="sm" variant="outline" asChild><a href="https://github.com/HKUDS/nanobot#-install"
+                target="_blank" rel="noopener noreferrer">{t("settings.about.installationGuide")}<ExternalLink className="ms-1.5 h-3 w-3" aria-hidden /></a></Button>}
+            {dismissedVersion !== result.latestVersion && <Button size="sm" variant="ghost" onClick={dismiss}>{t("settings.about.dismissUpdate")}</Button>}
+          </div>
+          </div>
         ) : null}
         {result?.type === "error" ? (
           <span className="text-[12px] text-destructive">{result.message}</span>

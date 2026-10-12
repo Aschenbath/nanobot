@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "现在更新 nanobot？",
+    "reviewingTitle": "正在检查更新…",
+    "preparing": "正在下载更新…",
+    "installing": "正在安装更新…",
+    "working": "正在更新 nanobot…",
+    "reconnecting": "正在重新连接…",
+    "done": "更新完成",
+    "failed": "更新未完成",
+    "confirmDescription": "更新至 v{{version}} 后将重启 {{host}} 上的 nanobot。请先结束正在运行的任务。",
+    "reviewing": "正在核对安装环境和目标版本，不会修改文件。",
+    "workingDescription": "正在准备并校验文件，随后备份并重启所选网关。",
+    "reconnectingDescription": "正在等待更新后的网关重新连接，请勿重复发起更新。",
+    "delayed": "重连时间较长。进度已保存，你可以关闭此窗口，稍后再检查。",
+    "doneDescription": "当前已运行 v{{version}}。",
+    "preparationFailed": "准备或停止网关时失败，尚未修改安装文件。请结束正在运行的任务后重新检查。",
+    "repairRequired": "安装或重启失败，备份和更新记录已保留。请按更新恢复流程处理，不要发起另一次安装。",
+    "reviewFailed": "无法核实这次更新。请检查连接，并确认网关由原安装环境支持的后台启动方式运行。",
+    "confirmationUnknown": "请求可能已被接收，正在核对已保存的进度，请勿重复提交。",
+    "statusFailed": "无法读取更新记录。请重新连接同一个网关后检查。",
+    "sharedInstallation": "此安装由 {{count}} 个运行中的网关共用，它们都会重启。",
+    "cancel": "取消",
+    "close": "关闭",
+    "hide": "收起",
+    "return": "完成",
+    "wait": "请稍候",
+    "checkAgain": "重新检查",
+    "apply": "更新并重启",
+    "blocked": {
+      "review_changed": "更新方案已变化或过期，请关闭后重新检查。",
+      "not_upgrade": "目标版本无需升级，不会修改文件。",
+      "installation_owner": "请使用原包管理器或部署工具更新此安装。",
+      "installation_policy": "此安装的来源、可选依赖或版本设置需要通过原安装方式更新。",
+      "external_restart": "当前启动方式无法在此重启。请使用 nanobot gateway --background 启动后重试。",
+      "permission": "请在网关本机打开 localhost，或允许远程安装后更新。"
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "版本检查",
@@ -894,6 +931,12 @@
       "noDescription": "暂无描述。"
     },
     "about": {
+      "updateNotice": "有可用更新",
+      "viewUpdateDetails": "查看详情",
+      "updateNow": "更新",
+      "dismissUpdate": "暂时收起提示",
+      "updateInstructions": "请在运行 nanobot 的电脑上，使用原安装方式更新。此页面不会自动安装或重启。",
+      "installationGuide": "安装指南",
       "documentation": "官方文档",
       "sourceCode": "代码仓库",
       "reportIssue": "问题反馈",

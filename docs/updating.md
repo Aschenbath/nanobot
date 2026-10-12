@@ -1,10 +1,41 @@
 # Inspecting an update
 
-The update work on this branch is a draft. Published stable installations continue
-to use their existing package manager. Preview publication and the complete in-app
-update experience are not enabled. The saved-job commands below only inspect or
-explicitly retry an already-confirmed, pre-mutation handoff; they do not select or
-prepare a release for installation.
+This branch connects the WebUI update entry to exact-release preparation and a
+detached installer/restart worker. It is not itself a published release. Published
+stable installations keep their existing updater until this code ships, and preview
+publication remains a separate release-pipeline step.
+
+## Update from the WebUI
+
+The sidebar's blue update entry and **Settings → About → Update** open the same
+confirmation. Opening it only inspects the installation. **Update & restart** approves
+that exact target, downloads and verifies the wheel and dependencies, backs up the
+affected profiles, and asks the selected idle background gateways to stop. A separate
+worker installs offline, verifies the files and dependencies, and restarts those
+gateways. “Update complete” requires both a successful journal and a reconnected
+gateway actually running the target version. It is never inferred from a timer.
+
+The initial inline route supports compatible POSIX uv 0.11.16 **registry** tool
+installations started with `nanobot gateway --background`. It preserves recorded
+extras, constraints and additional packages. Direct-wheel/path installations, pipx,
+source checkouts, containers, Desktop and externally supervised services must use
+their installation owner's workflow. A uv tool installed from a fixed wheel URL
+retains that URL during upgrade; it must not be treated as an overridable registry
+requirement. Plain virtual environments need explicit extras in an operator-created
+plan; the WebUI does not guess those extras or silently discard them.
+
+Updating is explicit, never scheduled by checking for updates. All running gateways
+sharing the installation are included in the confirmation; stopped profiles are not
+started. Active work prevents the shutdown handoff. Remote clients need the existing
+package-install permission, and native Desktop clients use their distributor's updater.
+
+Refreshing restores saved progress, **not installation consent**. Prepared files can
+be confirmed again; a lost execution response is resolved by reading the same job,
+not creating or executing a second update. A recorded pre-mutation handoff failure
+can be explicitly retried using its existing confirmation. If the gateway remains
+offline, the page cannot prove the worker's status: retain the job and backup and use
+local diagnostics. Automatic rollback and a public repair CLI for a broken installation
+are not provided by this change; see the recovery limitations below.
 
 ## Review an exact release
 
@@ -68,10 +99,11 @@ not current release eligibility or permission to execute. All update responses a
 `no-store`; missing or invalid records and discovery failures are explicit errors.
 
 `installation_allowed` preserves the existing local/remote package-install policy.
-`execution_available` is currently false: neither review action installs packages or
-starts the worker. A future apply Interface must consume this exact plan, recheck
-authority and release eligibility, and implement the complete job/recovery lifecycle.
-It must not translate the plan back into the legacy “install latest” request. Desktop
+`execution_available` reports eligibility for this exact plan; it is not authorization
+and does not start work. `execution_blocked_reason` explains an incompatible owner,
+policy, runtime selection or stale review. The optional `webui.update-flow.v1` client
+consumes the plan through preparation and execution routes, which recheck authority
+and release eligibility. It never translates it into “install latest”. Desktop
 installations continue to use their distributor's updater rather than these routes.
 
 ### Saved job status
@@ -128,9 +160,8 @@ deleting or replacing the lock file.
 This alone is not a complete maintenance handoff. In particular, the
 older in-process WebUI updater cannot replace its own live gateway: it now reports
 that the installation is in use instead of performing that unsafe operation. The
-detached owner described below is still internal: client consent and remaining
-background-writer accounting must be connected before enabling the finished in-app
-install flow. Updates do not kill active tasks.
+detached owner described below is used by the exact-plan WebUI flow. Updates refuse
+unaccounted-for work and do not kill active tasks.
 
 Leases protect cooperating entrypoints in the same account. They do not discover
 older runtimes without this mechanism, arbitrary Python imports, another OS user's
@@ -191,7 +222,7 @@ This is an inventory of cooperating gateways, not discovery of all processes or 
 It does not authorize copying whole user workspaces. Older installations, other accounts,
 external supervisors and standalone imports still require their own ownership checks.
 
-## Exact offline executor (internal, not enabled in the UI)
+## Exact offline executor
 
 `update_jobs.prepare_job` now prepares an immutable plain-venv transaction. It requires
 explicitly confirmed extras (including an explicit empty list for the base package),
@@ -246,7 +277,7 @@ Real macOS process tests cover parent loss during a Python probe, pip and native
 including refusal of conflicting work, late-child rejection and subsequent retry.
 They do not prove native Windows behavior or containment of arbitrary descendants
 created by custom environment hooks. The authenticated public recovery action and native
-platform acceptance are still required before enabling in-app preparation.
+platform acceptance remain separate from local application acceptance.
 
 The journal records the attempt, phase, whether mutation began, and a bounded message.
 After pip exits, a fresh interpreter must import the target from the correct environment;
@@ -290,10 +321,9 @@ These internal paths are verified with real detached/pip processes and disposabl
 application wheels, including dependency upgrades, caller exit, coordinator loss and
 repair. Preflight/restart routing fixtures do not constitute a complete application
 upgrade E2E. Actual isolated gateway stop and protected restart have separate tests.
-Remaining background-writer accounting, application-facing uv execution, pipx execution,
-finished client consent and reconnection, and native platform acceptance are not complete.
-The separate draft execution capability can confirm a staged plan; no finished public
-button or CLI flag performs initial staging and execution of this handoff yet.
+The WebUI now connects client consent, uv execution and reconnection. This does not
+establish pipx execution, native Windows support or public-release acceptance. The
+saved-job CLI still does not perform initial staging and execution.
 
 ### Explicit recovery before package mutation
 
@@ -301,8 +331,8 @@ The optional `webui.update-jobs.retry-handoff.v1` capability accepts authenticat
 WebSocket action `settings.nanobot.update.retry` with `id`,
 `previous_confirmation_id` and `confirm_restart: true`. The existing package-install
 policy and runtime admission checks apply. Plain HTTP cannot start a retry. This
-action does not turn on the unfinished in-app install flow or change
-`execution_available: false` in the review response.
+action does not create a new plan or broaden the inline eligibility reported by the
+review response.
 
 Retry replaces exactly the saved execution confirmation the user reviewed. Repeating
 that request, replaying the original execute request or using an older confirmation

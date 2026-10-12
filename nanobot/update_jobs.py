@@ -79,6 +79,7 @@ class UpdateJobView(ReleaseRecord):
     mutation_started: bool
     updated_at: int
     execution_confirmation_id: str | None = None
+    running_version: str = ""
 
 
 def read_update_job(plan_id: str) -> UpdateJobView:
@@ -103,12 +104,15 @@ def read_update_job(plan_id: str) -> UpdateJobView:
     confirmation = ExecutionConfirmation.read(directory)
     # Local diagnostic messages may contain paths or exception details. Clients
     # receive typed facts and can localize phases, never raw journal messages.
+    from nanobot import __version__
+
     return UpdateJobView(
         id=plan_id, installation_id=plan.installation.installation_id, host=platform.node(),
         previous_version=plan.installation.installed_version, target_version=plan.target.version,
         channel=plan.channel, recorded_phase=status.phase, attempt=status.attempt,
         mutation_started=status.mutation_started, updated_at=status.updated_at,
         execution_confirmation_id=confirmation.id if confirmation else None,
+        running_version=__version__,
     )
 
 

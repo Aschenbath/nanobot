@@ -672,9 +672,9 @@ class SystemSettingsHandler:
         return SettingsRouteResult.success({
             "plan": review.model_dump(mode="json"),
             "installation_allowed": self.allow_feature_package_install(request),
-            # This optional capability is review-only. Do not route an exact plan
-            # through the old unbound latest-release mutation.
-            "execution_available": False,
+            # This exact review is consumed by the durable preparation/handoff
+            # routes, never by the legacy unbound latest-release mutation.
+            "execution_available": review.execution_blocked_reason is None,
         })
 
     async def _cli_apps(

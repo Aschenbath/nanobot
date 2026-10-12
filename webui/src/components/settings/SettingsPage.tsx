@@ -333,7 +333,7 @@ export function SettingsPage({
           />
         );
       case "about":
-        return <AboutSettings settings={settings} onUpdateInstalled={controller.markUpdateInstalled} />;
+        return <AboutSettings settings={settings} />;
       case "appearance":
         return (
           <AppearanceSettings

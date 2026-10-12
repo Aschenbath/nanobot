@@ -101,3 +101,13 @@ requirements = [{ name = "nanobot-ai", directory = "/private/checkout", editable
 ''')
     assert policy.source == "unrecognized"
     assert "manual review" in policy.restriction("0.3.5")
+
+
+def test_uv_wheel_url_is_not_misrepresented_as_an_overridable_registry_requirement(tmp_path):
+    # A real uv tool upgrade retains this URL even when a newer wheel is passed.
+    # Refuse before shutdown instead of discovering an offline-cache miss afterwards.
+    policy = read(tmp_path, "uv", '''[tool]
+requirements = [{ name = "nanobot-ai", url = "https://example.invalid/nanobot_ai-0.3.5-py3-none-any.whl" }]
+''')
+    assert policy.source == "artifact"
+    assert "bound to a wheel URL" in policy.restriction("0.3.6")

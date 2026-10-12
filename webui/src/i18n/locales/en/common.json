@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "Update nanobot now?",
+    "reviewingTitle": "Checking the update…",
+    "preparing": "Downloading the update…",
+    "installing": "Installing the update…",
+    "working": "Updating nanobot…",
+    "reconnecting": "Reconnecting…",
+    "done": "Update complete",
+    "failed": "Update did not finish",
+    "confirmDescription": "Updating to v{{version}} will restart nanobot on {{host}}. Finish running tasks before continuing.",
+    "reviewing": "Checking the installation and exact target. No files are being changed.",
+    "workingDescription": "Preparing verified files, then backing up and restarting the selected gateway.",
+    "reconnectingDescription": "Waiting for the updated gateway to reconnect. Do not start another update.",
+    "delayed": "Reconnection is taking longer than expected. Progress is saved; you can close this window and check again.",
+    "doneDescription": "Now running v{{version}}.",
+    "preparationFailed": "Preparation or shutdown failed. No package files were changed. Finish any active tasks and check again.",
+    "repairRequired": "Installation or restart failed. The saved backup and update record are retained. Use the update recovery workflow; do not start a different installation.",
+    "reviewFailed": "Could not verify this update. Check the connection and ensure the gateway runs with its installation owner’s supported background launcher.",
+    "confirmationUnknown": "The request may have been accepted. Checking saved progress before another action.",
+    "statusFailed": "Could not read the saved update. Reconnect to the same gateway and check again.",
+    "sharedInstallation": "This shared installation will restart {{count}} running gateways.",
+    "cancel": "Cancel",
+    "close": "Close",
+    "hide": "Hide",
+    "return": "Done",
+    "wait": "Please wait",
+    "checkAgain": "Check again",
+    "apply": "Update & restart",
+    "blocked": {
+      "review_changed": "This review changed or expired. Close it and check again.",
+      "not_upgrade": "This target is not an upgrade. No files will be changed.",
+      "installation_owner": "Update this installation with its original package manager or deployment tool.",
+      "installation_policy": "This installation’s source, extras or version constraints require its original installation workflow.",
+      "external_restart": "This gateway’s launcher cannot be restarted here. Start it with nanobot gateway --background, then check again.",
+      "permission": "Open this gateway on localhost or allow remote package installation before updating."
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "Version check",
@@ -894,6 +931,12 @@
       "installedCount_other": "{{count}} CLIs installed"
     },
     "about": {
+      "updateNotice": "Update available",
+      "viewUpdateDetails": "View details",
+      "updateNow": "Update",
+      "dismissUpdate": "Dismiss update notice",
+      "updateInstructions": "Update on the computer running nanobot, using your original installation method. This page won’t install or restart anything.",
+      "installationGuide": "Installation guide",
       "documentation": "Documentation",
       "sourceCode": "Source code",
       "reportIssue": "Report an issue",

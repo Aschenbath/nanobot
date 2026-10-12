@@ -330,6 +330,7 @@ class UpdatePlanReview(ReleaseRecord):
     extras: list[str] | None
     owner_restriction: str | None
     profiles: list[ProfileReview]
+    execution_blocked_reason: str | None = None
 
 
 def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: int | None = None,
@@ -348,11 +349,32 @@ def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: in
         installed_version=installation.installed_version, target_version=plan.target.version,
         channel=plan.channel, action=plan.action, created_at=plan.created_at, expires_at=plan.expires_at,
         validity=validity, artifact_size=plan.target.artifact.size, extras=plan.extras,
-        owner_restriction=plan.owner_restriction, profiles=[ProfileReview(
+        owner_restriction=plan.owner_restriction, execution_blocked_reason=inline_update_blocked_reason(plan, validity),
+        profiles=[ProfileReview(
             id=item.receipt.id, workspace=item.receipt.workspace, reviewed_state=item.state,
             stop=item.receipt.id in plan.stop_profiles, restart=item.receipt.id in plan.restart_profiles,
         ) for item in plan.profiles],
     )
+
+
+def inline_update_blocked_reason(plan: UpdatePlan, validity: str = "current") -> str | None:
+    """Eligibility is not approval: preparation and handoff recheck these facts."""
+    if validity != "current":
+        return "review_changed"
+    if plan.action != "upgrade":
+        return "not_upgrade"
+    if plan.installation.owner not in {"venv", "uv"}:
+        return "installation_owner"
+    if plan.installation.owner == "uv" and os.name != "posix":
+        return "installation_owner"
+    if plan.extras is None or plan.owner_restriction:
+        return "installation_policy"
+    running = {item.receipt.id for item in plan.profiles if item.state == "running"}
+    if (any(item.state == "unconfirmed" for item in plan.profiles)
+            or not any(item.state == "running" and item.receipt.pid == os.getpid() for item in plan.profiles)
+            or running != set(plan.stop_profiles) or running != set(plan.restart_profiles)):
+        return "external_restart"
+    return None
 
 
 def _inspect_with_lease() -> InstallationSnapshot:

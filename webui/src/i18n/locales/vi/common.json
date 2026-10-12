@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "Cập nhật nanobot ngay?",
+    "reviewingTitle": "Đang kiểm tra bản cập nhật…",
+    "preparing": "Đang tải bản cập nhật…",
+    "installing": "Đang cài bản cập nhật…",
+    "working": "Đang cập nhật nanobot…",
+    "reconnecting": "Đang kết nối lại…",
+    "done": "Cập nhật hoàn tất",
+    "failed": "Cập nhật chưa hoàn tất",
+    "confirmDescription": "Cập nhật lên v{{version}} sẽ khởi động lại nanobot trên {{host}}. Hãy hoàn thành các tác vụ đang chạy trước khi tiếp tục.",
+    "reviewing": "Đang kiểm tra bản cài và phiên bản đích chính xác. Không thay đổi tệp.",
+    "workingDescription": "Đang chuẩn bị và xác minh tệp, sau đó sao lưu và khởi động lại gateway đã chọn.",
+    "reconnectingDescription": "Đang chờ kết nối lại gateway đã cập nhật. Đừng bắt đầu cập nhật khác.",
+    "delayed": "Kết nối lại mất nhiều thời gian. Tiến trình đã lưu; bạn có thể đóng và kiểm tra sau.",
+    "doneDescription": "Hiện đang chạy v{{version}}.",
+    "preparationFailed": "Chuẩn bị hoặc dừng gateway thất bại. Chưa thay đổi gói. Hãy kết thúc tác vụ rồi kiểm tra lại.",
+    "repairRequired": "Cài đặt hoặc khởi động lại thất bại. Bản sao lưu và nhật ký được giữ lại. Hãy làm theo quy trình khôi phục, đừng bắt đầu cài đặt khác.",
+    "reviewFailed": "Không thể xác minh bản cập nhật. Hãy kiểm tra kết nối và cách khởi chạy nền được bản cài gốc hỗ trợ.",
+    "confirmationUnknown": "Yêu cầu có thể đã được nhận. Đang kiểm tra tiến trình đã lưu trước thao tác tiếp theo.",
+    "statusFailed": "Không đọc được nhật ký. Hãy kết nối lại cùng gateway rồi kiểm tra.",
+    "sharedInstallation": "Sẽ khởi động lại {{count}} gateway đang chạy dùng chung bản cài này.",
+    "cancel": "Hủy",
+    "close": "Đóng",
+    "hide": "Thu gọn",
+    "return": "Xong",
+    "wait": "Vui lòng chờ",
+    "checkAgain": "Kiểm tra lại",
+    "apply": "Cập nhật và khởi động lại",
+    "blocked": {
+      "review_changed": "Thông tin đã đổi hoặc hết hạn. Đóng rồi kiểm tra lại.",
+      "not_upgrade": "Phiên bản đích không phải nâng cấp. Không thay đổi tệp.",
+      "installation_owner": "Hãy cập nhật bằng trình quản lý gói hoặc công cụ triển khai ban đầu.",
+      "installation_policy": "Nguồn cài đặt, phần bổ sung hoặc ràng buộc phiên bản yêu cầu cập nhật bằng phương thức cài đặt ban đầu.",
+      "external_restart": "Cách khởi chạy này không hỗ trợ khởi động lại tại đây. Dùng nanobot gateway --background rồi kiểm tra lại.",
+      "permission": "Mở localhost trên gateway hoặc cho phép cài gói từ xa."
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "Kiểm tra phiên bản",
@@ -920,6 +957,12 @@
       "noDescription": "Không có mô tả."
     },
     "about": {
+      "updateNotice": "Có bản cập nhật",
+      "viewUpdateDetails": "Xem chi tiết",
+      "updateNow": "Cập nhật",
+      "dismissUpdate": "Ẩn thông báo cập nhật",
+      "updateInstructions": "Hãy cập nhật trên máy tính đang chạy nanobot bằng phương thức cài đặt ban đầu. Trang này không tự cài đặt hoặc khởi động lại.",
+      "installationGuide": "Hướng dẫn cài đặt",
       "documentation": "Tài liệu",
       "sourceCode": "Mã nguồn",
       "reportIssue": "Báo cáo sự cố",

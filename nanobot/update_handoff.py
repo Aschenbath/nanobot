@@ -11,6 +11,7 @@ import asyncio
 import time
 from pathlib import Path
 
+from nanobot.data_access import require_no_pending_data_update
 from nanobot.installation_lock import installation_state_dir
 from nanobot.release_feed import ReleaseFeed
 from nanobot.update_plan import UpdatePlan
@@ -38,6 +39,7 @@ async def _prepare(directory: Path) -> None:
         async with ReleaseFeed(installation_state_dir(spec.baseline.environment) / "feed") as feed:
             await feed.revalidate(plan.target)
         plan.validate_for(plan.installation)
+        require_no_pending_data_update()
         JobStatus(spec.plan_id, Phase.STOPPING, status.attempt, False,
                   "Waiting for the reviewed idle gateways to exit normally", int(time.time())).save(directory)
         await stop_reviewed_gateways(directory)

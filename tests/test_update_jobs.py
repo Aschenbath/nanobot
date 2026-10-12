@@ -649,7 +649,7 @@ async def test_orphan_preflight_keeps_lease_and_cannot_approve_installation(inst
     assert JobStatus.read(directory).phase == Phase.SUCCEEDED
 
 
-@pytest.mark.parametrize("refuse", [False, True])
+@pytest.mark.parametrize("refuse", [False, True, "unfinished"])
 async def test_old_runtime_preflight_revalidates_before_shutdown(installation, tmp_path, monkeypatch, refuse):
     from nanobot import update_handoff
 
@@ -665,7 +665,7 @@ async def test_old_runtime_preflight_revalidates_before_shutdown(installation, t
         async def revalidate(self, target):
             events.append("revalidate")
             assert target == plan.target
-            if refuse:
+            if refuse is True:
                 raise RuntimeError("private credential must not enter status")
             await super().revalidate(target)
 
@@ -687,6 +687,11 @@ async def test_old_runtime_preflight_revalidates_before_shutdown(installation, t
     baseline = WorkerSpec.read(directory).baseline
     monkeypatch.setattr(update_handoff, "current_environment", lambda **kwargs: baseline)
     JobStatus(plan.id, Phase.CHECKING, 0, False, "Testing preflight", int(time.time())).save(directory)
+    if refuse == "unfinished":
+        from nanobot.data_access import data_access
+
+        with data_access([tmp_path / "other-installation-data"], updating=True, job_id=str(uuid4())) as lease:
+            lease.reserve()
     if refuse:
         with pytest.raises(RuntimeError):
             await asyncio.to_thread(update_handoff.prepare_handoff, directory)

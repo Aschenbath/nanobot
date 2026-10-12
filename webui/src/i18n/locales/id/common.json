@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "Perbarui nanobot sekarang?",
+    "reviewingTitle": "Memeriksa pembaruan…",
+    "preparing": "Mengunduh pembaruan…",
+    "installing": "Memasang pembaruan…",
+    "working": "Memperbarui nanobot…",
+    "reconnecting": "Menghubungkan kembali…",
+    "done": "Pembaruan selesai",
+    "failed": "Pembaruan belum selesai",
+    "confirmDescription": "Pembaruan ke v{{version}} akan memulai ulang nanobot di {{host}}. Selesaikan tugas yang berjalan sebelum melanjutkan.",
+    "reviewing": "Memeriksa instalasi dan versi tujuan yang tepat. Tidak ada berkas yang diubah.",
+    "workingDescription": "Menyiapkan dan memverifikasi berkas, lalu mencadangkan dan memulai ulang gateway terpilih.",
+    "reconnectingDescription": "Menunggu gateway yang diperbarui terhubung kembali. Jangan mulai pembaruan lain.",
+    "delayed": "Penyambungan memerlukan waktu lebih lama. Progres tersimpan; Anda dapat menutup dan memeriksa lagi nanti.",
+    "doneDescription": "Kini menjalankan v{{version}}.",
+    "preparationFailed": "Persiapan atau penghentian gateway gagal. Paket belum diubah. Selesaikan tugas lalu periksa kembali.",
+    "repairRequired": "Instalasi atau mulai ulang gagal. Cadangan dan catatan disimpan. Ikuti prosedur pemulihan; jangan mulai instalasi lain.",
+    "reviewFailed": "Pembaruan tidak dapat diverifikasi. Periksa koneksi dan peluncur latar belakang yang didukung instalasi asal.",
+    "confirmationUnknown": "Permintaan mungkin telah diterima. Memeriksa progres tersimpan sebelum tindakan berikutnya.",
+    "statusFailed": "Catatan pembaruan tidak dapat dibaca. Sambungkan kembali ke gateway yang sama lalu periksa.",
+    "sharedInstallation": "{{count}} gateway aktif yang berbagi instalasi ini akan dimulai ulang.",
+    "cancel": "Batal",
+    "close": "Tutup",
+    "hide": "Sembunyikan",
+    "return": "Selesai",
+    "wait": "Tunggu",
+    "checkAgain": "Periksa lagi",
+    "apply": "Perbarui dan mulai ulang",
+    "blocked": {
+      "review_changed": "Tinjauan berubah atau kedaluwarsa. Tutup lalu periksa lagi.",
+      "not_upgrade": "Versi tujuan bukan peningkatan. Berkas tidak akan diubah.",
+      "installation_owner": "Perbarui dengan pengelola paket atau alat penerapan asal.",
+      "installation_policy": "Sumber, ekstra, atau batasan versi memerlukan pembaruan melalui metode pemasangan asal.",
+      "external_restart": "Peluncur ini tidak dapat dimulai ulang di sini. Gunakan nanobot gateway --background lalu periksa lagi.",
+      "permission": "Buka localhost pada gateway atau izinkan pemasangan paket jarak jauh."
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "Periksa versi",
@@ -920,6 +957,12 @@
       "noDescription": "Tidak ada deskripsi."
     },
     "about": {
+      "updateNotice": "Pembaruan tersedia",
+      "viewUpdateDetails": "Lihat detail",
+      "updateNow": "Perbarui",
+      "dismissUpdate": "Tutup pemberitahuan",
+      "updateInstructions": "Perbarui di komputer yang menjalankan nanobot dengan metode instalasi semula. Halaman ini tidak akan memasang atau memulai ulang apa pun.",
+      "installationGuide": "Panduan instalasi",
       "documentation": "Dokumentasi",
       "sourceCode": "Kode sumber",
       "reportIssue": "Laporkan masalah",

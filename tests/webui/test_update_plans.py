@@ -18,6 +18,7 @@ from packaging.tags import Tag
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
+import nanobot
 from nanobot import update_plan, update_service
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import WebSocketConfig
@@ -511,6 +512,26 @@ async def test_exact_review_survives_router_recreation_without_reselection_or_in
     assert "webui.update-plans.v1" in webui_contract()["capabilities"]
 
 
+async def test_live_update_review_requires_this_gateway_and_preserves_owner_policy(review_gateway):
+    fixture = review_gateway
+    running = fixture.observed[0]
+    fixture.observed[0] = running.model_copy(update={"receipt": running.receipt.model_copy(update={"pid": os.getpid()})})
+    gateway = fixture.gateway()
+    response = await gateway.http.dispatch_webui_mutation(
+        connection(local=True), "settings.nanobot.update.plan", {"restart_running": True},
+    )
+    payload = json.loads(response.body)
+    assert payload["installation_allowed"] is True
+    assert payload["execution_available"] is (os.name == "posix")
+    assert payload["plan"]["extras"] == ["webui"]
+    plan = UpdatePlans(fixture.directory / "plans").load(payload["plan"]["id"])
+    assert update_plan.inline_update_blocked_reason(plan, "expired") == "review_changed"
+    assert update_plan.inline_update_blocked_reason(plan.model_copy(update={"restart_profiles": []})) == (
+        "external_restart" if os.name == "posix" else "installation_owner"
+    )
+    assert not (fixture.directory / "jobs").exists(), "Review must not prepare or install"
+
+
 async def test_review_reports_profile_and_installation_changes_without_replacing_plan(review_gateway, monkeypatch):
     fixture = review_gateway
     gateway = fixture.gateway()
@@ -650,6 +671,7 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
         "target_version": "0.3.5", "channel": "stable", "recorded_phase": "preparing",
         "attempt": 0, "mutation_started": False, "updated_at": plan.created_at,
         "execution_confirmation_id": None,
+        "running_version": nanobot.__version__,
     }
     assert not (directory / "request.json").exists(), "An early journal must not require committed staging"
     assert "webui.update-jobs.read.v1" in webui_contract()["capabilities"]

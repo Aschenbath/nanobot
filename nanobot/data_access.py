@@ -240,6 +240,21 @@ def finish_data_handoff(paths: Iterable[str | Path], *, job_id: str) -> None:
         DataLease(roots, directory / "maintenance.json", job_id, False).release_reservation()
 
 
+def require_no_pending_data_update() -> None:
+    """Reject a known unfinished transaction before stopping another gateway.
+
+    This is an early check, not a maintenance grant. The worker must still obtain
+    exclusive installation/data leases and validate the reservation after shutdown.
+    """
+    directory = Path.home() / ".nanobot" / "updates" / "data-locks"
+    try:
+        with file_access(directory / "maintenance.lock", exclusive=True):
+            if _reservation(directory / "maintenance.json") is not None:
+                raise InstallationBusyError("Another data update is unfinished; recover it before stopping this gateway")
+    except BlockingIOError as exc:
+        raise InstallationBusyError("Another data update is active; this gateway was not stopped") from exc
+
+
 @contextmanager
 def data_access(paths: Iterable[str | Path], *, updating: bool = False,
                 job_id: str | None = None, grant: DataStartupGrant | None = None) -> Generator[DataLease]:

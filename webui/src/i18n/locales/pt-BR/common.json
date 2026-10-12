@@ -1,4 +1,41 @@
 {
+  "updates": {
+    "confirm": "Atualizar nanobot agora?",
+    "reviewingTitle": "Verificando atualização…",
+    "preparing": "Baixando atualização…",
+    "installing": "Instalando atualização…",
+    "working": "Atualizando nanobot…",
+    "reconnecting": "Reconectando…",
+    "done": "Atualização concluída",
+    "failed": "A atualização não terminou",
+    "confirmDescription": "Atualizar para v{{version}} reiniciará o nanobot em {{host}}. Termine as tarefas em execução antes de continuar.",
+    "reviewing": "Verificando a instalação e a versão exata. Nenhum arquivo será alterado.",
+    "workingDescription": "Preparando e verificando arquivos; depois será feito backup e o gateway selecionado será reiniciado.",
+    "reconnectingDescription": "Aguardando a reconexão do gateway atualizado. Não inicie outra atualização.",
+    "delayed": "A reconexão está demorando. O progresso foi salvo; você pode fechar e verificar depois.",
+    "doneDescription": "Agora executando v{{version}}.",
+    "preparationFailed": "Falha na preparação ou na parada do gateway. Nenhum pacote foi alterado. Termine as tarefas e verifique novamente.",
+    "repairRequired": "Falha na instalação ou reinicialização. O backup e o registro foram mantidos. Siga o processo de recuperação; não inicie outra instalação.",
+    "reviewFailed": "Não foi possível verificar a atualização. Confira a conexão e a inicialização em segundo plano compatível com a instalação original.",
+    "confirmationUnknown": "A solicitação pode ter sido aceita. Verificando o progresso salvo antes de outra ação.",
+    "statusFailed": "Não foi possível ler o registro. Reconecte ao mesmo gateway e verifique novamente.",
+    "sharedInstallation": "Os {{count}} gateways ativos que compartilham esta instalação serão reiniciados.",
+    "cancel": "Cancelar",
+    "close": "Fechar",
+    "hide": "Recolher",
+    "return": "Concluído",
+    "wait": "Aguarde",
+    "checkAgain": "Verificar novamente",
+    "apply": "Atualizar e reiniciar",
+    "blocked": {
+      "review_changed": "A revisão mudou ou expirou. Feche e verifique novamente.",
+      "not_upgrade": "O destino não é uma atualização. Nenhum arquivo será alterado.",
+      "installation_owner": "Atualize usando o gerenciador de pacotes ou a ferramenta de implantação original.",
+      "installation_policy": "A origem, os extras ou as restrições de versão exigem o método de instalação original.",
+      "external_restart": "Esta forma de inicialização não permite reiniciar aqui. Use nanobot gateway --background e verifique novamente.",
+      "permission": "Abra localhost no gateway ou permita a instalação remota de pacotes."
+    }
+  },
   "remote": {
     "compatibility": {
       "title": "Verificar versão",
@@ -708,6 +745,12 @@
       "noDescription": "Nenhuma descrição disponível."
     },
     "about": {
+      "updateNotice": "Atualização disponível",
+      "viewUpdateDetails": "Ver detalhes",
+      "updateNow": "Atualizar",
+      "dismissUpdate": "Ocultar aviso",
+      "updateInstructions": "Atualize no computador que executa o nanobot usando o método de instalação original. Esta página não instala nem reinicia nada.",
+      "installationGuide": "Guia de instalação",
       "documentation": "Documentação",
       "sourceCode": "Código-fonte",
       "reportIssue": "Relatar um problema",
