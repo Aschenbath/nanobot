@@ -100,7 +100,11 @@ def resolve_provider_route(
 ) -> ProviderRoute:
     """Resolve and validate provider configuration without constructing a client."""
     if model is not None:
-        preset = isolate_request_overrides(config, preset, preset.model_copy(update={"model": model}))
+        preset = isolate_request_overrides(
+            preset.model_copy(update={"model": model}),
+            previous_provider=config.get_provider_name(preset=preset),
+            provider=config.get_provider_name(model, preset=preset),
+        )
     model = model or preset.model
     provider_name = config.get_provider_name(model, preset=preset)
     provider_config = config.get_provider(model, preset=preset)

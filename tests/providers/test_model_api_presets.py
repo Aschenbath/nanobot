@@ -51,7 +51,10 @@ def _config() -> Config:
 
 @pytest.mark.parametrize("entrypoint", ["sdk", "factory"])
 @pytest.mark.parametrize("target", ["tenant_a", "tenant_b"])
-async def test_model_override_keeps_request_settings_within_connection(bind_transport, entrypoint, target):
+@pytest.mark.parametrize("literal_env_syntax", [False, True])
+async def test_model_override_keeps_request_settings_within_connection(
+    bind_transport, entrypoint, target, literal_env_syntax, monkeypatch,
+):
     from nanobot.agent.model_runtime import ModelRuntimeResolver
     from nanobot.providers.factory import build_provider_snapshot
     from nanobot.utils.llm_runtime import runtime_from_provider_snapshot
@@ -62,7 +65,7 @@ async def test_model_override_keeps_request_settings_within_connection(bind_tran
             "apiBase": "https://shared-gateway.test/v1", "apiKey": "fixture",
             "extraHeaders": {"X-Connection": name},
             "extraQuery": {"connection": name}, "extraBody": {"connection": name},
-        } for name in ("tenant_a", "tenant_b")},
+        } for name in (target, "tenant_b" if target == "tenant_a" else "tenant_a")},
         "modelPresets": {"primary": {
             "provider": "auto", "model": "tenant_a/old-model", "temperature": 0.3,
             "extraHeaders": {"X-Tenant-Token": "source-secret"},
@@ -72,6 +75,11 @@ async def test_model_override_keeps_request_settings_within_connection(bind_tran
     })
     before = config.model_dump()
     model = f"{target}/new-model"
+    if literal_env_syntax:
+        # SDK/factory arguments are model IDs, not configuration templates.
+        # Auto routing of this literal uses the first configured connection.
+        monkeypatch.setenv("NANOBOT_TEST_CALL_MODEL", "tenant_a/env-model")
+        model = "${NANOBOT_TEST_CALL_MODEL}"
     if entrypoint == "sdk":
         resolver = ModelRuntimeResolver(runtime_from_provider_snapshot(build_provider_snapshot(config)))
         runtime = resolver.resolve_override(model=model, model_preset=None, config=config)

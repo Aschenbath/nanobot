@@ -1240,7 +1240,11 @@ def update_model_configuration(
     if preset is None:
         raise WebUISettingsError("unknown model configuration")
 
-    previous = preset.model_copy(deep=True)
+    has_request_settings = any((preset.extra_headers, preset.extra_query, preset.extra_body))
+    previous_provider = None
+    if has_request_settings:
+        resolved_config = resolve_config_env_vars(config)
+        previous_provider = resolved_config.get_provider_name(preset=resolved_config.model_presets[name])
     changed = False
     identity_changed = False
     new_name_value = query_first_alias(query, "new_name", "newName")
@@ -1309,9 +1313,14 @@ def update_model_configuration(
             changed = True
     elif identity_changed:
         preset.api = None
-    candidate = _preset_with_request_updates(
-        config, isolate_request_overrides(config, previous, preset), query,
-    )
+    candidate = preset
+    if has_request_settings:
+        resolved_config = resolve_config_env_vars(config)
+        candidate = isolate_request_overrides(
+            preset, previous_provider=previous_provider,
+            provider=resolved_config.get_provider_name(preset=resolved_config.model_presets[name]),
+        )
+    candidate = _preset_with_request_updates(config, candidate, query)
     if candidate != preset:
         config.model_presets[name] = candidate
         changed = True
