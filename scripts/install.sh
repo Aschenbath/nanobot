@@ -252,13 +252,34 @@ install_with_managed_venv() {
 
   venv_dir="${NANOBOT_VENV:-$HOME/.nanobot/venv}"
   venv_python="$venv_dir/bin/python"
-  fresh_environment="0"
-
   if [ ! -x "$venv_python" ]; then
     info "Creating a dedicated virtual environment at $venv_dir..."
     mkdir -p "$(dirname "$venv_dir")"
+    # Persist selection before venv/pip work, so a failed first install can
+    # resume as the same managed environment. This is not an installed claim.
+    "$python_bin" -I - "$venv_dir" <<'PY' || return 1
+import json, os, sys
+from pathlib import Path
+prefix = Path(sys.argv[1]).resolve()
+if any((prefix / name).exists() for name in ('uv-receipt.toml', 'pipx_metadata.json')):
+    raise SystemExit('This environment belongs to another package manager.')
+prefix.mkdir(parents=True, exist_ok=True)
+path = prefix / 'nanobot-install.json'
+record = {'schema_version': 1, 'owner': 'nanobot-installer', 'environment': str(prefix), 'extras': []}
+if path.is_symlink():
+    raise SystemExit('The installation selection is invalid; no receipt was replaced.')
+if path.exists():
+    if path.stat().st_size > 4096 or json.loads(path.read_bytes()) != record:
+        raise SystemExit('The installation selection changed; no receipt was replaced.')
+else:
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(record, stream, sort_keys=True)
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    path.chmod(0o600)
+PY
     "$python_bin" -m venv "$venv_dir" || return 1
-    fresh_environment="1"
   fi
 
   "$venv_python" - <<'PY' >/dev/null 2>&1 || fail "The managed venv uses Python older than 3.11. Remove it or set NANOBOT_VENV to a new path."
@@ -271,9 +292,6 @@ PY
   "$venv_python" -m pip install --upgrade "$install_target" || return 1
 
   select_installed_python "$venv_python" "$venv_dir"
-  if [ "$fresh_environment" = "1" ] && "$nanobot_python" -I -c 'import importlib.util; raise SystemExit(0 if importlib.util.find_spec("nanobot.installation_receipt") else 1)'; then
-    "$nanobot_python" -I -m nanobot.installation_receipt --register-fresh || return 1
-  fi
   write_managed_wrapper
 }
 

@@ -90,8 +90,10 @@ Do not publish to PyPI while a required TUI artifact or verification is missing.
 ## Installer identity checks
 
 Fresh installs now use the official installer's dedicated venv regardless of which
-optional manager is on PATH. Only a newly created base-package environment gets
-`nanobot-install.json`; existing venvs/uv/pipx are never adopted or moved. This is an
+optional manager is on PATH. A new base-package selection gets `nanobot-install.json`
+before venv/download work, so a failed first installation can be retried without
+losing its owner. The receipt alone does not prove installed/readiness state.
+Existing venvs/uv/pipx are never adopted or moved. This is an
 intentional default change for new installations, not a migration of old users.
 The receipt opts `webui` into persistent background launch and records the extras
 used by the in-app update planner. Unrecorded installs keep their previous lifecycle.

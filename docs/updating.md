@@ -10,6 +10,12 @@ installation method. That first upgrade does not convert pip, pipx, uv or Docker
 into an installer-managed installation; the owner table below still applies.
 Stable users do not opt into previews merely by checking for updates.
 
+If a fresh official installation fails during environment creation or download,
+fix the reported prerequisite/network error and rerun the same installer command.
+Its saved base-package selection preserves that environment's owner across retries;
+it does not launch setup or report success until installation is verified. Do not
+switch to a second package manager as recovery.
+
 ## Update from the WebUI
 
 The sidebar's blue update entry and **Settings → About → Update** open the same

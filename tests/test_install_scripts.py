@@ -283,6 +283,15 @@ def test_failed_default_install_does_not_fall_through_to_available_manager(sandb
     assert not (sandbox["root"] / "uv-tools/nanobot-ai").exists()
     assert not (sandbox["root"] / "pipx/venvs/nanobot-ai").exists()
     assert "INSTALLER_PROBE" not in result.stdout
+    receipt = sandbox["root"] / "managed/nanobot-install.json"
+    selection = receipt.read_bytes()
+    _wheel(sandbox["wheels"], "0.0.1", installer_receipt=True)
+    retried = _identity(_installer(sandbox))
+    assert Path(retried["prefix"]).resolve() == sandbox["root"] / "managed"
+    assert receipt.read_bytes() == selection
+    assert json.loads(selection)["extras"] == []
+    assert not (sandbox["root"] / "uv-tools/nanobot-ai").exists()
+    assert not (sandbox["root"] / "pipx/venvs/nanobot-ai").exists()
 
 
 def test_dry_run_does_not_create_tool_environment(sandbox):

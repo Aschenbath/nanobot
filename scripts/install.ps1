@@ -271,19 +271,42 @@ function Install-WithManagedVenv {
 
     $VenvDir = if ($env:NANOBOT_VENV) { $env:NANOBOT_VENV } else { Join-Path $HomeDir ".nanobot\venv" }
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
-    $FreshEnvironment = $false
-
     if (-not (Test-Path $VenvPython)) {
         Write-Info "Creating a dedicated virtual environment at $VenvDir..."
         $Parent = Split-Path -Parent $VenvDir
         if ($Parent) {
             New-Item -ItemType Directory -Force -Path $Parent *> $null
         }
+        # Selection survives a failed first venv/pip operation. It is not an
+        # installed/readiness claim, nor adoption of an existing environment.
+        $RecordSelection = @'
+import json, os, sys
+from pathlib import Path
+prefix = Path(sys.argv[1]).resolve()
+if any((prefix / name).exists() for name in ('uv-receipt.toml', 'pipx_metadata.json')):
+    raise SystemExit('This environment belongs to another package manager.')
+prefix.mkdir(parents=True, exist_ok=True)
+path = prefix / 'nanobot-install.json'
+record = {'schema_version': 1, 'owner': 'nanobot-installer', 'environment': str(prefix), 'extras': []}
+if path.is_symlink():
+    raise SystemExit('The installation selection is invalid; no receipt was replaced.')
+if path.exists():
+    if path.stat().st_size > 4096 or json.loads(path.read_bytes()) != record:
+        raise SystemExit('The installation selection changed; no receipt was replaced.')
+else:
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(record, stream, sort_keys=True)
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    path.chmod(0o600)
+'@
+        & $Python -I -c $RecordSelection $VenvDir
+        if ($LASTEXITCODE -ne 0) { Fail "Could not record the new installation's update settings." }
         & $Python -m venv $VenvDir
         if ($LASTEXITCODE -ne 0) {
             Show-InstallFailureHint
         }
-        $FreshEnvironment = $true
     }
 
     if (-not (Test-Python $VenvPython)) {
@@ -298,13 +321,6 @@ function Install-WithManagedVenv {
     }
 
     Select-InstalledPython $VenvPython $VenvDir
-    if ($FreshEnvironment) {
-        & $script:NanobotPython -I -c "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('nanobot.installation_receipt') else 1)"
-        if ($LASTEXITCODE -eq 0) {
-            & $script:NanobotPython -I -m nanobot.installation_receipt --register-fresh
-            if ($LASTEXITCODE -ne 0) { Fail "Could not record the new installation's update settings." }
-        }
-    }
 }
 
 $PreviousOutputEncoding = [Console]::OutputEncoding
