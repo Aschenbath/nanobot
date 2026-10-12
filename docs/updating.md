@@ -328,6 +328,12 @@ are not a transfer of Windows byte-range lock ownership. Native uv/pipx executio
 still requires its own verified preparation, lifecycle and recovery path; this
 handoff alone does not enable it.
 
+Windows journal readers share deletion and publishers use atomic POSIX-style
+replacement, so UI polling cannot block the worker's next journal commit on
+modern NTFS/ReFS. Filesystems without that operation retain ordinary atomic
+rename behavior; sharing or permission failures remain visible errors. Publishing
+never deletes the current record first or copies partial contents over it.
+
 Preparation now saves the exact plan and a `preparing` journal before downloading or
 resolving dependencies. Native inspection/resolution keeps its preparation leases until
 it actually returns, including after repeated request cancellations. A settled failure
