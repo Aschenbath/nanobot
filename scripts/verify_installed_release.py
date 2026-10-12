@@ -217,8 +217,13 @@ def install_and_probe(wheel: Path, *, version: str, commit: str, gateway: bool, 
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="nanobot-release-install-") as temporary:
         root = Path(temporary).resolve()
+        # platform.machine() on Windows reads these OS-provided variables.
+        # Removing them creates an artificial unknown-architecture host, not a
+        # clean installation. Keep host identity, never user package/tool paths.
         system = {key: value for key, value in os.environ.items()
-                  if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
+                  if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+                                     "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+                                     "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS"}}
         system.update(HOME=str(root), USERPROFILE=str(root), PYTHON=sys._base_executable,
                       NANOBOT_VENV=str(root / "managed"), NANOBOT_BIN_DIR=str(root / "bin"),
                       NANOBOT_SKIP_WIZARD="1", PIP_CONFIG_FILE=os.devnull, PIP_ONLY_BINARY=":all:",
