@@ -178,7 +178,9 @@ The separate optional `webui.update-jobs.read.v1` capability provides authentica
 `GET /api/settings/nanobot-update/job?id=<plan-id>`. It reads the current installation's
 durable preparation/execution journal and remains `no-store`. Missing jobs return 404;
 invalid identifiers return 400; corrupt or misbound records return 409. It cannot start,
-cancel, repair or clean up a job and does not expose local logs, paths or credentials.
+cancel, repair or clean up a job and does not expose local logs or credentials.
+The recovery command includes the base interpreter path needed on the gateway host;
+it is display-only and is not executed by the browser.
 
 `recorded_phase`, `attempt`, `mutation_started` and `updated_at` describe the last saved
 facts, not whether a worker is alive now. The response also binds the previous/target
