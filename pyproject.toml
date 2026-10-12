@@ -189,6 +189,9 @@ omit = ["tests/*", "**/tests/*"]
 
 [tool.coverage.report]
 fail_under = 75
+# Discovery of unexecuted source files also includes colocated channel tests.
+# Match run.omit so the application gate never counts test bodies as product code.
+omit = ["tests/*", "**/tests/*"]
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",

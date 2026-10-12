@@ -53,14 +53,24 @@ def process_access(environment, paths, *, updating=False, job_id=None, grant=Non
         process.communicate(timeout=10)
 
 
+def crash_process(process):
+    # Windows venv python.exe redirects to a child interpreter. Killing only
+    # that launcher leaves the actual lease holder alive until stdin closes.
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       check=True, capture_output=True, timeout=10)
+    else:
+        process.kill()
+    process.wait(timeout=10)
+
+
 def test_shared_data_blocks_update_across_installations_until_last_writer_exits(private_home, tmp_path):
     store = tmp_path / "shared sessions"
     with process_access(tmp_path / "first environment", [store]) as first:
         with process_access(tmp_path / "second environment", [store]):
             with data_access([store]):
                 pass  # Normal runtime sharing remains allowed.
-            first.kill()
-            first.wait(timeout=10)
+            crash_process(first)
             with pytest.raises(InstallationBusyError, match="data is in use"):
                 with data_access([store], updating=True):
                     pytest.fail("The other installation's writer was ignored")
@@ -95,8 +105,7 @@ def test_alias_and_partial_acquisition_do_not_bypass_or_leak_leases(private_home
                 pytest.fail("A symlink alias bypassed the writer lease")
         with data_access([available]):
             pass  # Failed multi-store acquisition released its earlier leases.
-        writer.kill()
-        writer.wait(timeout=10)
+        crash_process(writer)
         with data_access([store], updating=True):
             pass
 
@@ -105,8 +114,7 @@ def test_job_reservation_survives_process_exit_until_same_scope_is_recovered(pri
     store, sibling = tmp_path / "sessions", tmp_path / "unrelated sessions"
     job_id = str(uuid4())
     with process_access(tmp_path / "update environment", [store], updating=True, job_id=job_id) as worker:
-        worker.kill()
-        worker.wait(timeout=10)
+        crash_process(worker)
     # No process holds the leases now. The durable reservation still excludes
     # overlapping readers/writers from other installations, but not unrelated data.
     for path in (store, store / "chat.jsonl", store.parent):
@@ -186,8 +194,7 @@ with data_access([sys.argv[1]], job_id=sys.argv[2]) as handoff:
         assert encoded, coordinator.stderr.read()
         grant = DataStartupGrant(**json.loads(encoded))
         with process_access(tmp_path / "target environment", [store], grant=grant) as child:
-            coordinator.kill()
-            coordinator.wait(timeout=10)
+            crash_process(coordinator)
             # The coordinator's OS leases are gone, but the child owns its own.
             with pytest.raises(InstallationBusyError):
                 with data_access([store], updating=True, job_id=job_id):
@@ -195,11 +202,10 @@ with data_access([sys.argv[1]], job_id=sys.argv[2]) as handoff:
             with pytest.raises(InstallationBusyError, match="reserved"):
                 with data_access([store]):
                     pytest.fail("Coordinator exit incorrectly lifted maintenance")
-            child.kill()
-            child.wait(timeout=10)
+            crash_process(child)
     finally:
         if coordinator.poll() is None:
-            coordinator.kill()
+            crash_process(coordinator)
         coordinator.communicate(timeout=10)
     with data_access([store], job_id=job_id) as recovered:
         replacement = recovered.grant_startup(participant, [store])
