@@ -35,7 +35,7 @@
       "not_upgrade": "대상 버전은 업그레이드가 아닙니다. 파일을 변경하지 않습니다.",
       "installation_owner": "원래 패키지 관리자 또는 배포 도구로 업데이트하세요.",
       "installation_policy": "설치 출처, 추가 종속성 또는 버전 제약에 따라 원래 설치 방식으로 업데이트하세요.",
-      "external_restart": "현재 실행 방식은 여기서 재시작할 수 없습니다. nanobot gateway --background로 시작한 후 확인하세요.",
+      "external_restart": "이 게이트웨이는 여기서 재시작할 수 없습니다. 원래 실행 방식이나 배포 도구로 중지, 업데이트 및 재시작하세요.",
       "permission": "게이트웨이의 localhost를 열거나 원격 패키지 설치를 허용하세요."
     }
   },

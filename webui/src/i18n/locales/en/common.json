@@ -35,7 +35,7 @@
       "not_upgrade": "This target is not an upgrade. No files will be changed.",
       "installation_owner": "Update this installation with its original package manager or deployment tool.",
       "installation_policy": "This installation’s source, extras or version constraints require its original installation workflow.",
-      "external_restart": "This gateway’s launcher cannot be restarted here. Start it with nanobot gateway --background, then check again.",
+      "external_restart": "This gateway cannot be restarted here. Use its original launch or deployment tool to stop, update and restart it.",
       "permission": "Open this gateway on localhost or allow remote package installation before updating."
     }
   },

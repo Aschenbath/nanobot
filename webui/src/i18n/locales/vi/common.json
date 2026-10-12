@@ -35,7 +35,7 @@
       "not_upgrade": "Phiên bản đích không phải nâng cấp. Không thay đổi tệp.",
       "installation_owner": "Hãy cập nhật bằng trình quản lý gói hoặc công cụ triển khai ban đầu.",
       "installation_policy": "Nguồn cài đặt, phần bổ sung hoặc ràng buộc phiên bản yêu cầu cập nhật bằng phương thức cài đặt ban đầu.",
-      "external_restart": "Cách khởi chạy này không hỗ trợ khởi động lại tại đây. Dùng nanobot gateway --background rồi kiểm tra lại.",
+      "external_restart": "Không thể khởi động lại gateway này tại đây. Hãy dùng công cụ khởi chạy hoặc triển khai ban đầu để dừng, cập nhật và khởi động lại.",
       "permission": "Mở localhost trên gateway hoặc cho phép cài gói từ xa."
     }
   },

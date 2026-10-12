@@ -35,7 +35,7 @@
       "not_upgrade": "目標版本無需升級，不會修改檔案。",
       "installation_owner": "請使用原套件管理器或部署工具更新此安裝。",
       "installation_policy": "此安裝的來源、選用依賴或版本設定需要透過原安裝方式更新。",
-      "external_restart": "目前啟動方式無法在此重新啟動。請使用 nanobot gateway --background 啟動後重試。",
+      "external_restart": "此閘道無法在這裡重新啟動。請透過原啟動方式或部署工具停止、更新並重新啟動。",
       "permission": "請在閘道本機開啟 localhost，或允許遠端安裝後更新。"
     }
   },

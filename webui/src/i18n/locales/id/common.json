@@ -35,7 +35,7 @@
       "not_upgrade": "Versi tujuan bukan peningkatan. Berkas tidak akan diubah.",
       "installation_owner": "Perbarui dengan pengelola paket atau alat penerapan asal.",
       "installation_policy": "Sumber, ekstra, atau batasan versi memerlukan pembaruan melalui metode pemasangan asal.",
-      "external_restart": "Peluncur ini tidak dapat dimulai ulang di sini. Gunakan nanobot gateway --background lalu periksa lagi.",
+      "external_restart": "Gateway ini tidak dapat dimulai ulang di sini. Gunakan alat peluncuran atau penerapan asal untuk menghentikan, memperbarui, dan memulainya ulang.",
       "permission": "Buka localhost pada gateway atau izinkan pemasangan paket jarak jauh."
     }
   },

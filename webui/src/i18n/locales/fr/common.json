@@ -35,7 +35,7 @@
       "not_upgrade": "La cible n’est pas une mise à niveau. Aucun fichier ne sera modifié.",
       "installation_owner": "Utilisez le gestionnaire de paquets ou l’outil de déploiement d’origine.",
       "installation_policy": "La source, les options ou les contraintes de version nécessitent la méthode d’installation d’origine.",
-      "external_restart": "Ce lancement ne permet pas un redémarrage ici. Lancez nanobot gateway --background puis revérifiez.",
+      "external_restart": "Cette passerelle ne peut pas redémarrer ici. Utilisez son outil de lancement ou de déploiement d’origine pour l’arrêter, la mettre à jour et la redémarrer.",
       "permission": "Ouvrez localhost sur la passerelle ou autorisez l’installation distante de paquets."
     }
   },

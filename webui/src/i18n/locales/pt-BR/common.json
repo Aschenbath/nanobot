@@ -35,7 +35,7 @@
       "not_upgrade": "O destino não é uma atualização. Nenhum arquivo será alterado.",
       "installation_owner": "Atualize usando o gerenciador de pacotes ou a ferramenta de implantação original.",
       "installation_policy": "A origem, os extras ou as restrições de versão exigem o método de instalação original.",
-      "external_restart": "Esta forma de inicialização não permite reiniciar aqui. Use nanobot gateway --background e verifique novamente.",
+      "external_restart": "Este gateway não pode ser reiniciado aqui. Use a ferramenta de inicialização ou implantação original para pará-lo, atualizá-lo e reiniciá-lo.",
       "permission": "Abra localhost no gateway ou permita a instalação remota de pacotes."
     }
   },

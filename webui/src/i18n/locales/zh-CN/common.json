@@ -35,7 +35,7 @@
       "not_upgrade": "目标版本无需升级，不会修改文件。",
       "installation_owner": "请使用原包管理器或部署工具更新此安装。",
       "installation_policy": "此安装的来源、可选依赖或版本设置需要通过原安装方式更新。",
-      "external_restart": "当前启动方式无法在此重启。请使用 nanobot gateway --background 启动后重试。",
+      "external_restart": "此网关无法在这里重启。请通过原启动方式或部署工具停止、更新并重启。",
       "permission": "请在网关本机打开 localhost，或允许远程安装后更新。"
     }
   },
