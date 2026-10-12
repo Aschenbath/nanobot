@@ -61,7 +61,7 @@ def review_gateway(tmp_path, monkeypatch):
     snapshot = InstallationSnapshot(
         environment=str(environment), python=str(environment / "bin/python"),
         package_path=package, running_package=package, installed_version="0.3.4",
-        running_version="0.3.4", owner="uv", records={"uv-receipt.toml": "a" * 64},
+        running_version="0.3.4", owner="uv", manager_version="0.11.16", records={"uv-receipt.toml": "a" * 64},
         manager=ManagerPolicy(manager="uv", backend="uv", source="registry", extras=["webui"]),
     )
     observed = []
@@ -530,6 +530,24 @@ async def test_live_update_review_requires_this_gateway_and_preserves_owner_poli
         "external_restart" if os.name == "posix" else "installation_owner"
     )
     assert not (fixture.directory / "jobs").exists(), "Review must not prepare or install"
+
+
+@pytest.mark.parametrize("manager_version", [None, "0.11.15", "0.11.17"])
+async def test_review_routes_unverified_uv_versions_to_the_installation_owner(review_gateway, monkeypatch, manager_version):
+    fixture = review_gateway
+    snapshot = fixture.snapshot.model_copy(update={"manager_version": manager_version})
+    monkeypatch.setattr(update_plan, "inspect_installation", lambda: snapshot)
+    running = fixture.observed[0]
+    fixture.observed[0] = running.model_copy(update={"receipt": running.receipt.model_copy(update={"pid": os.getpid()})})
+    response = await fixture.gateway().http.dispatch_webui_mutation(
+        connection(local=True), "settings.nanobot.update.plan", {"restart_running": True},
+    )
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["execution_available"] is False
+    plan = UpdatePlans(fixture.directory / "plans").load(payload["plan"]["id"])
+    assert update_plan.inline_update_blocked_reason(plan) == "installation_owner"
+    assert not (fixture.directory / "jobs").exists()
 
 
 async def test_review_reports_profile_and_installation_changes_without_replacing_plan(review_gateway, monkeypatch):

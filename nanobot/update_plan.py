@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 import platform
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -34,6 +36,7 @@ from nanobot.update_profiles import (
     inspect_profiles,
     validate_profiles,
 )
+from nanobot.update_uv import UV_TRANSACTION_VERSION
 from nanobot.utils.helpers import atomic_write_lines
 
 Owner = Literal["venv", "uv", "pipx", "source", "container", "system"]
@@ -77,6 +80,7 @@ class InstallationSnapshot(_Probe):
     running_package: str
     owner: Owner
     manager: ManagerPolicy | None = None
+    manager_version: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def matching_manager(self) -> InstallationSnapshot:
@@ -119,11 +123,21 @@ def inspect_installation() -> InstallationSnapshot:
     elif sys.prefix == sys.base_prefix:
         owner = "system"
     manager = None
+    manager_version = None
     if owner == "uv" or owner == "pipx":
         receipt = "uv-receipt.toml" if owner == "uv" else "pipx_metadata.json"
         manager = read_manager_policy(Path(fresh.environment), owner, fresh.records[receipt])
+        if owner == "uv" and (executable := shutil.which("uv")):
+            try:
+                result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=5)
+                parts = result.stdout.split()
+                if result.returncode == 0 and len(parts) >= 2 and parts[0] == "uv" and len(parts[1]) <= 64:
+                    manager_version = parts[1]
+            except (OSError, subprocess.SubprocessError):
+                pass  # Unknown manager capability requires its external workflow.
     return InstallationSnapshot(**fresh.model_dump(), running_version=nanobot.__version__,
-                                running_package=str(Path(nanobot.__file__).resolve()), owner=owner, manager=manager)
+                                running_package=str(Path(nanobot.__file__).resolve()), owner=owner, manager=manager,
+                                manager_version=manager_version)
 
 
 class UpdatePlan(ReleaseRecord):
@@ -371,7 +385,8 @@ def inline_update_blocked_reason(plan: UpdatePlan, validity: str = "current") ->
         return "not_upgrade"
     if plan.installation.owner not in {"venv", "uv"}:
         return "installation_owner"
-    if plan.installation.owner == "uv" and os.name != "posix":
+    if plan.installation.owner == "uv" and (os.name != "posix"
+                                           or plan.installation.manager_version != UV_TRANSACTION_VERSION):
         return "installation_owner"
     if plan.extras is None or plan.owner_restriction:
         return "installation_policy"

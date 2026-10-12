@@ -402,8 +402,12 @@ jobs:
         env:
           NATIVE_TARGET: ${{ runner.os == 'Windows' && 'win32-x64' || 'linux-x64' }}
         run: |
-          python -m pip install --disable-pip-version-check build packaging pydantic
+          python -m pip install --disable-pip-version-check build
           python -m build --outdir "$RUNNER_TEMP/python-dist"
+          # Archive verification shares the installed launcher's dependencies.
+          # Install the intermediate in this build environment, not the separate
+          # clean-home environment used by the public-installer acceptance probe.
+          python -m pip install --disable-pip-version-check "$(find "$RUNNER_TEMP/python-dist" -name '*.whl' -print -quit)"
           python -m scripts.build_tui_wheels \
             --wheel "$(find "$RUNNER_TEMP/python-dist" -name '*.whl' -print -quit)" \
             --tui-dir tui/dist --target "$NATIVE_TARGET" --out-dir "$RUNNER_TEMP/native-wheel"
