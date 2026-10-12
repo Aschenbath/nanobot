@@ -99,10 +99,20 @@ def run_restarts(directory):
 _HANDOFF_PROBE = """
 # Synthetic old-runtime preflight; release/stop contracts are tested separately.
 import time
+import traceback
 from _nanobot_update.installation_lock import InstallationBusyError, installation_access
 from _nanobot_update.update_worker import JobStatus, Phase, WorkerSpec, write_record
 
 def prepare_handoff(directory):
+    try:
+        _prepare_handoff(directory)
+    except Exception:
+        # Keep subprocess failures visible in CI without changing the real
+        # worker's deliberately sanitized output or capturing user data.
+        (directory / 'preflight-error.txt').write_text(traceback.format_exc())
+        raise
+
+def _prepare_handoff(directory):
     spec = WorkerSpec.read(directory)
     try:
         with installation_access(updating=True):
@@ -617,7 +627,9 @@ async def test_detached_handoff_outlives_requester_and_installs_after_preflight_
         await wait_for(lambda: JobStatus.read(directory).phase in {
             Phase.SUCCEEDED, Phase.HANDOFF_FAILED, Phase.FAILED, Phase.RESTART_FAILED,
         })
-    assert JobStatus.read(directory).phase == Phase.SUCCEEDED
+    state = JobStatus.read(directory)
+    error = directory / "preflight-error.txt"
+    assert state.phase == Phase.SUCCEEDED, (state, error.read_text() if error.exists() else "")
     assert inspect_environment(plan.installation.python).app_version == "0.3.5"
     assert read_record(directory / "handoff-probe.json")["package"] == str((site / "nanobot/__init__.py").resolve())
     assert not (site / "nanobot/update_handoff.py").exists(), "Old preflight source was not replaced"
