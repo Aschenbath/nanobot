@@ -117,7 +117,12 @@ describe("Real update consent and recovery", () => {
     } });
     render(view());
     expect(await screen.findByDisplayValue(command)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Check again" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("succeeded", "confirmed"), running_version: "0.3.6", mutation_started: true,
+    } });
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(await screen.findByText("Update complete")).toBeVisible();
     expect(api.executeUpdate).not.toHaveBeenCalled();
     expect(JSON.parse(sessionStorage.getItem("nanobot.pending-update-recovery.v1") || "{}").command).toBe(command);
   });

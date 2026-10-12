@@ -227,7 +227,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}
         </div>
-        {pendingId && recovery && (delayed || failed) && <div className="mt-4 space-y-2 border-t pt-4">
+        {pendingId && recovery && (delayed || (failed && job?.mutation_started)) && <div className="mt-4 space-y-2 border-t pt-4">
           <p className="text-sm font-medium">{t("updates.recoveryTitle")}</p>
           <p className="text-xs leading-5 text-muted-foreground">{t("updates.recoveryDescription")}</p>
           <textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}
@@ -240,7 +240,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           {!done && !blocked && <Button variant="secondary" className="h-10 dark:bg-foreground/10 dark:hover:bg-foreground/15" onClick={close}>
             {t(done || failed || error || blocked ? "updates.close" : busy ? "updates.hide" : "updates.cancel")}
           </Button>}
-          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700" disabled={!blocked && (busy || (failed && !!job?.mutation_started))}
+          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700" disabled={!blocked && busy}
             onClick={blocked ? close : primary}>
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />}
             {t(blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
