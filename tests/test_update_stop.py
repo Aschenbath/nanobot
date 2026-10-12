@@ -353,7 +353,6 @@ def test_old_or_externally_owned_gateway_cannot_be_selected_for_stop(protocol, c
         UpdatePlan.model_validate(values)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Native Windows lifecycle execution requires a Windows runner")
 async def test_actual_gateway_exits_normally_before_installation_and_data_leases_are_available(private_home, tmp_path):
     """Actual gateway stop, not a public download/install/restart E2E."""
     profile = tmp_path / "gateway home"
@@ -412,6 +411,12 @@ async def test_actual_gateway_exits_normally_before_installation_and_data_leases
     finally:
         for child in children:
             if child.poll() is None:
-                child.terminate()
+                if os.name == "nt":
+                    # A venv python.exe may be only a redirector. On failure,
+                    # clean up its owned tree rather than orphan the gateway.
+                    subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                                   capture_output=True, timeout=10)
+                else:
+                    child.terminate()
             child.wait(timeout=10)
         set_home_path(selected_home)

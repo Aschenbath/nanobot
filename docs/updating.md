@@ -5,6 +5,11 @@ detached installer/restart worker. It is not itself a published release. Publish
 stable installations keep their existing updater until this code ships, and preview
 publication remains a separate release-pipeline step.
 
+Existing users first receive this feature by upgrading through their original
+installation method. That first upgrade does not convert pip, pipx, uv or Docker
+into an installer-managed installation; the owner table below still applies.
+Stable users do not opt into previews merely by checking for updates.
+
 ## Update from the WebUI
 
 The sidebar's blue update entry and **Settings → About → Update** open the same

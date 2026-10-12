@@ -1,13 +1,32 @@
 """Protect the real release probe from accepting an incomplete built frontend."""
 
 import json
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.verify_installed_release import gateway_probe, host_environment, webui_assets
+from scripts.verify_installed_release import (
+    _wait_for_closed_listeners,
+    gateway_probe,
+    host_environment,
+    webui_assets,
+)
+
+
+def test_probe_waits_for_listener_teardown_after_redirector_exit(monkeypatch):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        # A still-live listener cannot count as cleaned up.
+        with pytest.raises(ValueError, match="listener remained reachable"):
+            _wait_for_closed_listeners((port,), timeout=0)
+        # Model the kernel completing teardown after the first observation.
+        monkeypatch.setattr("scripts.verify_installed_release.time.sleep", lambda _: listener.close())
+        _wait_for_closed_listeners((port,))
 
 
 def test_isolation_retains_windows_cpu_identity_without_developer_paths():

@@ -21,7 +21,7 @@ from typing import cast
 from uuid import UUID
 
 from nanobot.installation_lock import FileLease, InstallationBusyError, file_access
-from nanobot.utils.atomic_file import atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_lines, read_atomic_bytes
 
 _DATA_STORES = (
     "sessions", "webui", "media", "auth", "pairing.json", "cron",
@@ -75,8 +75,7 @@ def _reservation(path: Path) -> _Reservation | None:
     if path.is_symlink():
         raise ValueError("Invalid data maintenance reservation")
     try:
-        with path.open("rb") as stream:
-            encoded = stream.read(_MAX_RESERVATION_BYTES + 1)
+        encoded = read_atomic_bytes(path, max_bytes=_MAX_RESERVATION_BYTES + 1)
     except FileNotFoundError:
         return None
     if len(encoded) > _MAX_RESERVATION_BYTES:
@@ -216,12 +215,14 @@ def profile_data_paths(*, home: Path, data_dir: Path, config: Path, workspace: P
 
     Keep store symlinks visible here: backup must reject them, not silently expand
     its read scope. Lease identity alone resolves aliases so runtimes cannot race.
+    CLI/config workspace paths may be relative; bind them to this runtime's cwd
+    without following symlinks before passing the inventory to strict leases.
     """
-    return (
+    return tuple(path.absolute() for path in (
         config, home / "history" / "cli_history", home / "sessions",
         *(data_dir / name for name in _DATA_STORES),
         *(workspace / name for name in _WORKSPACE_STORES),
-    )
+    ))
 
 
 def finish_data_handoff(paths: Iterable[str | Path], *, job_id: str) -> None:

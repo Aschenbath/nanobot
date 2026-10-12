@@ -42,7 +42,7 @@ from nanobot.update_process import (
     run_preparation_child,
 )
 from nanobot.update_uv import UVPreparation, uv_environment
-from nanobot.utils.atomic_file import atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_lines, read_atomic_bytes
 
 _REQUEST_SCHEMA_VERSION = 4
 _MAX_REQUEST_BYTES = 16 * 1024 * 1024
@@ -115,8 +115,7 @@ def _integer(value: object) -> int:
 def read_record(path: Path, *, max_bytes: int = 1024 * 1024) -> dict[str, object]:
     if path.is_symlink():
         raise ValueError("Invalid update record")
-    with path.open("rb") as stream:
-        data = stream.read(max_bytes + 1)
+    data = read_atomic_bytes(path, max_bytes=max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError("Update record exceeds its size limit")
     return _object(json.loads(data))

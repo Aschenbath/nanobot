@@ -1805,9 +1805,8 @@ def test_agent_custom_config_workspace_does_not_migrate_legacy_cron(
     assert not (custom_workspace / "cron" / "jobs.json").exists()
 
 
-def test_agent_overrides_workspace_path(mock_agent_runtime):
-    workspace_path = Path("/tmp/agent-workspace")
-
+@pytest.mark.parametrize("workspace_path", [Path("/tmp/agent-workspace"), Path("relative-agent-workspace")])
+def test_agent_overrides_workspace_path(mock_agent_runtime, workspace_path):
     result = runner.invoke(app, ["agent", "-m", "hello", "-w", str(workspace_path)])
 
     assert result.exit_code == 0

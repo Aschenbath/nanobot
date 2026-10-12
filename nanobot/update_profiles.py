@@ -31,7 +31,7 @@ from nanobot.gateway.runtime import (
     GatewayStartOptions,
 )
 from nanobot.installation_lock import installation_state_dir
-from nanobot.utils.atomic_file import atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_lines, read_atomic_bytes
 
 
 class ProfileLaunch(BaseModel):
@@ -118,7 +118,7 @@ def _observe(receipt: ProfileReceipt) -> Literal["running", "stopped", "unconfir
     try:
         if state_path.is_symlink() or state_path.stat().st_size > 32 * 1024:
             return "unconfirmed"
-        claim = _RuntimeClaim.model_validate_json(state_path.read_bytes())
+        claim = _RuntimeClaim.model_validate_json(read_atomic_bytes(state_path))
     except FileNotFoundError:
         claim = None
     except (OSError, ValueError):
@@ -214,7 +214,7 @@ def inspect_profiles(environment: str) -> list[ObservedProfile]:
         for path in sorted(directory.glob("*.json")):
             if len(profiles) >= 1024 or path.is_symlink() or path.stat().st_size > 32 * 1024:
                 raise ValueError("Invalid installation profile inventory")
-            receipt = ProfileReceipt.model_validate_json(path.read_bytes())
+            receipt = ProfileReceipt.model_validate_json(read_atomic_bytes(path))
             if (receipt.environment != str(Path(environment).resolve()) or
                 receipt.id != path.stem or receipt.id != _profile_id(receipt.state_path)):
                 raise ValueError("Profile receipt belongs to a different installation or instance")

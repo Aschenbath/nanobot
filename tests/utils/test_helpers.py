@@ -202,6 +202,19 @@ def test_atomic_write_lines_round_trip_replaces_target(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_atomic_record_reader_does_not_block_concurrent_replacement(tmp_path: Path) -> None:
+    """The update UI can poll while a detached worker commits its next phase."""
+    from nanobot.utils.atomic_file import _open_snapshot, read_atomic_bytes
+
+    target = tmp_path / "status.json"
+    atomic_write_lines(target, ['{"phase":"checking"}'])
+    with _open_snapshot(target) as previous:
+        atomic_write_lines(target, ['{"phase":"stopping"}'])
+        assert previous.read() == b'{"phase":"checking"}\n'
+        assert read_atomic_bytes(target) == b'{"phase":"stopping"}\n'
+    assert read_atomic_bytes(target, max_bytes=2) == b'{"'
+
+
 def test_atomic_write_lines_empty_input_replaces_file_with_empty(tmp_path: Path) -> None:
     target = tmp_path / "history.jsonl"
     target.write_text("old\n", encoding="utf-8")

@@ -60,6 +60,22 @@ def webui_assets(directory: Path) -> set[str]:
     return files
 
 
+def _wait_for_closed_listeners(ports: tuple[int, ...], *, timeout: float = 5) -> None:
+    """Require listener teardown, not just the Windows redirector's exit."""
+    deadline = time.monotonic() + timeout
+    while True:
+        reachable = False
+        for port in ports:
+            with socket.socket() as connection:
+                connection.settimeout(0.2)
+                reachable |= connection.connect_ex(("127.0.0.1", port)) == 0
+        if not reachable:
+            return
+        if time.monotonic() >= deadline:
+            raise ValueError("A probe listener remained reachable after stopping its gateway")
+        time.sleep(0.05)
+
+
 def gateway_probe(version: str, directory: Path) -> dict[str, object]:
     """Probe the installed CLI, actual readiness and WebUI, then stop only our child."""
     directory.mkdir(mode=0o700)
@@ -133,11 +149,10 @@ def gateway_probe(version: str, directory: Path) -> dict[str, object]:
                         raise ValueError("Installed gateway required forced cleanup") from None
             if os.name != "nt" and process.returncode != 0:
                 raise ValueError(f"Installed gateway did not exit cleanly: {process.returncode}")
-            for port in (health_port, web_port):
-                with socket.socket() as connection:
-                    connection.settimeout(1)
-                    if connection.connect_ex(("127.0.0.1", port)) == 0:
-                        raise ValueError("A probe listener remained reachable after stopping its gateway")
+            # Windows process-tree termination and TCP teardown need not finish
+            # when the venv redirector exits. Wait for the actual postcondition;
+            # a listener that stays alive must still fail acceptance.
+            _wait_for_closed_listeners((health_port, web_port))
         except Exception:
             log.flush()
             log.seek(max(0, os.fstat(log.fileno()).st_size - 8192))
