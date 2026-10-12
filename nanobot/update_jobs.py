@@ -90,7 +90,9 @@ def _recovery_command(plan_id: str) -> str:
     # The installer accepts py or an explicit Python path. Neither guarantees
     # python/python3 is on PATH after failure. Use the base interpreter outside
     # the mutable venv, quoted for the operator's platform shell.
-    python = sys._base_executable
+    python: object = getattr(sys, "_base_executable")
+    if not isinstance(python, str):
+        raise ValueError("Recovery needs a known base Python")
     if platform.system() == "Windows":
         quoted = "'" + python.replace("'", "''") + "'"
         return f'& {quoted} -I -S "$env:USERPROFILE\\.nanobot\\updates\\recover.py" {plan_id} --repair'
