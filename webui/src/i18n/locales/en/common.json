@@ -1189,7 +1189,7 @@
       "manageProviders": "Manage providers",
       "configureProvider": "Configure {{provider}}…",
       "sharedProviderHelp": "Changes affect all presets that use this provider.",
-      "parameterCount": "{{count}} entries",
+      "parameterCount": "Entries: {{count}}",
       "useProviderSettings": "Use provider settings",
       "applyToDraft": "Use in preset",
       "draftHint": "Save the new preset to apply these settings.",

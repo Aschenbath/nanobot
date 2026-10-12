@@ -142,7 +142,7 @@ describe("Settings models", () => {
     await waitFor(() => expect(requestMutationMock).toHaveBeenCalledWith(
       "settings.model_configuration.update", { name: "primary", extra_headers: '{"X-Route":"preset"}' }, 20_000,
     ));
-    fireEvent.click(await screen.findByRole("button", { name: /Headers 1.*Edit/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Headers Entries: 1 Edit" }));
     editor = screen.getByRole("dialog", { name: "Headers", exact: true });
     fireEvent.change(within(editor).getByRole("textbox", { name: "Headers" }), { target: { value: "" } });
     fireEvent.click(within(editor).getByRole("button", { name: "Save", exact: true }));

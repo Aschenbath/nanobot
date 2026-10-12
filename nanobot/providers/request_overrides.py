@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 
-from nanobot.config.loader import resolve_config_env_vars, resolve_env_refs
 from nanobot.config.schema import Config, ModelPresetConfig, ProviderConfig, RequestOverrides
 
 
@@ -10,6 +9,8 @@ def isolate_request_overrides(
     config: Config, previous: ModelPresetConfig, candidate: ModelPresetConfig,
 ) -> ModelPresetConfig:
     """Keep inherited request settings only within the same configured connection."""
+    from nanobot.config.loader import resolve_config_env_vars, resolve_env_refs
+
     if not any((previous.extra_headers, previous.extra_query, previous.extra_body)):
         return candidate
     routing = resolve_config_env_vars(config)

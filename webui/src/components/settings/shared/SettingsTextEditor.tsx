@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { SquarePen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,9 @@ export function SettingsTextEditor({ id, title, description, value, placeholder,
   const editor = useRef<HTMLTextAreaElement>(null);
   const help = description?.trim();
   const hasDescription = !!help && help !== title.trim();
+  useEffect(() => {
+    if (error && !saving) editor.current?.focus();
+  }, [error, saving]);
   const save = async () => {
     setSaving(true);
     setError("");
@@ -33,7 +36,6 @@ export function SettingsTextEditor({ id, title, description, value, placeholder,
       setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-      editor.current?.focus();
     } finally {
       setSaving(false);
     }
