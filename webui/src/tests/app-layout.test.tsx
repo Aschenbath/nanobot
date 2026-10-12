@@ -27,6 +27,8 @@ const requestMutationSpy = vi.fn();
 const discardTemporaryChatSpy = vi.fn();
 const newTemporaryChatSpy = vi.fn<() => Promise<string>>();
 const sendMessageSpy = vi.fn();
+const sendSystemCommandSpy = vi.fn().mockResolvedValue(undefined);
+let mockDefaultChatId: string | null = null;
 const statusHandlers = new Set<(status: ConnectionStatus) => void>();
 const runStatusHandlers = new Set<(chatId: string, startedAt: number | null) => void>();
 const sessionUpdateHandlers = new Set<(
@@ -242,7 +244,8 @@ vi.mock("@/lib/nanobot-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/nanobot-client")>();
   class MockClient {
     status = "idle" as const;
-    defaultChatId: string | null = null;
+    defaultChatId = mockDefaultChatId;
+    sendSystemCommand = sendSystemCommandSpy;
     connect = connectSpy;
     onStatus = (handler: (status: ConnectionStatus) => void) => {
       statusHandlers.add(handler);
@@ -317,6 +320,8 @@ describe("App layout", () => {
       `00000000-0000-4000-8000-${String(++temporaryChatCounter).padStart(12, "0")}`
     ));
     sendMessageSpy.mockReset();
+    sendSystemCommandSpy.mockReset().mockResolvedValue(undefined);
+    mockDefaultChatId = null;
     statusHandlers.clear();
     runStatusHandlers.clear();
     sessionUpdateHandlers.clear();
@@ -1236,6 +1241,24 @@ describe("App layout", () => {
     ).toBeInTheDocument();
     expect(within(screen.getByRole("navigation", { name: "Sidebar navigation" })).getByRole("button", { name: "Channels" })).toHaveAttribute("aria-current", "page");
     expect(window.location.hash).toBe("#/settings?section=channels");
+  });
+
+  it.each(["before disconnect", "after disconnect"])("finishes a requested restart when another tab clears its marker %s", async (clearWhen) => {
+    mockDefaultChatId = "restart-fixture";
+    window.history.replaceState(null, "", "/#/settings?section=runtime");
+    mockFetchRoutes({ "/api/settings": baseSettingsPayload() });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Restart", exact: true }));
+    expect(sendSystemCommandSpy).toHaveBeenCalledWith("restart-fixture", "/restart");
+    expect(screen.getByRole("button", { name: "Restarting...", exact: true })).toBeDisabled();
+    act(() => {
+      if (clearWhen === "before disconnect") localStorage.removeItem("nanobot-webui.restartStartedAt");
+      for (const handler of statusHandlers) handler("reconnecting");
+      localStorage.removeItem("nanobot-webui.restartStartedAt");
+      for (const handler of statusHandlers) handler("open");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Restart", exact: true })).toBeEnabled());
+    expect(createChatSpy).not.toHaveBeenCalled();
   });
 
   it("refreshes settings after the browser reconnects from a restart", async () => {

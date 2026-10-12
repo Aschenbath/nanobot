@@ -1220,6 +1220,7 @@ function Shell({
     label: string;
   } | null>(null);
   const restartSawDisconnectRef = useRef(false);
+  const restartStartedAtRef = useRef(0);
   const [restartToast, setRestartToast] = useState<string | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [pairingRequests, setPairingRequests] = useState<PairingRequestInfo[]>([]);
@@ -2220,10 +2221,11 @@ function Shell({
     const chatId = activeSession?.chatId ?? client.defaultChatId;
     if (!chatId) return;
     restartSawDisconnectRef.current = false;
+    restartStartedAtRef.current = Date.now();
     setIsRestarting(true);
     rememberRestartRoute();
     try {
-      window.localStorage.setItem(RESTART_STARTED_KEY, String(Date.now()));
+      window.localStorage.setItem(RESTART_STARTED_KEY, String(restartStartedAtRef.current));
     } catch {
       // ignore storage errors
     }
@@ -2309,7 +2311,8 @@ function Shell({
         });
     };
     const unsubscribe = client.onStatus((status) => {
-      const startedAt = (() => {
+      // Another tab can consume the reload marker before this tab reconnects.
+      const startedAt = restartStartedAtRef.current || (() => {
         try {
           return Number(window.localStorage.getItem(RESTART_STARTED_KEY) ?? "0");
         } catch {
@@ -2318,6 +2321,7 @@ function Shell({
       })();
       if (!startedAt) return;
       if (status !== "open") {
+        restartStartedAtRef.current = startedAt;
         restartSawDisconnectRef.current = true;
         return;
       }
@@ -2330,6 +2334,7 @@ function Shell({
         // ignore storage errors
       }
       const refreshGeneration = ++settingsRefreshGenerationRef.current;
+      restartStartedAtRef.current = 0;
       setIsRestarting(false);
       setRestartToast(t("app.restart.completed", { seconds: (elapsedMs / 1000).toFixed(1) }));
       window.setTimeout(() => setRestartToast(null), 3_500);
