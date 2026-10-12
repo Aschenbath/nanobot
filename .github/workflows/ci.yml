@@ -208,6 +208,14 @@ jobs:
         if: matrix.coverage
         run: uv run --no-sync basedpyright
 
+      - name: Check Windows update coordination before the full suite
+        if: runner.os == 'Windows'
+        run: >-
+          uv run --no-sync python -m pytest
+          tests/test_installation_lock.py
+          tests/utils/test_helpers.py::test_atomic_record_reader_does_not_block_concurrent_replacement
+          -q
+
       - name: Run tests with coverage
         if: matrix.coverage
         run: >-
