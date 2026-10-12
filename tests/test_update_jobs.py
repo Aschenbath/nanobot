@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -33,6 +34,7 @@ from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
 from nanobot.update_backup import BackupSource
 from nanobot.update_jobs import (
+    _recovery_command,
     prepare_job,
     retry_handoff,
     settle_interrupted_preparation,
@@ -287,6 +289,30 @@ async def test_confirmed_service_prepares_exact_offline_pip_job_without_installi
 async def wait_worker(process):
     code = await asyncio.to_thread(process.wait, 40)
     assert code == 0
+
+
+def test_recovery_command_uses_base_python_without_a_path_lookup(monkeypatch):
+    import nanobot.update_jobs as jobs
+
+    python = "/opt/Python tools/user's python/bin/python3"
+    monkeypatch.setattr(jobs.sys, "_base_executable", python)
+    monkeypatch.setattr(jobs.platform, "system", lambda: "Linux")
+    job_id = str(uuid4())
+    assert shlex.split(_recovery_command(job_id)) == [
+        python, "-I", "-S", "~/.nanobot/updates/recover.py", job_id, "--repair",
+    ]
+
+
+def test_recovery_command_quotes_windows_base_python_for_powershell(monkeypatch):
+    import nanobot.update_jobs as jobs
+
+    monkeypatch.setattr(jobs.sys, "_base_executable", r"C:\Python tools\user's Python\python.exe")
+    monkeypatch.setattr(jobs.platform, "system", lambda: "Windows")
+    job_id = str(uuid4())
+    assert _recovery_command(job_id) == (
+        r"& 'C:\Python tools\user''s Python\python.exe' -I -S "
+        f'"$env:USERPROFILE\\.nanobot\\updates\\recover.py" {job_id} --repair'
+    )
 
 
 async def test_standalone_repair_survives_missing_dependency_and_expired_approval(installation, tmp_path):

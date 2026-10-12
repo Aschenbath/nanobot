@@ -12,8 +12,10 @@ import asyncio
 import hashlib
 import os
 import platform
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -84,6 +86,17 @@ class UpdateJobView(ReleaseRecord):
     recovery_command: str = ""
 
 
+def _recovery_command(plan_id: str) -> str:
+    # The installer accepts py or an explicit Python path. Neither guarantees
+    # python/python3 is on PATH after failure. Use the base interpreter outside
+    # the mutable venv, quoted for the operator's platform shell.
+    python = sys._base_executable
+    if platform.system() == "Windows":
+        quoted = "'" + python.replace("'", "''") + "'"
+        return f'& {quoted} -I -S "$env:USERPROFILE\\.nanobot\\updates\\recover.py" {plan_id} --repair'
+    return f'{shlex.quote(python)} -I -S ~/.nanobot/updates/recover.py {plan_id} --repair'
+
+
 def read_update_job(plan_id: str) -> UpdateJobView:
     """Read the journal scoped to this environment path, without probing Python.
 
@@ -115,9 +128,7 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         mutation_started=status.mutation_started, updated_at=status.updated_at,
         execution_confirmation_id=confirmation.id if confirmation else None,
         running_version=__version__,
-        recovery_command=(f'python -I -S "$env:USERPROFILE\\.nanobot\\updates\\recover.py" {plan_id} --repair'
-                          if os.name == "nt" else
-                          f'python3 -I -S ~/.nanobot/updates/recover.py {plan_id} --repair'),
+        recovery_command=_recovery_command(plan_id),
     )
 
 

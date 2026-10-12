@@ -66,7 +66,9 @@ the standalone recovery command below. Automatic data rollback is never attempte
 Before shutdown, preparation saves a stdlib-only launcher at
 `~/.nanobot/updates/recover.py`, outside the environment being updated. The WebUI
 retains the exact job ID and displays the host's command after failure or prolonged
-reconnection. Run it **on the gateway computer, as the original OS user**:
+reconnection. That command uses the host's base Python path, so it does not depend
+on a working application venv or a `python` command on PATH. Copy it from the WebUI
+and run it **on the gateway computer, as the original OS user**. Generic examples:
 
 ```sh
 python3 -I -S ~/.nanobot/updates/recover.py <job-id>
