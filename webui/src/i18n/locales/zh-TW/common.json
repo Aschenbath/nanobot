@@ -771,6 +771,7 @@
       "draftHint": "儲存新預設後，這些設定才會生效。",
       "invalidObject": "請輸入 JSON 物件，例如：{\"key\":\"value\"}。",
       "stringValuesRequired": "請求標頭和查詢參數的值須使用文字。",
+      "maskedSecretMissing": "遮罩沒有對應的已儲存金鑰。請輸入實際值，或刪除該項。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "本地",

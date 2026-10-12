@@ -771,6 +771,7 @@
       "draftHint": "Simpan preset baru untuk menerapkan pengaturan ini.",
       "invalidObject": "Masukkan objek JSON, misalnya: {\"key\":\"value\"}.",
       "stringValuesRequired": "Gunakan nilai teks untuk header dan parameter kueri.",
+      "maskedSecretMissing": "Tidak ada rahasia tersimpan yang sesuai dengan nilai tersamarkan ini. Masukkan nilai sebenarnya atau hapus entri ini.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Lokal",

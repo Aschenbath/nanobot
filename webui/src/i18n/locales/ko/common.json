@@ -771,6 +771,7 @@
       "draftHint": "새 프리셋을 저장하면 이 설정이 적용됩니다.",
       "invalidObject": "JSON 객체를 입력하세요. 예: {\"key\":\"value\"}.",
       "stringValuesRequired": "헤더와 쿼리 매개변수의 값은 문자열로 입력하세요.",
+      "maskedSecretMissing": "이 마스크에 해당하는 저장된 비밀 값이 없습니다. 실제 값을 입력하거나 항목을 삭제하세요.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "로컬",

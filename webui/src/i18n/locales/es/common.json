@@ -771,6 +771,7 @@
       "draftHint": "Guarda el nuevo preajuste para aplicar estos ajustes.",
       "invalidObject": "Introduce un objeto JSON, por ejemplo: {\"key\":\"value\"}.",
       "stringValuesRequired": "Usa valores de texto en cabeceras y parámetros de consulta.",
+      "maskedSecretMissing": "No hay un secreto guardado que corresponda a esta máscara. Introduce el valor real o elimina la entrada.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",

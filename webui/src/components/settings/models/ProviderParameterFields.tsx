@@ -7,6 +7,7 @@ import {
   type ProviderForm,
 } from "@/components/settings/models/providerForm";
 import { SettingsTextEditor } from "@/components/settings/shared/SettingsTextEditor";
+import { ApiError } from "@/lib/api";
 
 const PARAMETER_FIELDS = [
   { field: "extra_headers", formKey: "extraHeaders", titleKey: "settings.providers.extraHeaders", placeholder: '{"X-Header":"value"}' },
@@ -56,8 +57,18 @@ export function ProviderParameterFields({ fields, form, onChange, onSave, inheri
                 throw new Error(t("settings.providers.stringValuesRequired"));
               }
               const update = { [item.formKey]: value };
-              if (onSave) await onSave(update);
-              else onChange(update);
+              try {
+                if (onSave) await onSave(update);
+                else onChange(update);
+              } catch (error) {
+                // The gateway alone can tell whether a mask has a saved value to retain.
+                if (item.field !== "extra_body" && error instanceof ApiError && error.status === 400
+                  && Object.entries(parsed).some(([key, entry]) => entry === "••••••••"
+                    && error.message === `${item.field}.${key}: Input should be a valid string`)) {
+                  throw new Error(t("settings.providers.maskedSecretMissing"), { cause: error });
+                }
+                throw error;
+              }
             }}
             trigger={
               <button type="button" className="settings-hover flex min-h-12 w-full items-center gap-3 border-b border-border/60 px-3 py-3 text-left last:border-b-0">

@@ -771,6 +771,7 @@
       "draftHint": "Lưu cấu hình mẫu mới để áp dụng các thiết lập này.",
       "invalidObject": "Nhập một đối tượng JSON, ví dụ: {\"key\":\"value\"}.",
       "stringValuesRequired": "Dùng giá trị văn bản cho tiêu đề và tham số truy vấn.",
+      "maskedSecretMissing": "Không có giá trị bí mật đã lưu tương ứng với phần che này. Nhập giá trị thật hoặc xóa mục này.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Cục bộ",

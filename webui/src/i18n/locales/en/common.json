@@ -1195,6 +1195,7 @@
       "draftHint": "Save the new preset to apply these settings.",
       "invalidObject": "Enter a JSON object, for example: {\"key\":\"value\"}.",
       "stringValuesRequired": "Use text values for headers and query parameters.",
+      "maskedSecretMissing": "No saved secret matches this mask. Enter the actual value or remove the entry.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",

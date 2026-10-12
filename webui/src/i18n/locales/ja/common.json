@@ -771,6 +771,7 @@
       "draftHint": "新しいプリセットを保存すると、この設定が適用されます。",
       "invalidObject": "JSON オブジェクトを入力してください。例：{\"key\":\"value\"}。",
       "stringValuesRequired": "ヘッダーとクエリパラメーターの値には文字列を使用してください。",
+      "maskedSecretMissing": "このマスクに対応する保存済みのシークレットがありません。実際の値を入力するか、この項目を削除してください。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "ローカル",

@@ -1195,6 +1195,7 @@
       "draftHint": "保存新预设后，这些设置才会生效。",
       "invalidObject": "请输入 JSON 对象，例如：{\"key\":\"value\"}。",
       "stringValuesRequired": "请求头和查询参数的值须使用文本。",
+      "maskedSecretMissing": "掩码没有对应的已保存密钥。请输入实际值，或删除该项。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "本地",

@@ -771,6 +771,7 @@
       "draftHint": "Enregistrez le nouveau préréglage pour appliquer ces réglages.",
       "invalidObject": "Saisissez un objet JSON, par exemple : {\"key\":\"value\"}.",
       "stringValuesRequired": "Utilisez des valeurs textuelles pour les en-têtes et les paramètres de requête.",
+      "maskedSecretMissing": "Aucun secret enregistré ne correspond à ce masque. Saisissez la valeur réelle ou supprimez l’entrée.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",

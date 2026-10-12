@@ -2,11 +2,43 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ProviderParameterFields } from "@/components/settings/models/ProviderParameterFields";
 import i18n from "@/i18n";
+import { ApiError } from "@/lib/api";
 
 beforeEach(async () => { await i18n.changeLanguage("en"); });
 afterEach(cleanup);
 
 const form = { extraHeaders: "", extraQuery: "", extraBody: "{}" };
+
+it.each([
+  { field: "extra_headers", formKey: "extraHeaders", title: "请求头" },
+  { field: "extra_query", formKey: "extraQuery", title: "查询参数" },
+] as const)("localizes a rejected secret mask in $field and allows a corrected retry", async ({ field, formKey, title }) => {
+  await i18n.changeLanguage("zh-CN");
+  const save = vi.fn().mockRejectedValueOnce(new ApiError(400, `${field}.X-Token: Input should be a valid string`)).mockResolvedValue(undefined);
+  render(<ProviderParameterFields inherit fields={[field]} form={form} onChange={vi.fn()} onSave={save} />);
+  fireEvent.click(screen.getByRole("button", { name: `${title} 使用提供商设置 编辑` }));
+  const dialog = screen.getByRole("dialog", { name: title });
+  const editor = within(dialog).getByRole("textbox");
+  fireEvent.change(editor, { target: { value: '{"X-Token":"••••••••"}' } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "保存", exact: true }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("掩码没有对应的已保存密钥。请输入实际值，或删除该项。");
+  expect(editor).toHaveValue('{"X-Token":"••••••••"}');
+  expect(editor).toHaveFocus();
+  fireEvent.change(editor, { target: { value: '{"X-Token":"fixture-value"}' } });
+  await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "保存", exact: true })); });
+  expect(save).toHaveBeenLastCalledWith({ [formKey]: '{"X-Token":"fixture-value"}' });
+  expect(screen.queryByRole("dialog", { name: title })).not.toBeInTheDocument();
+});
+
+it("lets the gateway preserve an existing masked secret without rejecting it in the editor", async () => {
+  const masked = '{"X-Token":"••••••••"}';
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<ProviderParameterFields inherit fields={["extra_headers"]} form={{ ...form, extraHeaders: masked }} onChange={vi.fn()} onSave={save} />);
+  fireEvent.click(screen.getByRole("button", { name: "Headers Entries: 1 Edit" }));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save", exact: true })); });
+  expect(save).toHaveBeenCalledWith({ extraHeaders: masked });
+  expect(screen.queryByRole("dialog", { name: "Headers" })).not.toBeInTheDocument();
+});
 
 it("distinguishes a new preset draft from persisted settings and validates before applying", async () => {
   const change = vi.fn();
