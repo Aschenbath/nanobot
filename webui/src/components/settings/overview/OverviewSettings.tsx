@@ -138,7 +138,7 @@ export function OverviewSettings({
   );
 }
 
-type VersionInfoProps = { currentVersion?: string; currentCommit?: string | null; onRequestUpdate?: () => void };
+type VersionInfoProps = { currentVersion?: string; currentCommit?: string | null; onRequestUpdate?: () => void; hasPendingUpdate?: boolean };
 
 export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { settings: SettingsPayload; onRequestUpdate?: () => void }) {
   const { t } = useTranslation();
@@ -177,7 +177,7 @@ export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { se
       <div className="flex flex-col items-center gap-4 py-6 text-center">
         <img src="/brand/nanobot_mark.svg" alt="" className="h-16 w-16 select-none" draggable={false} />
         <h1><img src="/brand/nanobot_wordmark.svg" alt="nanobot" className="h-auto w-40 select-none dark:brightness-150" draggable={false} /></h1>
-        <VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit} onRequestUpdate={onRequestUpdate} />
+        <VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit} onRequestUpdate={onRequestUpdate} hasPendingUpdate={flow.pending} />
       </div>
       <SettingsGroup>
         {links.map(({ key, icon: Icon, href }) => (
@@ -196,7 +196,7 @@ export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { se
   );
 }
 
-function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: VersionInfoProps) {
+function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPendingUpdate }: VersionInfoProps) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const { checking, result, check, dismiss, dismissedVersion } = useVersionCheck();
@@ -258,7 +258,11 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: Ver
             </span>
           ) : result?.type === "error" ? <span className="text-destructive">{result.message}</span> : null}
         </div>
-        {result?.type === "update" ? (
+        {hasPendingUpdate && onRequestUpdate ? (
+          <Button size="sm" variant="outline" onClick={onRequestUpdate}>
+            {t("settings.about.viewUpdateDetails")}
+          </Button>
+        ) : result?.type === "update" ? (
           <div className="mt-2 max-w-sm rounded-panel bg-settings-surface p-4 text-start">
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-blue-600 dark:text-blue-300" role="status">
             <ArrowUpCircle className="h-3 w-3" aria-hidden />

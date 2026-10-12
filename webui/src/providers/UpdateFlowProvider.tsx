@@ -11,7 +11,7 @@ import type { NanobotClient } from "@/lib/nanobot-client";
 const STORAGE_KEY = "nanobot.pending-update.v1";
 const RECOVERY_KEY = "nanobot.pending-update-recovery.v1";
 const terminal = new Set(["preparation_failed", "handoff_failed", "restart_failed", "succeeded", "failed", "cancelled"]);
-const UpdateFlowContext = createContext<{ open: (() => void) | undefined }>({ open: undefined });
+const UpdateFlowContext = createContext<{ open: (() => void) | undefined; pending: boolean }>({ open: undefined, pending: false });
 
 function savedJob(): string | null {
   try {
@@ -94,7 +94,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
       setDelayed(Date.now() - missingSince > 120_000);
     };
     const refresh = async (manual = false) => {
-      const started = Date.now();
+      const feedback = manual ? new Promise(resolve => setTimeout(resolve, 600)) : Promise.resolve();
       try {
         // API tokens belong to a gateway process. Let the client's authenticated
         // reconnect replace them before reading the new process's update journal.
@@ -103,7 +103,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           timer = setTimeout(() => void refresh(), 1500);
           return;
         }
-        const { job: next } = await readUpdateJob(token, pendingId);
+        const { job: next } = await readUpdateJob(token, pendingId).finally(() => feedback);
         if (!active) return;
         setJob(next);
         if (next.recovery_command) {
@@ -141,7 +141,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
       } finally {
         if (manual) {
           // A repeated terminal result still needs a visible acknowledgement.
-          await new Promise(resolve => setTimeout(resolve, Math.max(0, 600 - (Date.now() - started))));
+          await feedback;
           if (active) setCheckingStatus(false);
         }
       }
@@ -212,9 +212,9 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
   const failed = !!phase && terminal.has(phase) && phase !== "succeeded";
   const reviewing = submitting && !review && !pendingId;
   const busy = checkingStatus || submitting || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
-  const title = checkingStatus ? "working" : done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
+  const title = done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
   const blocked = !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
-  const description = checkingStatus ? t("settings.about.checking") : delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
+  const description = delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
     : offline || awaitingRestart ? t("updates.reconnectingDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : "updates.preparationFailed")
     : reviewing ? t("updates.reviewing") : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
     : review ? t("updates.confirmDescription", { version: review.plan.target_version, host: review.plan.host }) : t("updates.reviewing"));
@@ -228,19 +228,19 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
       void execute(job.id, job.execution_confirmation_id).then(() => setPollAttempt(value => value + 1));
     } else if (error || failed) {
       if (startAgain) void inspect();
-      else { setCheckingStatus(true); setError(""); setPollAttempt(value => value + 1); }
+      else { setCheckingStatus(true); setPollAttempt(value => value + 1); }
     } else void confirm();
   };
   const close = () => { setOpen(false); if (done) { remember(null); setPendingId(null); window.location.reload(); } };
 
-  return <UpdateFlowContext.Provider value={{ open: enabled ? show : undefined }}>
+  return <UpdateFlowContext.Provider value={{ open: enabled ? show : undefined, pending: enabled && !!pendingId }}>
     {children}
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogContent className="max-w-[384px] gap-0 rounded-panel p-6 motion-reduce:animate-none"
         onCloseAutoFocus={(event) => { event.preventDefault(); if (trigger.current?.isConnected) trigger.current.focus(); }}>
         <div aria-live="polite" aria-atomic="true">
           <img src="/brand/nanobot_mark.svg" alt="" draggable={false} className="mb-4 h-11 w-11 select-none" />
-          <AlertDialogTitle className="text-lg font-semibold leading-7 tracking-tight">{t(`updates.${title}`)}</AlertDialogTitle>
+          <AlertDialogTitle className="text-lg font-semibold leading-7 tracking-tight">{t(checkingStatus ? "settings.about.checking" : `updates.${title}`)}</AlertDialogTitle>
           <AlertDialogDescription className="mt-2 text-sm leading-6">{description}</AlertDialogDescription>
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}

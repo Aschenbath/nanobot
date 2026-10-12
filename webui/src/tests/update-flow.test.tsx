@@ -5,10 +5,13 @@ import * as api from "@/lib/api";
 import type { NanobotClient } from "@/lib/nanobot-client";
 import type { ConnectionStatus } from "@/lib/types";
 import { UpdateFlowProvider, useUpdateFlow } from "@/providers/UpdateFlowProvider";
+import { ClientProvider } from "@/providers/ClientProvider";
+import { AboutSettings } from "@/components/settings/overview/OverviewSettings";
+import { settingsPayload } from "@/tests/settings-test-utils";
 
 vi.mock("@/lib/api", async (original) => ({
   ...await original<typeof api>(), createUpdateReview: vi.fn(), readUpdateReview: vi.fn(),
-  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(),
+  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(), checkVersion: vi.fn(),
 }));
 const id = "71c91a73-842e-42e9-aeb4-61a5bfe51135";
 let connectionStatus: ConnectionStatus = "open";
@@ -37,6 +40,7 @@ beforeEach(() => {
   vi.mocked(api.prepareUpdate).mockResolvedValue({ job: job("preparing") });
   vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("ready") });
   vi.mocked(api.executeUpdate).mockResolvedValue({ job: job("checking", "confirmed") });
+  vi.mocked(api.checkVersion).mockResolvedValue({ updateAvailable: null });
 });
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
@@ -180,6 +184,23 @@ describe("Real update consent and recovery", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
     expect(screen.getByText("Update did not finish")).toBeVisible();
+    expect(api.createUpdateReview).not.toHaveBeenCalled();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("can reopen a hidden saved update from About even after the new version is installed", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("restart_failed", "confirmed"), mutation_started: true, running_version: "0.3.6",
+    } });
+    render(<ClientProvider client={client} token="gateway-a" checkUpdatesOnConnect webuiCapabilities={["webui.update-flow.v1"]}>
+      <AboutSettings settings={settingsPayload()} />
+    </ClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByText("You're up to date")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "View details" }));
+    expect(screen.getByRole("alertdialog", { name: "Update did not finish" })).toBeVisible();
     expect(api.createUpdateReview).not.toHaveBeenCalled();
     expect(api.prepareUpdate).not.toHaveBeenCalled();
     expect(api.executeUpdate).not.toHaveBeenCalled();

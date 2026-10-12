@@ -28,6 +28,9 @@ gateway actually running the target version. It is never inferred from a timer.
 Only nanobot's affected background gateways restart, not the computer or browser.
 The page waits for authenticated reconnection before reading the saved result;
 **Done** reloads the page to load the installed frontend assets.
+If you hide the dialog, use **Settings → About → View details** to reopen the saved
+update. This entry remains available even when the package version is already current;
+it does not create another update or repeat installation.
 
 Fresh official-installer environments record their base-package selection and start
 `nanobot webui` with a persistent background gateway. These installations can use the
