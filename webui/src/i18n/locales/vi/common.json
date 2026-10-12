@@ -766,6 +766,11 @@
       "configureProvider": "Cấu hình {{provider}}…",
       "sharedProviderHelp": "Thay đổi sẽ ảnh hưởng đến tất cả cấu hình đặt trước sử dụng nhà cung cấp này.",
       "parameterCount": "{{count}} mục",
+      "useProviderSettings": "Dùng thiết lập nhà cung cấp",
+      "applyToDraft": "Thêm vào cấu hình mẫu",
+      "draftHint": "Lưu cấu hình mẫu mới để áp dụng các thiết lập này.",
+      "invalidObject": "Nhập một đối tượng JSON, ví dụ: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Dùng giá trị văn bản cho tiêu đề và tham số truy vấn.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Cục bộ",
@@ -819,7 +824,7 @@
       "installing": "Đang cài các gói cần thiết…"
     },
     "models": {
-      "requestOverridesHint": "Chỉ nhập các giá trị riêng cho cấu hình này. Các giá trị khác dùng thiết lập nhà cung cấp. Xóa để kế thừa lại. Đổi nhà cung cấp sẽ xóa các giá trị ghi đè.",
+      "requestOverridesHint": "Để trống để dùng thiết lập nhà cung cấp. Đổi nhà cung cấp sẽ xóa các giá trị này.",
       "otherPresets": "Cấu hình dự phòng",
       "catalogAuthRequired": "Quyền truy cập đã hết hạn. Vui lòng đăng nhập lại.",
       "catalogUnavailable": "Cập nhật thất bại. Nhấp để thử lại",

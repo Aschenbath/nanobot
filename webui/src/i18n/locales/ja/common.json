@@ -766,6 +766,11 @@
       "configureProvider": "{{provider}} を設定…",
       "sharedProviderHelp": "変更はこのプロバイダーを使用するすべてのプリセットに適用されます。",
       "parameterCount": "{{count}} 項目",
+      "useProviderSettings": "プロバイダー設定を使用",
+      "applyToDraft": "プリセットに追加",
+      "draftHint": "新しいプリセットを保存すると、この設定が適用されます。",
+      "invalidObject": "JSON オブジェクトを入力してください。例：{\"key\":\"value\"}。",
+      "stringValuesRequired": "ヘッダーとクエリパラメーターの値には文字列を使用してください。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "ローカル",
@@ -819,7 +824,7 @@
       "installing": "必要なパッケージをインストール中…"
     },
     "models": {
-      "requestOverridesHint": "このプリセットで変更する項目だけ入力します。他はプロバイダー設定を使います。空にすると継承に戻ります。プロバイダーを変更すると上書き設定は消去されます。",
+      "requestOverridesHint": "空欄はプロバイダー設定を使用します。プロバイダーを変更すると、ここに入力した値は消去されます。",
       "otherPresets": "フォールバックプリセット",
       "catalogAuthRequired": "認証が失効しました。再度ログインしてください。",
       "catalogUnavailable": "更新できません。クリックして再試行",

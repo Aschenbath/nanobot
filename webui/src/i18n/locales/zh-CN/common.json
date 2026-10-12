@@ -693,7 +693,7 @@
       "voiceInput": "语音转写"
     },
     "models": {
-      "requestOverridesHint": "只填写这个预设需要改变的项，其余使用提供商设置。清空后恢复继承；更换提供商会清空这些覆盖。",
+      "requestOverridesHint": "留空时使用提供商设置。更换提供商会清空这里填写的值。",
       "otherPresets": "备用预设",
       "catalogAuthRequired": "授权已失效，请重新登录。",
       "catalogUnavailable": "刷新失败，点击重试",
@@ -1190,6 +1190,11 @@
       "configureProvider": "配置 {{provider}}…",
       "sharedProviderHelp": "修改会影响使用此提供商的所有预设。",
       "parameterCount": "{{count}} 项",
+      "useProviderSettings": "使用提供商设置",
+      "applyToDraft": "加入预设",
+      "draftHint": "保存新预设后，这些设置才会生效。",
+      "invalidObject": "请输入 JSON 对象，例如：{\"key\":\"value\"}。",
+      "stringValuesRequired": "请求头和查询参数的值须使用文本。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "本地",

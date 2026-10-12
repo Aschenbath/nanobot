@@ -385,6 +385,7 @@ export function SettingsPage({
                 setProviderPanel({ kind: "manage" });
               }}
               onSave={saveModelSettings}
+              onSaveRequestSettings={controller.saveModelRequestSettings}
               onMigrate={handleMigrateModelConfigurations}
               onBeginCreate={beginModelPresetCreation}
               onCancelCreate={cancelModelPresetCreation}

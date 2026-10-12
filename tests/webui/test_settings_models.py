@@ -67,6 +67,59 @@ def _oauth_status(_spec: Any) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("target", ["tenant_a", "tenant_b"])
+@pytest.mark.parametrize("environment_model", [False, True])
+def test_auto_preset_model_change_isolates_connection_settings(target, environment_model, monkeypatch):
+    monkeypatch.setenv("NANOBOT_TEST_MODEL", "tenant_a/old")
+    config = Config.model_validate({
+        "providers": {name: {"apiKey": "fixture", "apiBase": "https://shared.test/v1"}
+                      for name in ("tenant_b", "tenant_a")},
+        "modelPresets": {"primary": {
+            "provider": "auto", "model": "${NANOBOT_TEST_MODEL}" if environment_model else "tenant_a/old",
+            "extraHeaders": {"X-Token": "private"},
+            "extraQuery": {"key": "private"}, "extraBody": {"token": "private"},
+        }},
+    })
+    if environment_model:
+        update_model_configuration(config, {
+            "name": ["primary"], "temperature": ["0.3"],
+        }, oauth_status=_oauth_status)
+        assert config.model_presets["primary"].model == "${NANOBOT_TEST_MODEL}"
+    update_model_configuration(config, {
+        "name": ["primary"], "model": [f"{target}/new"],
+    }, oauth_status=_oauth_status)
+    preset = config.model_presets["primary"]
+    expected = "private" if target == "tenant_a" else None
+    assert (preset.extra_headers or {}).get("X-Token") == expected
+    assert (preset.extra_query or {}).get("key") == expected
+    assert (preset.extra_body or {}).get("token") == expected
+
+
+def test_auto_routing_retains_same_connection_settings_but_new_connection_accepts_only_new_values():
+    config = Config.model_validate({
+        "providers": {name: {"apiKey": "fixture", "apiBase": "https://shared.test/v1"}
+                      for name in ("tenant_a", "tenant_b")},
+        "modelPresets": {"primary": {
+            "provider": "tenant_a", "model": "old", "extraHeaders": {"X-Token": "private"},
+        }},
+    })
+    update_model_configuration(config, {
+        "name": ["primary"], "provider": ["auto"], "model": ["tenant_a/new"],
+    }, oauth_status=_oauth_status)
+    assert config.model_presets["primary"].extra_headers == {"X-Token": "private"}
+    # A stale form must not restore the old connection's redacted credential.
+    with pytest.raises(WebUISettingsError):
+        update_model_configuration(config.model_copy(deep=True), {
+            "name": ["primary"], "provider": ["tenant_b"],
+            "extra_headers": ['{"X-Token":"••••••••"}'],
+        }, oauth_status=_oauth_status)
+    update_model_configuration(config, {
+        "name": ["primary"], "provider": ["tenant_b"],
+        "extra_headers": ['{"X-Token":"new-secret"}'],
+    }, oauth_status=_oauth_status)
+    assert config.model_presets["primary"].extra_headers == {"X-Token": "new-secret"}
+
+
 def test_model_domain_owns_dto_and_config_updates() -> None:
     config = Config()
     config.providers.openrouter.api_key = "sk-before"

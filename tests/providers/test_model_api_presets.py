@@ -49,6 +49,61 @@ def _config() -> Config:
     })
 
 
+@pytest.mark.parametrize("entrypoint", ["sdk", "factory"])
+@pytest.mark.parametrize("target", ["tenant_a", "tenant_b"])
+async def test_model_override_keeps_request_settings_within_connection(bind_transport, entrypoint, target):
+    from nanobot.agent.model_runtime import ModelRuntimeResolver
+    from nanobot.providers.factory import build_provider_snapshot
+    from nanobot.utils.llm_runtime import runtime_from_provider_snapshot
+
+    config = Config.model_validate({
+        "agents": {"defaults": {"modelPreset": "primary"}},
+        "providers": {name: {
+            "apiBase": "https://shared-gateway.test/v1", "apiKey": "fixture",
+            "extraHeaders": {"X-Connection": name},
+            "extraQuery": {"connection": name}, "extraBody": {"connection": name},
+        } for name in ("tenant_a", "tenant_b")},
+        "modelPresets": {"primary": {
+            "provider": "auto", "model": "tenant_a/old-model", "temperature": 0.3,
+            "extraHeaders": {"X-Tenant-Token": "source-secret"},
+            "extraQuery": {"api_key": "source-secret"},
+            "extraBody": {"metadata": {"token": "source-secret"}},
+        }},
+    })
+    before = config.model_dump()
+    model = f"{target}/new-model"
+    if entrypoint == "sdk":
+        resolver = ModelRuntimeResolver(runtime_from_provider_snapshot(build_provider_snapshot(config)))
+        runtime = resolver.resolve_override(model=model, model_preset=None, config=config)
+        provider = runtime.provider
+        assert runtime.generation.temperature == 0.3
+        assert resolver.runtime.model == "tenant_a/old-model"
+    else:
+        provider = make_provider(config, model=model)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _answer(request)
+
+    await provider._ensure_client()
+    provider = bind_transport(provider, handler)
+    assert (await provider.chat([{"role": "user", "content": "hello"}], model=model)).content == "ok"
+    request = requests[0]
+    body = json.loads(request.content)
+    assert request.headers["X-Connection"] == target
+    assert request.url.params["connection"] == body["connection"] == target
+    if target == "tenant_a":
+        assert request.headers["X-Tenant-Token"] == "source-secret"
+        assert request.url.params["api_key"] == "source-secret"
+        assert body["metadata"] == {"token": "source-secret"}
+    else:
+        assert "X-Tenant-Token" not in request.headers
+        assert "api_key" not in request.url.params
+        assert "metadata" not in body
+    assert config.model_dump() == before
+
+
 def _answer(request: httpx.Request) -> httpx.Response:
     if request.url.path.endswith("/responses"):
         response = {

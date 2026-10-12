@@ -2,7 +2,30 @@
 
 from copy import deepcopy
 
-from nanobot.config.schema import ProviderConfig, RequestOverrides
+from nanobot.config.loader import resolve_config_env_vars, resolve_env_refs
+from nanobot.config.schema import Config, ModelPresetConfig, ProviderConfig, RequestOverrides
+
+
+def isolate_request_overrides(
+    config: Config, previous: ModelPresetConfig, candidate: ModelPresetConfig,
+) -> ModelPresetConfig:
+    """Keep inherited request settings only within the same configured connection."""
+    if not any((previous.extra_headers, previous.extra_query, previous.extra_body)):
+        return candidate
+    routing = resolve_config_env_vars(config)
+
+    def connection_name(preset: ModelPresetConfig) -> str | None:
+        model, provider = resolve_env_refs(preset.model), resolve_env_refs(preset.provider)
+        if not model or not provider:
+            return None
+        return routing.get_provider_name(model, preset=preset.model_copy(update={"provider": provider}))
+
+    previous_name = connection_name(previous)
+    if previous_name is not None and previous_name == connection_name(candidate):
+        return candidate
+    return candidate.model_copy(update={
+        "extra_headers": None, "extra_query": None, "extra_body": None,
+    })
 
 
 def request_override_fields(backend: str) -> tuple[str, ...]:

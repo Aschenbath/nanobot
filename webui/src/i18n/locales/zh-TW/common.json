@@ -766,6 +766,11 @@
       "configureProvider": "設定 {{provider}}…",
       "sharedProviderHelp": "變更會影響使用此提供商的所有預設。",
       "parameterCount": "{{count}} 項",
+      "useProviderSettings": "使用供應商設定",
+      "applyToDraft": "加入預設",
+      "draftHint": "儲存新預設後，這些設定才會生效。",
+      "invalidObject": "請輸入 JSON 物件，例如：{\"key\":\"value\"}。",
+      "stringValuesRequired": "請求標頭和查詢參數的值須使用文字。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "本地",
@@ -819,7 +824,7 @@
       "installing": "正在安裝所需套件…"
     },
     "models": {
-      "requestOverridesHint": "只填寫這個預設需要變更的項目，其餘使用供應商設定。清空後恢復繼承；更換供應商會清空這些覆寫。",
+      "requestOverridesHint": "留空時使用供應商設定。更換供應商會清空這裡填寫的值。",
       "otherPresets": "備用預設",
       "catalogAuthRequired": "授權已失效，請重新登入。",
       "catalogUnavailable": "更新失敗，點擊重試",

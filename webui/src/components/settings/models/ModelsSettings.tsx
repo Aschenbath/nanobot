@@ -48,7 +48,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { ModelAPIConfig, SettingsPayload } from "@/lib/types";
-import { ProviderParameterFields } from "@/components/settings/models/ProviderParameterFields";
+import { ProviderParameterFields, type RequestParameterDraft } from "@/components/settings/models/ProviderParameterFields";
 import { providerJsonValue } from "@/components/settings/models/providerForm";
 
 export interface AgentSettingsDraft {
@@ -218,6 +218,7 @@ export function ModelsSettings({
   onConfigureProvider,
   onManageProviders,
   onSave,
+  onSaveRequestSettings,
   onMigrate,
   onBeginCreate,
   onCancelCreate,
@@ -246,6 +247,7 @@ export function ModelsSettings({
   onConfigureProvider: (provider: string, trigger: HTMLButtonElement | null) => void;
   onManageProviders: (trigger: HTMLButtonElement) => void;
   onSave: () => void;
+  onSaveRequestSettings: (values: Partial<RequestParameterDraft>) => Promise<void>;
   onMigrate: () => void;
   onBeginCreate: () => void;
   onCancelCreate: () => void;
@@ -597,6 +599,10 @@ export function ModelsSettings({
               <div className="settings-list-inset space-y-3 py-3">
                 <p className="text-[13px] text-muted-foreground">{t("settings.models.requestOverridesHint")}</p>
                 <ProviderParameterFields
+                  inherit
+                  draft={creating}
+                  disabled={saving || (!creating && dirty)}
+                  onSave={creating ? undefined : onSaveRequestSettings}
                   fields={(selectedProvider ?? settings.providers.find(
                     (provider) => provider.name === (resolvedAutomaticAPI?.provider ?? selectedPreset?.resolved_provider),
                   ))?.advanced_fields ?? []}

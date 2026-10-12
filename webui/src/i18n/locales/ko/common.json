@@ -766,6 +766,11 @@
       "configureProvider": "{{provider}} 설정…",
       "sharedProviderHelp": "변경 사항은 이 제공업체를 사용하는 모든 프리셋에 적용됩니다.",
       "parameterCount": "{{count}}개 항목",
+      "useProviderSettings": "제공업체 설정 사용",
+      "applyToDraft": "프리셋에 추가",
+      "draftHint": "새 프리셋을 저장하면 이 설정이 적용됩니다.",
+      "invalidObject": "JSON 객체를 입력하세요. 예: {\"key\":\"value\"}.",
+      "stringValuesRequired": "헤더와 쿼리 매개변수의 값은 문자열로 입력하세요.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "로컬",
@@ -819,7 +824,7 @@
       "installing": "필수 패키지 설치 중…"
     },
     "models": {
-      "requestOverridesHint": "이 프리셋에서 바꿀 값만 입력하세요. 나머지는 제공업체 설정을 사용합니다. 비우면 다시 상속합니다. 제공업체를 바꾸면 이 설정은 지워집니다.",
+      "requestOverridesHint": "비워 두면 제공업체 설정을 사용합니다. 제공업체를 바꾸면 입력한 값이 지워집니다.",
       "otherPresets": "대체 프리셋",
       "catalogAuthRequired": "인증이 만료되었습니다. 다시 로그인해 주세요.",
       "catalogUnavailable": "갱신 실패. 클릭하여 다시 시도",

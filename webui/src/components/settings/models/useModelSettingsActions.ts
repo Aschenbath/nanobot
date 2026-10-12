@@ -8,6 +8,7 @@ import type {
 } from "@/components/settings/contracts";
 import { agentDraftFromPayload } from "@/components/settings/models/ModelsSettings";
 import { modelAPISelection } from "@/components/settings/models/modelAPI";
+import type { RequestParameterDraft } from "@/components/settings/models/ProviderParameterFields";
 import {
   CUSTOM_PROVIDER_CREATION_KEY,
   providerFormFromRow,
@@ -281,6 +282,21 @@ export function useModelSettingsActions({
       setError(null);
     } catch (err) {
       handlePresetSaveError(err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveModelRequestSettings = async (values: Partial<RequestParameterDraft>) => {
+    setSaving(true);
+    try {
+      const payload = await updateModelConfiguration(client, {
+        name: modelPresetEditingName,
+        ...values,
+      });
+      applyPayload(payload);
+      setForm(agentDraftFromPayload(payload, modelPresetEditingName));
+      setError(null);
     } finally {
       setSaving(false);
     }
@@ -613,6 +629,7 @@ export function useModelSettingsActions({
     resetProviderDraft,
     runProviderOAuth,
     saveModelSettings,
+    saveModelRequestSettings,
     saveProvider,
     toggleProviderKeyEditing,
     toggleProviderKeyVisibility,

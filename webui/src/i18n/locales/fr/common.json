@@ -766,6 +766,11 @@
       "configureProvider": "Configurer {{provider}}…",
       "sharedProviderHelp": "Les modifications s’appliquent à tous les préréglages qui utilisent ce fournisseur.",
       "parameterCount": "{{count}} entrées",
+      "useProviderSettings": "Utiliser les réglages du fournisseur",
+      "applyToDraft": "Ajouter au préréglage",
+      "draftHint": "Enregistrez le nouveau préréglage pour appliquer ces réglages.",
+      "invalidObject": "Saisissez un objet JSON, par exemple : {\"key\":\"value\"}.",
+      "stringValuesRequired": "Utilisez des valeurs textuelles pour les en-têtes et les paramètres de requête.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",
@@ -819,7 +824,7 @@
       "installing": "Installation des dépendances…"
     },
     "models": {
-      "requestOverridesHint": "Modifiez uniquement les valeurs de ce préréglage. Les autres utilisent les paramètres du fournisseur. Videz un champ pour rétablir cette valeur. Changer de fournisseur efface ces réglages.",
+      "requestOverridesHint": "Laissez les champs vides pour utiliser les réglages du fournisseur. Changer de fournisseur efface ces valeurs.",
       "otherPresets": "Préréglages de secours",
       "catalogAuthRequired": "L’autorisation a expiré. Veuillez vous reconnecter.",
       "catalogUnavailable": "Actualisation impossible. Cliquez pour réessayer",

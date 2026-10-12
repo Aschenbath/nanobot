@@ -40,6 +40,7 @@ from nanobot.providers.oauth_model_catalog import (
     invalidate_oauth_model_catalog,
 )
 from nanobot.providers.registry import PROVIDERS, ProviderSpec, create_dynamic_spec, find_by_name
+from nanobot.providers.request_overrides import isolate_request_overrides
 from nanobot.providers.routing import resolve_automatic_model_api, resolve_model_api
 from nanobot.webui import request_settings
 from nanobot.webui.settings_contracts import (
@@ -1239,6 +1240,7 @@ def update_model_configuration(
     if preset is None:
         raise WebUISettingsError("unknown model configuration")
 
+    previous = preset.model_copy(deep=True)
     changed = False
     identity_changed = False
     new_name_value = query_first_alias(query, "new_name", "newName")
@@ -1266,9 +1268,6 @@ def update_model_configuration(
         _validate_configured_provider(config, provider, oauth_status)
         if preset.provider != provider:
             preset.provider = provider
-            preset.extra_headers = None
-            preset.extra_query = None
-            preset.extra_body = None
             changed = True
             identity_changed = True
 
@@ -1310,7 +1309,9 @@ def update_model_configuration(
             changed = True
     elif identity_changed:
         preset.api = None
-    candidate = _preset_with_request_updates(config, preset, query)
+    candidate = _preset_with_request_updates(
+        config, isolate_request_overrides(config, previous, preset), query,
+    )
     if candidate != preset:
         config.model_presets[name] = candidate
         changed = True

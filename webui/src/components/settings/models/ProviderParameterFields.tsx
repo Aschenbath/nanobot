@@ -14,18 +14,26 @@ const PARAMETER_FIELDS = [
   { field: "extra_body", formKey: "extraBody", titleKey: "settings.providers.extraBody", placeholder: '{"service_tier":"priority"}' },
 ] as const;
 
-function parameterSummary(value: string, t: TFunction): string {
-  if (!value.trim()) return t("settings.values.notConfigured");
+export type RequestParameterDraft = Pick<ProviderForm, "extraHeaders" | "extraQuery" | "extraBody">;
+
+function parameterSummary(value: string, inherit: boolean, t: TFunction): string {
   const parsed = parseProviderObject(value);
+  if (parsed && !Object.keys(parsed).length) {
+    return t(inherit ? "settings.providers.useProviderSettings" : "settings.values.notConfigured");
+  }
   return parsed
     ? t("settings.providers.parameterCount", { count: Object.keys(parsed).length })
     : t("settings.values.configured");
 }
 
-export function ProviderParameterFields({ fields, form, onChange }: {
+export function ProviderParameterFields({ fields, form, onChange, onSave, inherit = false, draft = false, disabled = false }: {
   fields: ProviderAdvancedField[];
-  form: Pick<ProviderForm, "extraHeaders" | "extraQuery" | "extraBody">;
-  onChange: (value: Partial<Pick<ProviderForm, "extraHeaders" | "extraQuery" | "extraBody">>) => void;
+  form: RequestParameterDraft;
+  onChange: (value: Partial<RequestParameterDraft>) => void;
+  onSave?: (value: Partial<RequestParameterDraft>) => Promise<void>;
+  inherit?: boolean;
+  draft?: boolean;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const visible = PARAMETER_FIELDS.filter((item) => fields.includes(item.field));
@@ -37,12 +45,24 @@ export function ProviderParameterFields({ fields, form, onChange }: {
         const title = t(item.titleKey);
         return (
           <SettingsTextEditor key={item.field} title={title}
+            disabled={disabled}
+            saveLabel={draft ? t("settings.providers.applyToDraft") : undefined}
+            description={draft ? t("settings.providers.draftHint") : undefined}
             value={form[item.formKey]} placeholder={item.placeholder}
-            onSave={(value) => onChange({ [item.formKey]: value })}
+            onSave={async (value) => {
+              const parsed = parseProviderObject(value);
+              if (!parsed) throw new Error(t("settings.providers.invalidObject"));
+              if (item.field !== "extra_body" && Object.values(parsed).some((entry) => typeof entry !== "string")) {
+                throw new Error(t("settings.providers.stringValuesRequired"));
+              }
+              const update = { [item.formKey]: value };
+              if (onSave) await onSave(update);
+              else onChange(update);
+            }}
             trigger={
               <button type="button" className="settings-hover flex min-h-12 w-full items-center gap-3 border-b border-border/60 px-3 py-3 text-left last:border-b-0">
                 <span className="min-w-0 flex-1 text-[13px] font-medium">{title}</span>
-                <span className="shrink-0 text-[12px] text-muted-foreground">{parameterSummary(form[item.formKey], t)}</span>
+                <span className="min-w-0 text-right text-[12px] text-muted-foreground">{parameterSummary(form[item.formKey], inherit, t)}</span>
                 <span className="shrink-0 text-[13px] text-muted-foreground">{t("settings.actions.edit")}</span>
               </button>
             }

@@ -507,7 +507,7 @@
       "voiceInput": "Transcrição"
     },
     "models": {
-      "requestOverridesHint": "Altere apenas os valores deste perfil. Os demais usam as configurações do provedor. Esvazie um campo para herdar novamente. Trocar o provedor apaga estes ajustes.",
+      "requestOverridesHint": "Deixe os campos vazios para usar os ajustes do provedor. Trocar de provedor apaga estes valores.",
       "otherPresets": "Presets alternativos",
       "catalogAuthRequired": "A autorização expirou. Entre novamente.",
       "catalogUnavailable": "Falha ao atualizar. Clique para tentar novamente",
@@ -1004,6 +1004,11 @@
       "configureProvider": "Configurar {{provider}}…",
       "sharedProviderHelp": "As alterações afetam todas as predefinições que usam este provedor.",
       "parameterCount": "{{count}} entradas",
+      "useProviderSettings": "Usar ajustes do provedor",
+      "applyToDraft": "Adicionar à predefinição",
+      "draftHint": "Salve a nova predefinição para aplicar estes ajustes.",
+      "invalidObject": "Insira um objeto JSON, por exemplo: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Use valores de texto nos cabeçalhos e parâmetros de consulta.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",

@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from nanobot.config.schema import Config, ModelAPIConfig, ModelPresetConfig, ProviderConfig
 from nanobot.providers.model_api import ModelAPICapabilities, ProviderAPI, RequestAPI
 from nanobot.providers.registry import ProviderSpec, create_dynamic_spec, find_by_name
-from nanobot.providers.request_overrides import apply_request_overrides, request_override_fields
+from nanobot.providers.request_overrides import (
+    apply_request_overrides,
+    isolate_request_overrides,
+    request_override_fields,
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,8 @@ def resolve_provider_route(
     model: str | None = None,
 ) -> ProviderRoute:
     """Resolve and validate provider configuration without constructing a client."""
+    if model is not None:
+        preset = isolate_request_overrides(config, preset, preset.model_copy(update={"model": model}))
     model = model or preset.model
     provider_name = config.get_provider_name(model, preset=preset)
     provider_config = config.get_provider(model, preset=preset)

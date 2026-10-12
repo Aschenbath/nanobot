@@ -599,6 +599,7 @@ export function useSettingsController({
     saveImageGenerationSettings,
     saveModelSettings,
     saveNetworkSafetySettings,
+    saveModelRequestSettings: modelActions.saveModelRequestSettings,
     saveProvider,
     saveTranscriptionSettings,
     saveWebSearch,

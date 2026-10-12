@@ -693,7 +693,7 @@
       "voiceInput": "Transcription"
     },
     "models": {
-      "requestOverridesHint": "Set only what this preset needs. Other values use the provider settings. Clear an entry to inherit it again. Changing the provider clears these overrides.",
+      "requestOverridesHint": "Leave fields empty to use provider settings. Changing the provider clears these values.",
       "otherPresets": "Fallback presets",
       "catalogAuthRequired": "Authorization expired. Please sign in again.",
       "catalogUnavailable": "Refresh failed. Click to retry",
@@ -1190,6 +1190,11 @@
       "configureProvider": "Configure {{provider}}…",
       "sharedProviderHelp": "Changes affect all presets that use this provider.",
       "parameterCount": "{{count}} entries",
+      "useProviderSettings": "Use provider settings",
+      "applyToDraft": "Use in preset",
+      "draftHint": "Save the new preset to apply these settings.",
+      "invalidObject": "Enter a JSON object, for example: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Use text values for headers and query parameters.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",
