@@ -4,7 +4,7 @@ import {
   ImageGenerationIcon,
   VoiceIcon,
 } from "@/components/icons/product-icons";
-import { useContext, type Dispatch, type SetStateAction } from "react";
+import { useContext, useState, type Dispatch, type SetStateAction } from "react";
 import {
   ArrowUpCircle,
   BookOpen,
@@ -200,6 +200,16 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: Ver
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const { checking, result, check, dismiss, dismissedVersion } = useVersionCheck();
+  const [manualFeedback, setManualFeedback] = useState(false);
+  const pending = checking || manualFeedback;
+  const checkManually = async () => {
+    if (pending) return;
+    setManualFeedback(true);
+    // A cached response can finish before the first paint. Keep this button's
+    // acknowledgement readable without delaying the shared check or its result.
+    await Promise.all([check(), new Promise(resolve => setTimeout(resolve, 600))]);
+    setManualFeedback(false);
+  };
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -226,25 +236,28 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: Ver
         <Button
           size="sm"
           variant="outline"
-          onClick={() => void check()}
-          disabled={checking}
-          className="rounded-full"
+          onClick={() => void checkManually()}
+          disabled={pending}
+          aria-busy={pending}
+          className="rounded-full disabled:opacity-100"
         >
-          {checking ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+          {pending ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
           ) : (
             <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden />
           )}
-          {checking
+          {pending
             ? tx("settings.about.checking", "Checking...")
             : tx("settings.about.checkForUpdates", "Check for updates")}
         </Button>
-        {result?.type === "up-to-date" ? (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-emerald-600 dark:text-emerald-300">
-            <Check className="h-3 w-3" aria-hidden />
-            {tx("settings.about.upToDate", "You're up to date")}
-          </span>
-        ) : null}
+        <div role="status" aria-live="polite" aria-atomic="true" className="min-h-4 text-[12px]">
+          {pending ? <span className="sr-only">{tx("settings.about.checking", "Checking...")}</span> : result?.type === "up-to-date" ? (
+            <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-300">
+              <Check className="h-3 w-3" aria-hidden />
+              {tx("settings.about.upToDate", "You're up to date")}
+            </span>
+          ) : result?.type === "error" ? <span className="text-destructive">{result.message}</span> : null}
+        </div>
         {result?.type === "update" ? (
           <div className="mt-2 max-w-sm rounded-panel bg-settings-surface p-4 text-start">
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-blue-600 dark:text-blue-300" role="status">
@@ -274,9 +287,6 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate }: Ver
             {dismissedVersion !== result.latestVersion && <Button size="sm" variant="ghost" onClick={dismiss}>{t("settings.about.dismissUpdate")}</Button>}
           </div>
           </div>
-        ) : null}
-        {result?.type === "error" ? (
-          <span className="text-[12px] text-destructive">{result.message}</span>
         ) : null}
       </div>
     </div>

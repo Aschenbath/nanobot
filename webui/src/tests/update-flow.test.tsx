@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "@/lib/api";
 import type { NanobotClient } from "@/lib/nanobot-client";
+import type { ConnectionStatus } from "@/lib/types";
 import { UpdateFlowProvider, useUpdateFlow } from "@/providers/UpdateFlowProvider";
 
 vi.mock("@/lib/api", async (original) => ({
@@ -10,7 +11,8 @@ vi.mock("@/lib/api", async (original) => ({
   readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(),
 }));
 const id = "71c91a73-842e-42e9-aeb4-61a5bfe51135";
-const client = {} as NanobotClient;
+let connectionStatus: ConnectionStatus = "open";
+const client = { get status() { return connectionStatus; } } as NanobotClient;
 const review: api.UpdateReviewResponse = {
   plan: { id, installation_id: "installed-a", host: "test Mac", running_version: "0.3.5", target_version: "0.3.6",
     action: "upgrade", validity: "current", execution_blocked_reason: null, profiles: [] },
@@ -28,6 +30,7 @@ function view(token = "gateway-a", enabled = true) {
   return <UpdateFlowProvider client={client} token={token} enabled={enabled}><Entry /></UpdateFlowProvider>;
 }
 beforeEach(() => {
+  connectionStatus = "open";
   vi.resetAllMocks(); sessionStorage.clear();
   vi.mocked(api.createUpdateReview).mockResolvedValue(review);
   vi.mocked(api.readUpdateReview).mockResolvedValue(review);
@@ -35,7 +38,7 @@ beforeEach(() => {
   vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("ready") });
   vi.mocked(api.executeUpdate).mockResolvedValue({ job: job("checking", "confirmed") });
 });
-afterEach(() => { cleanup(); sessionStorage.clear(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
 describe("Real update consent and recovery", () => {
   it("reviews on open and stages/executes the same exact plan only after confirmation", async () => {
@@ -70,7 +73,8 @@ describe("Real update consent and recovery", () => {
     await waitFor(() => expect(api.readUpdateJob).toHaveBeenCalledTimes(2));
     expect(api.executeUpdate).toHaveBeenCalledOnce();
     expect(api.createUpdateReview).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Please wait" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Please wait" })).toBeDisabled();
   });
   it("does not report completion until the actual running version matches", async () => {
     sessionStorage.setItem("nanobot.pending-update.v1", id);
@@ -84,6 +88,101 @@ describe("Real update consent and recovery", () => {
     expect(await screen.findByText("Update complete")).toBeVisible();
     expect(screen.getByText("Now running v0.3.6.")).toBeVisible();
     expect(screen.getAllByRole("button").filter(button => button.textContent === "Done")).toHaveLength(1);
+  });
+  it("waits for authenticated reconnect when a restart invalidates an in-flight journal read", async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    let rejectRead!: (reason: unknown) => void;
+    vi.mocked(api.readUpdateJob).mockImplementationOnce(() => new Promise((_, reject) => { rejectRead = reject; }));
+    const mounted = render(view());
+    await act(async () => {
+      connectionStatus = "reconnecting";
+      rejectRead(new api.ApiError(401, "Unauthorized"));
+    });
+    expect(screen.getByText("Reconnecting…")).toBeVisible();
+    expect(screen.queryByText(/Could not read the saved update/)).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(api.readUpdateJob).toHaveBeenCalledTimes(1);
+
+    // Bootstrap renews the API token before the socket finishes reconnecting.
+    mounted.rerender(view("renewed-gateway-a"));
+    expect(api.readUpdateJob).toHaveBeenCalledTimes(1);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("succeeded", "confirmed"), mutation_started: true, running_version: "0.3.6",
+    } });
+    connectionStatus = "open";
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(api.readUpdateJob).toHaveBeenLastCalledWith("renewed-gateway-a", id);
+    expect(screen.getByText("Update complete")).toBeVisible();
+    expect(api.createUpdateReview).not.toHaveBeenCalled();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("still reports rejected journal access on an authenticated connection", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockRejectedValue(new api.ApiError(401, "Unauthorized"));
+    render(view());
+    expect(await screen.findByText(/Could not read the saved update/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("replaces a prolonged reconnect with the actual journal error and allows a read-only retry", async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    connectionStatus = "reconnecting";
+    render(view());
+    await act(async () => { await vi.advanceTimersByTimeAsync(123_000); });
+    expect(screen.getByText("Reconnecting…")).toBeVisible();
+    connectionStatus = "open";
+    vi.mocked(api.readUpdateJob).mockRejectedValue(new api.ApiError(403, "Forbidden"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(screen.getByText(/Could not read the saved update/)).toBeVisible();
+    expect(screen.queryByText("Reconnecting…")).toBeNull();
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("succeeded", "confirmed"), running_version: "0.3.6",
+    } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Check again" })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(screen.getByText("Update complete")).toBeVisible();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("keeps one preparation when double-clicked, hidden and reopened", async () => {
+    let resolve!: (value: { job: api.UpdateJob }) => void;
+    vi.mocked(api.prepareUpdate).mockImplementation(() => new Promise(done => { resolve = done; }));
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    const button = await screen.findByRole("button", { name: "Update & restart" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    fireEvent.click(screen.getByText("Update entry"));
+    await act(async () => resolve({ job: job("preparing") }));
+    await waitFor(() => expect(api.executeUpdate).toHaveBeenCalledOnce());
+    expect(api.createUpdateReview).toHaveBeenCalledOnce();
+    expect(api.prepareUpdate).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).toHaveBeenCalledWith(client, id, undefined);
+  });
+  it("acknowledges a read-only retry even when the same failure returns immediately", async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("restart_failed", "confirmed"), mutation_started: true,
+    } });
+    render(view());
+    await act(async () => {});
+    const retry = screen.getByRole("button", { name: "Check again" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await act(async () => { await vi.advanceTimersByTimeAsync(599); });
+    expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+    expect(api.readUpdateJob).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
+    expect(screen.getByText("Update did not finish")).toBeVisible();
+    expect(api.createUpdateReview).not.toHaveBeenCalled();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
   });
   it("ignores an old gateway's late review without starting an installation", async () => {
     let resolve!: (value: api.UpdateReviewResponse) => void;

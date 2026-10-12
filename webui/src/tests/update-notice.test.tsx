@@ -10,7 +10,7 @@ import { useVersionCheck } from "@/providers/VersionCheckProvider";
 import { NanobotClient } from "@/lib/nanobot-client";
 import { jsonResponse, settingsPayload } from "@/tests/settings-test-utils";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const client = new NanobotClient({ url: "ws://localhost:8765" });
 const available = (version = "0.3.6") => ({ updateAvailable: { currentVersion: "0.3.5", latestVersion: version } });
 
@@ -30,6 +30,40 @@ function Surface() {
 const view = (token = "host-a") => <ClientProvider client={client} token={token} checkUpdatesOnConnect><Surface /></ClientProvider>;
 
 describe("Sidebar update entry", () => {
+  it("acknowledges every manual check, including fast cached results, failure and slow retry", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ updateAvailable: null })));
+    vi.stubGlobal("fetch", fetcher);
+    render(<ClientProvider client={client} token="manual-feedback" checkUpdatesOnConnect>
+      <AboutSettings settings={settingsPayload()} />
+    </ClientProvider>);
+    await act(async () => {});
+    expect(screen.getByRole("status")).toHaveTextContent("You're up to date");
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(599); });
+    expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Checking...");
+    expect(screen.queryByText("You're up to date")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Checking..." }));
+    expect(fetcher).toHaveBeenCalledTimes(2); // One automatic + one manual check.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByRole("status")).toHaveTextContent("You're up to date");
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeEnabled();
+
+    fetcher.mockRejectedValueOnce(new Error("Connection unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(screen.getByRole("status")).toHaveTextContent("Connection unavailable");
+    let resolve!: (response: Response) => void;
+    fetcher.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done; }));
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+    expect(screen.queryByText("Connection unavailable")).toBeNull();
+    await act(async () => resolve(jsonResponse({ updateAvailable: null })));
+    expect(screen.getByRole("status")).toHaveTextContent("You're up to date");
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
   it("opens the provided update confirmation directly without navigating through details", () => {
     const openDetails = vi.fn();
     const requestUpdate = vi.fn();

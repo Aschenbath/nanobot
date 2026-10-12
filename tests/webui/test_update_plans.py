@@ -711,7 +711,11 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
     job = json.loads(response.body)["job"]
     assert job["recorded_phase"] == "failed" and job["mutation_started"] is True
     assert job["attempt"] == 1 and job["updated_at"] == plan.expires_at
-    assert b"secret" not in response.body and b"private account" not in response.body
+    assert b"secret" not in response.body
+    # Only the explicit recovery command exposes the launcher's exact location;
+    # job diagnostics and profile paths must remain out of the status payload.
+    assert job.pop("recovery_command") == recovery
+    assert "private account" not in json.dumps(job)
     assert {"message", "running", "can_retry", "python", "url", "profiles"}.isdisjoint(job)
     assert len(fixture.requests) == 1
     assert not (directory / "approval.json").exists()

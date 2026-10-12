@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -24,7 +25,11 @@ def main() -> None:
         parser.error("Use the complete saved update ID")
     if args.yes and not args.repair:
         parser.error("--yes requires --repair")
-    root = Path.home() / ".nanobot" / "updates"
+    # This launcher is staged beside the installation journals. Preserve that
+    # gateway's HOME for the frozen worker's job binding, locks and restarts,
+    # even when the operator invokes the command from their ordinary terminal.
+    root = Path(__file__).resolve().parent
+    worker_env = dict(os.environ, HOME=str(root.parent.parent), USERPROFILE=str(root.parent.parent))
     matches = [path for path in root.glob(f"*/jobs/{args.job}") if path.is_dir() and not path.is_symlink()]
     if len(matches) != 1:
         parser.error("No unique saved job exists for this OS account. Keep the original update directory.")
@@ -42,7 +47,8 @@ def main() -> None:
         parser.error("The original base Python is missing. Restore it before repairing this environment.")
     command = [python, "-I", "-S", str(worker)]
     # The frozen worker validates the full request, directory and plan binding.
-    result = subprocess.run([*command, "--status", str(directory)], check=True, capture_output=True, text=True)
+    result = subprocess.run([*command, "--status", str(directory)], env=worker_env,
+                            check=True, capture_output=True, text=True)
     status = json.loads(result.stdout)
     print(f"Update {args.job}: {status['phase']}")
     print(f"Version: {request['baseline']['app_version']} -> {request['version']}")
@@ -55,7 +61,7 @@ def main() -> None:
     if not args.yes and input("Resume this exact update? [y/N] ").strip().lower() not in {"y", "yes"}:
         print("No changes made.")
         return
-    raise SystemExit(subprocess.call([*command, "--recover", str(directory)]))
+    raise SystemExit(subprocess.call([*command, "--recover", str(directory)], env=worker_env))
 
 
 if __name__ == "__main__":

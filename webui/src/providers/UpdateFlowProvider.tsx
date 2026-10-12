@@ -32,6 +32,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
   const [job, setJob] = useState<UpdateJob | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
   const [error, setError] = useState("");
   const [offline, setOffline] = useState(false);
   const [delayed, setDelayed] = useState(false);
@@ -49,6 +50,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     approved.current = null;
     inFlight.current = false;
     setSubmitting(false);
+    setCheckingStatus(false);
     setReview(null);
     setJob(null);
     setError("");
@@ -86,8 +88,21 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     let missingSince = 0;
-    const refresh = async () => {
+    const reconnecting = () => {
+      missingSince ||= Date.now();
+      setOffline(true);
+      setDelayed(Date.now() - missingSince > 120_000);
+    };
+    const refresh = async (manual = false) => {
+      const started = Date.now();
       try {
+        // API tokens belong to a gateway process. Let the client's authenticated
+        // reconnect replace them before reading the new process's update journal.
+        if (client.status !== "open") {
+          reconnecting();
+          timer = setTimeout(() => void refresh(), 1500);
+          return;
+        }
         const { job: next } = await readUpdateJob(token, pendingId);
         if (!active) return;
         setJob(next);
@@ -113,26 +128,28 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
         }
       } catch (reason) {
         if (!active) return;
-        if (reason instanceof ApiError && reason.status === 404) {
+        if (reason instanceof ApiError && ([403, 404, 409].includes(reason.status)
+          || (reason.status === 401 && client.status === "open"))) {
           // Do not discard an unknown mutation outcome or create a second job.
           approved.current = null;
+          setOffline(false);
+          setDelayed(false);
           setError(t("updates.statusFailed"));
           return;
         }
-        if (reason instanceof ApiError && [401, 403, 409].includes(reason.status)) {
-          approved.current = null;
-          setError(t("updates.statusFailed"));
-          return;
+        reconnecting();
+      } finally {
+        if (manual) {
+          // A repeated terminal result still needs a visible acknowledgement.
+          await new Promise(resolve => setTimeout(resolve, Math.max(0, 600 - (Date.now() - started))));
+          if (active) setCheckingStatus(false);
         }
-        missingSince ||= Date.now();
-        setOffline(true);
-        setDelayed(Date.now() - missingSince > 120_000);
       }
       if (active) timer = setTimeout(() => void refresh(), 1500);
     };
-    void refresh();
+    void refresh(pollAttempt > 0);
     return () => { active = false; clearTimeout(timer); };
-  }, [enabled, pendingId, token, execute, t, pollAttempt]);
+  }, [client, enabled, pendingId, token, execute, t, pollAttempt]);
 
   const inspect = async () => {
     if (inFlight.current) return;
@@ -194,23 +211,24 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
   const awaitingRestart = phase === "succeeded" && !done;
   const failed = !!phase && terminal.has(phase) && phase !== "succeeded";
   const reviewing = submitting && !review && !pendingId;
-  const busy = submitting || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
-  const title = done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
+  const busy = checkingStatus || submitting || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
+  const title = checkingStatus ? "working" : done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
   const blocked = !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
-  const description = delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
+  const description = checkingStatus ? t("settings.about.checking") : delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
     : offline || awaitingRestart ? t("updates.reconnectingDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : "updates.preparationFailed")
     : reviewing ? t("updates.reviewing") : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
     : review ? t("updates.confirmDescription", { version: review.plan.target_version, host: review.plan.host }) : t("updates.reviewing"));
   const retryHandoff = phase === "handoff_failed" && !job?.mutation_started && !!job?.execution_confirmation_id;
   const startAgain = !pendingId || (failed && !job?.mutation_started && !job?.execution_confirmation_id);
   const primary = () => {
+    if (checkingStatus) return;
     if (done) close();
     else if (retryHandoff && job?.execution_confirmation_id) {
       setError("");
       void execute(job.id, job.execution_confirmation_id).then(() => setPollAttempt(value => value + 1));
     } else if (error || failed) {
       if (startAgain) void inspect();
-      else { setError(""); setPollAttempt(value => value + 1); }
+      else { setCheckingStatus(true); setError(""); setPollAttempt(value => value + 1); }
     } else void confirm();
   };
   const close = () => { setOpen(false); if (done) { remember(null); setPendingId(null); window.location.reload(); } };
@@ -240,10 +258,10 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           {!done && !blocked && <Button variant="secondary" className="h-10 dark:bg-foreground/10 dark:hover:bg-foreground/15" onClick={close}>
             {t(done || failed || error || blocked ? "updates.close" : busy ? "updates.hide" : "updates.cancel")}
           </Button>}
-          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700" disabled={!blocked && busy}
+          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-100" disabled={!blocked && busy} aria-busy={busy}
             onClick={blocked ? close : primary}>
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />}
-            {t(blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
+            {t(checkingStatus ? "settings.about.checking" : blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
           </Button>
         </div>
       </AlertDialogContent>

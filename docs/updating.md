@@ -25,6 +25,9 @@ affected profiles, and asks the selected idle background gateways to stop. A sep
 worker installs offline, verifies the files and dependencies, and restarts those
 gateways. “Update complete” requires both a successful journal and a reconnected
 gateway actually running the target version. It is never inferred from a timer.
+Only nanobot's affected background gateways restart, not the computer or browser.
+The page waits for authenticated reconnection before reading the saved result;
+**Done** reloads the page to load the installed frontend assets.
 
 Fresh official-installer environments record their base-package selection and start
 `nanobot webui` with a persistent background gateway. These installations can use the
@@ -77,9 +80,12 @@ the standalone recovery command below. Automatic data rollback is never attempte
 Before shutdown, preparation saves a stdlib-only launcher at
 `~/.nanobot/updates/recover.py`, outside the environment being updated. The WebUI
 retains the exact job ID and displays the host's command after failure or prolonged
-reconnection. That command uses the host's base Python path, so it does not depend
-on a working application venv or a `python` command on PATH. Copy it from the WebUI
-and run it **on the gateway computer, as the original OS user**. Generic examples:
+reconnection. That command uses absolute paths for both the host's base Python and
+the saved launcher, so it does not depend on a working application venv, a `python`
+command on PATH, or the terminal sharing the gateway's HOME. The launcher keeps its
+original job/lock directory when starting the saved worker. Copy it from the WebUI
+and run it **on the gateway computer, as the original OS user**. Generic examples
+below assume the gateway uses that terminal's normal home directory:
 
 ```sh
 python3 -I -S ~/.nanobot/updates/recover.py <job-id>

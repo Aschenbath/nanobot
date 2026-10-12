@@ -13,7 +13,7 @@ import threading
 import time
 import venv
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -303,15 +303,17 @@ async def wait_worker(process):
     assert code == 0
 
 
-def test_recovery_command_uses_base_python_without_a_path_lookup(monkeypatch):
+def test_recovery_command_uses_base_python_and_exact_launcher_without_shell_home(monkeypatch, tmp_path):
     import nanobot.update_jobs as jobs
 
     python = "/opt/Python tools/user's python/bin/python3"
     monkeypatch.setattr(jobs.sys, "_base_executable", python)
     monkeypatch.setattr(jobs.platform, "system", lambda: "Linux")
+    state = tmp_path / "user's private home/.nanobot/updates/installation"
+    monkeypatch.setattr(jobs, "installation_state_dir", lambda: state)
     job_id = str(uuid4())
     assert shlex.split(_recovery_command(job_id)) == [
-        python, "-I", "-S", "~/.nanobot/updates/recover.py", job_id, "--repair",
+        python, "-I", "-S", str(state.parent / "recover.py"), job_id, "--repair",
     ]
 
 
@@ -320,10 +322,12 @@ def test_recovery_command_quotes_windows_base_python_for_powershell(monkeypatch)
 
     monkeypatch.setattr(jobs.sys, "_base_executable", r"C:\Python tools\user's Python\python.exe")
     monkeypatch.setattr(jobs.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(jobs, "installation_state_dir", lambda: PureWindowsPath(
+        r"C:\Users\user's private home\.nanobot\updates\installation"))
     job_id = str(uuid4())
     assert _recovery_command(job_id) == (
         r"& 'C:\Python tools\user''s Python\python.exe' -I -S "
-        f'"$env:USERPROFILE\\.nanobot\\updates\\recover.py" {job_id} --repair'
+        rf"'C:\Users\user''s private home\.nanobot\updates\recover.py' {job_id} --repair"
     )
 
 
@@ -348,24 +352,31 @@ async def test_standalone_repair_survives_missing_dependency_and_expired_approva
     write_record(directory / "approval.json", approval)
     launcher = directory.parents[2] / "recover.py"
     command = [sys._base_executable, "-I", "-S", str(launcher), plan.id]
-    viewed = await asyncio.to_thread(subprocess.run, command, capture_output=True, text=True, timeout=40)
+    # The operator's ordinary terminal need not share the gateway's HOME.
+    # The copied recovery command must retain the original job and lock scope.
+    terminal_home = tmp_path / "operator home"
+    terminal_home.mkdir()
+    terminal_env = dict(os.environ, HOME=str(terminal_home), USERPROFILE=str(terminal_home))
+    viewed = await asyncio.to_thread(subprocess.run, command, env=terminal_env,
+                                    capture_output=True, text=True, timeout=40)
     assert viewed.returncode == 0, viewed.stderr
     assert "Inspection only" in viewed.stdout
     assert JobStatus.read(directory) == status
     # A still-running installation owner cannot be overridden by local repair.
     with installation_access(environment=plan.installation.environment, allow_incomplete=True):
         refused = await asyncio.to_thread(subprocess.run, [*command, "--repair", "--yes"],
-                                          capture_output=True, text=True, timeout=40)
+                                          env=terminal_env, capture_output=True, text=True, timeout=40)
     assert refused.returncode != 0
     assert JobStatus.read(directory) == status
     repaired = await asyncio.to_thread(subprocess.run, [*command, "--repair", "--yes"],
-                                      capture_output=True, text=True, timeout=40)
+                                      env=terminal_env, capture_output=True, text=True, timeout=40)
     assert repaired.returncode == 0, repaired.stdout + repaired.stderr
     assert JobStatus.read(directory).phase == Phase.INSTALLED
     assert JobStatus.read(directory).attempt == 2
     assert (site / "fixture_update_dep/__init__.py").read_text() == "__version__ = '2.0.0'\n"
     assert (directory / "backup/data.zip").read_bytes() == backup
     assert not pending_update_path(plan.installation.environment).exists()
+    assert list(terminal_home.iterdir()) == []
 
 
 async def test_standalone_repair_cannot_turn_preparation_into_installation(installation, tmp_path):

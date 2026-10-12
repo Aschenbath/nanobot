@@ -93,10 +93,13 @@ def _recovery_command(plan_id: str) -> str:
     python: object = getattr(sys, "_base_executable")
     if not isinstance(python, str):
         raise ValueError("Recovery needs a known base Python")
+    # The operator's shell may have a different HOME from the gateway.
+    launcher = str(installation_state_dir().parent / "recover.py")
     if platform.system() == "Windows":
         quoted = "'" + python.replace("'", "''") + "'"
-        return f'& {quoted} -I -S "$env:USERPROFILE\\.nanobot\\updates\\recover.py" {plan_id} --repair'
-    return f'{shlex.quote(python)} -I -S ~/.nanobot/updates/recover.py {plan_id} --repair'
+        quoted_launcher = "'" + launcher.replace("'", "''") + "'"
+        return f'& {quoted} -I -S {quoted_launcher} {plan_id} --repair'
+    return f'{shlex.quote(python)} -I -S {shlex.quote(launcher)} {plan_id} --repair'
 
 
 def read_update_job(plan_id: str) -> UpdateJobView:
