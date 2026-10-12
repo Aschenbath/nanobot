@@ -497,7 +497,6 @@ export interface WorkspacesPayload {
   host?: { name: string; platform: string };
   controls: {
     can_change_project: boolean;
-    can_use_full_access: boolean;
     can_browse_directories?: boolean;
     can_resolve_project?: boolean;
     can_manage_favorites?: boolean;
@@ -707,6 +706,9 @@ export interface SettingsPayload {
     reasoning_effort: string | null;
     reasoning_effort_values?: string[];
     api?: ModelAPIConfig | null;
+    extra_headers?: Record<string, string> | null;
+    extra_query?: Record<string, string> | null;
+    extra_body?: Record<string, unknown> | null;
   }>;
   model_call_order: string[];
   model_call_order_editable: boolean;
@@ -715,6 +717,7 @@ export interface SettingsPayload {
   /** Host can resolve the default request API for an unsaved model configuration. */
   model_api_resolution_supported?: boolean;
   provider_api_configuration_supported?: boolean;
+  model_request_overrides_supported?: boolean;
   created_model_preset?: string;
   created_provider?: string;
   providers: Array<{
@@ -1333,6 +1336,9 @@ export interface ModelConfigurationCreate {
   temperature?: number;
   reasoningEffort?: string | null;
   api?: ModelAPIConfig | null;
+  extraHeaders?: string;
+  extraQuery?: string;
+  extraBody?: string;
 }
 
 export interface ModelConfigurationUpdate {
@@ -1345,6 +1351,9 @@ export interface ModelConfigurationUpdate {
   temperature?: number;
   reasoningEffort?: string | null;
   api?: ModelAPIConfig | null;
+  extraHeaders?: string;
+  extraQuery?: string;
+  extraBody?: string;
 }
 
 export interface ProviderSettingsUpdate {

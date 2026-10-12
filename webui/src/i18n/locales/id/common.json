@@ -766,6 +766,12 @@
       "configureProvider": "Konfigurasi {{provider}}…",
       "sharedProviderHelp": "Perubahan berlaku untuk semua prasetel yang menggunakan penyedia ini.",
       "parameterCount": "{{count}} entri",
+      "useProviderSettings": "Gunakan pengaturan penyedia",
+      "applyToDraft": "Tambahkan ke preset",
+      "draftHint": "Simpan preset baru untuk menerapkan pengaturan ini.",
+      "invalidObject": "Masukkan objek JSON, misalnya: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Gunakan nilai teks untuk header dan parameter kueri.",
+      "maskedSecretMissing": "Tidak ada rahasia tersimpan yang sesuai dengan nilai tersamarkan ini. Masukkan nilai sebenarnya atau hapus entri ini.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Lokal",
@@ -819,6 +825,7 @@
       "installing": "Memasang paket yang diperlukan…"
     },
     "models": {
+      "requestOverridesHint": "Kosongkan untuk memakai pengaturan penyedia. Mengganti penyedia menghapus nilai ini.",
       "otherPresets": "Preset cadangan",
       "catalogAuthRequired": "Otorisasi kedaluwarsa. Silakan masuk lagi.",
       "catalogUnavailable": "Pembaruan gagal. Klik untuk mencoba lagi",

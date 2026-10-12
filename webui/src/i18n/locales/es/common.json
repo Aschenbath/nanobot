@@ -766,6 +766,12 @@
       "configureProvider": "Configurar {{provider}}…",
       "sharedProviderHelp": "Los cambios afectan a todos los preajustes que usan este proveedor.",
       "parameterCount": "{{count}} entradas",
+      "useProviderSettings": "Usar ajustes del proveedor",
+      "applyToDraft": "Añadir al preajuste",
+      "draftHint": "Guarda el nuevo preajuste para aplicar estos ajustes.",
+      "invalidObject": "Introduce un objeto JSON, por ejemplo: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Usa valores de texto en cabeceras y parámetros de consulta.",
+      "maskedSecretMissing": "No hay un secreto guardado que corresponda a esta máscara. Introduce el valor real o elimina la entrada.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",
@@ -819,6 +825,7 @@
       "installing": "Instalando dependencias…"
     },
     "models": {
+      "requestOverridesHint": "Deja los campos vacíos para usar los ajustes del proveedor. Cambiar de proveedor borra estos valores.",
       "otherPresets": "Preajustes alternativos",
       "catalogAuthRequired": "La autorización ha caducado. Inicia sesión de nuevo.",
       "catalogUnavailable": "No se pudo actualizar. Haz clic para reintentar",

@@ -96,6 +96,26 @@ OpenRouter uses a chat-completions style image response. Configure:
 
 Use a model that supports image generation and image editing if you want reference-image edits.
 
+### OpenAI Codex
+
+Log in with `nanobot provider login openai-codex`, then select **OpenAI Codex** and `gpt-image-2` under **Settings → Image**. Image generation uses your Codex subscription.
+
+For manual configuration:
+
+```json
+{
+  "tools": {
+    "imageGeneration": {
+      "enabled": true,
+      "provider": "openai_codex",
+      "model": "gpt-image-2"
+    }
+  }
+}
+```
+
+Use Codex to generate images from text or edit existing images with reference images.
+
 ### Custom (OpenAI-compatible)
 
 The `custom` image provider fits services that implement the synchronous OpenAI Images API:
