@@ -199,6 +199,8 @@ def test_installed_tui_never_downloads_or_requires_bun(tmp_path, monkeypatch, sy
 @pytest.fixture
 def complete_candidate(tmp_path, candidate):
     """Actual checkout payload, with synthetic native binaries (not native execution)."""
+    from hatch_build import WebUIBuildHook
+
     root = tmp_path / "checkout"
     subprocess.run(["git", "clone", "--shared", str(packager.ROOT), str(root)],
                    check=True, capture_output=True)
@@ -213,6 +215,15 @@ def complete_candidate(tmp_path, candidate):
         if len(parts) > 3 and parts[1] == "channels" and parts[3] == "tests":
             continue
         files[name] = (root / name).read_bytes()
+    hook = WebUIBuildHook(str(root), {}, None, {}, "", "wheel",
+                          SimpleNamespace(display_info=lambda message: None))
+    hook.initialize("editable", {})
+    references = root / "nanobot/skills/nanobot-document/references"
+    documentation = {}
+    for reference in references.rglob("*.md"):
+        files[reference.relative_to(root).as_posix()] = reference.read_bytes()
+        name = "docs/" + reference.relative_to(references).as_posix()
+        documentation[name] = (root / name).read_bytes()
     files[f"{info}/METADATA"] += f'Requires-Python: {metadata["requires-python"]}\n'.encode()
     files["nanobot/_build_commit.txt"] = f"{commit}\n".encode()
     files["nanobot/web/dist/index.html"] = b"<html>compiled fixture</html>"
@@ -235,6 +246,7 @@ def complete_candidate(tmp_path, candidate):
     source_files = {
         "PKG-INFO": files[f"{info}/METADATA"],
         "pyproject.toml": (root / "pyproject.toml").read_bytes(),
+        **documentation,
         **{name: data for name, data in files.items() if name.startswith("nanobot/")},
     }
     with tarfile.open(artifacts / f"nanobot_ai-{version}.tar.gz", "w:gz") as archive:

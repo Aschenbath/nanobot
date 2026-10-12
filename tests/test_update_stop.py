@@ -123,8 +123,8 @@ def protocol(private_home, monkeypatch):
     return directory, plan, gates, stops
 
 
-async def wait_until(predicate):
-    async with asyncio.timeout(5):
+async def wait_until(predicate, *, timeout=5):
+    async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.01)
 
@@ -390,7 +390,19 @@ async def test_actual_gateway_exits_normally_before_installation_and_data_leases
     runtime = GatewayRuntime(paths=instance.paths, python_executable=sys.executable, popen=spawn)
     try:
         assert runtime.start_background(instance.start_options(port=port)).ok
-        await wait_until(lambda: runtime.status().ready)
+
+        def gateway_ready():
+            assert children[0].poll() is None, "Gateway exited before readiness"
+            return runtime.status().ready
+
+        try:
+            # Importing a real gateway on a shared Windows runner can exceed the
+            # 5 s budget for the in-process protocol tests. Match the WebUI smoke
+            # test's startup budget without relaxing shutdown or lease assertions.
+            await wait_until(gateway_ready, timeout=20)
+        except (TimeoutError, AssertionError) as exc:
+            logs = instance.paths.log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+            raise AssertionError(f"Gateway did not become ready: {exc}\n{logs}") from exc
         profiles = inspect_profiles(sys.prefix)
         assert len(profiles) == 1 and profiles[0].receipt.stop_protocol == 1
         assert profiles[0].receipt.launch_mode == "background"

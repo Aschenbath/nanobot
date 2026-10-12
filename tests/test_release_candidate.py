@@ -2,10 +2,16 @@
 
 import subprocess
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 
-from scripts.release_candidate import _candidate_identity, prepare_preview, preview_version
+from scripts.release_candidate import (
+    _candidate_identity,
+    _source_payload,
+    prepare_preview,
+    preview_version,
+)
 
 
 def git(root, *args):
@@ -92,3 +98,30 @@ def test_verification_rejects_changes_after_candidate_commit(tmp_path, source):
         "-c", "commit.gpgsign=false", "commit", "--amend", "--no-edit", "-q")
     with pytest.raises(ValueError, match="beyond"):
         _candidate_identity(target, commit)
+
+
+def test_candidate_verifies_bundled_documentation_against_its_tracked_source(source):
+    from hatch_build import WebUIBuildHook
+
+    root, _ = source
+    with (root / "pyproject.toml").open("a") as stream:
+        stream.write('[tool.hatch.build.targets.sdist]\nexclude = ["docs/plans/**"]\n')
+    (root / "docs/plans").mkdir(parents=True)
+    (root / "docs/README.md").write_text("Checked documentation", encoding="utf-8")
+    (root / "docs/plans/private.md").write_text("Not packaged", encoding="utf-8")
+    git(root, "add", ".")
+    hook = WebUIBuildHook(str(root), {}, None, {}, "", "wheel",
+                          SimpleNamespace(display_info=lambda message: None))
+    hook.initialize("editable", {})
+    reference = "nanobot/skills/nanobot-document/references/README.md"
+    names = ["nanobot/__init__.py", "docs/README.md", reference]
+    prefix = "nanobot_ai-0.3.5/"
+    packaged = {prefix + name: (root / name).read_bytes() for name in names}
+    payload = _source_payload(root, packaged, prefix)
+    assert payload[reference] == (root / "docs/README.md").read_bytes()
+
+    # Both the shipped reference and the source used to rebuild the sdist must
+    # match the reviewed documentation, not merely match each other.
+    for name in (reference, "docs/README.md"):
+        with pytest.raises(ValueError, match="differs from the candidate"):
+            _source_payload(root, {**packaged, prefix + name: b"Unchecked instructions"}, prefix)

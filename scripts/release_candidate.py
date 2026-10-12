@@ -133,18 +133,26 @@ def _source_payload(root: Path, source: dict[str, bytes], prefix: str) -> dict[s
     # The sdist ships the tracked nanobot tree. Read its actual exclusions rather
     # than maintaining a second list of channel test directories here.
     exclusions = [*build.get("exclude", []), *build["targets"]["sdist"].get("exclude", [])]
-    expected = {name for name in tracked if name.startswith("nanobot/")
+    expected = {name: name for name in tracked if name.startswith("nanobot/")
                 and not any(fnmatchcase(name, pattern) for pattern in exclusions)}
+    # The build hook copies tracked docs into the built-in documentation skill.
+    # Verify both copies: rebuilding the sdist must use the same reviewed bytes.
+    for name in tracked:
+        if (name.startswith("docs/") and name.endswith(".md")
+                and not any(fnmatchcase(name, pattern) for pattern in exclusions)):
+            if source.get(prefix + name) != (root / name).read_bytes():
+                raise ValueError(f"Source documentation differs from the candidate: {name}")
+            expected["nanobot/skills/nanobot-document/references/" + name.removeprefix("docs/")] = name
     payload = {name.removeprefix(prefix): data for name, data in source.items()
                if name.startswith(prefix + "nanobot/")}
     generated = {name for name in payload if name == "nanobot/_build_commit.txt"
                  or name.startswith("nanobot/web/dist/")}
-    if payload.keys() - generated != expected:
+    if payload.keys() - generated != expected.keys():
         raise ValueError("Source application payload has missing or unexpected files")
     for name, data in payload.items():
         if name in generated:
             continue
-        if data != (root / name).read_bytes():
+        if data != (root / expected[name]).read_bytes():
             raise ValueError(f"Source application payload differs from the candidate: {name}")
     return payload
 
