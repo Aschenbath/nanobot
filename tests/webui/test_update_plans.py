@@ -800,5 +800,7 @@ async def test_plan_cannot_invent_restart_ownership_or_replace_manager_extras(re
         assert response.status_code == 200
         payload = json.loads(response.body)
         assert payload["execution_available"] is False
-        assert payload["plan"]["execution_blocked_reason"] == "external_restart"
+        assert payload["plan"]["execution_blocked_reason"] == (
+            "external_restart" if os.name == "posix" else "installation_owner"
+        )
         assert not any(profile["restart"] for profile in payload["plan"]["profiles"])

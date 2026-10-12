@@ -9,6 +9,7 @@ import httpx
 import pytest
 import typer
 from packaging.tags import Tag
+from rich.text import Text
 from typer.testing import CliRunner
 
 from nanobot.cli.update import update as update_command
@@ -195,7 +196,7 @@ def test_cli_channel_inspection_cannot_silently_run_stable_update(monkeypatch, c
     app.command()(update_command)
     result = CliRunner().invoke(app, ["--channel", channel])
     assert result.exit_code != 0
-    assert "requires --plan" in result.output
+    assert "requires --plan" in Text.from_ansi(result.output).plain
 
 
 @pytest.mark.parametrize("retry", [False, True])

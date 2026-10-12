@@ -31,7 +31,7 @@ from nanobot.update_profiles import (
 )
 
 _CHILD = """
-import sys
+import os, sys
 from pathlib import Path
 from nanobot.config.home import set_home_path
 from nanobot.gateway.runtime import GatewayInstance, GatewayRuntime
@@ -45,7 +45,7 @@ instance = GatewayInstance.resolve(config_path=profile / 'config.json')
 runtime = GatewayRuntime(paths=instance.paths)
 with installation_access(), runtime.foreground_instance(instance.start_options(port=18790)):
     with record_gateway_profile(instance, runtime, data_dir=profile, workspace=workspace, port=18790):
-        marker.write_text('ready')
+        marker.write_text(str(os.getpid()))
         sys.stdin.read(1)
 """
 
@@ -85,19 +85,22 @@ def gateway(profile, environment, *, workspace=None):
 
 def test_inventory_retains_profiles_after_shutdown_and_crash(private_home, tmp_path):
     environment = tmp_path / "environment"
-    with gateway(tmp_path / "profile one", environment) as first:
+    with gateway(tmp_path / "profile one", environment):
         with gateway(tmp_path / "profile two", environment) as second:
             observed = inspect_profiles(str(environment))
             assert len(observed) == 2
             assert {item.state for item in observed} == {"running"}
-            assert {item.receipt.pid for item in observed} == {first.pid, second.pid}
+            # Windows venv python.exe is a redirector, not the runtime owner.
+            first_pid = int((tmp_path / "profile one/started").read_text())
+            second_pid = int((tmp_path / "profile two/started").read_text())
+            assert {item.receipt.pid for item in observed} == {first_pid, second_pid}
             assert {item.receipt.config for item in observed} == {
                 str(tmp_path / "profile one/config.json"), str(tmp_path / "profile two/config.json"),
             }
             assert all(item.receipt.launch_mode == "foreground" for item in observed)
             encoded = "".join(path.read_text() for path in (installation_state_dir(environment) / "profiles").glob("*.json"))
             assert "must-not-be-in-receipt" not in encoded
-            second.kill()
+            os.kill(second_pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
             second.wait(timeout=5)
             assert sorted(item.state for item in inspect_profiles(str(environment))) == ["running", "stopped"]
     observed = inspect_profiles(str(environment))
