@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { HostNavigationContext } from "@/components/remote/HostSwitcher";
-import { AboutSettings } from "@/components/settings/overview/OverviewSettings";
+import { AboutSettings, AppearanceSettings } from "@/components/settings/overview/OverviewSettings";
+import { VersionCheckRowView } from "@/components/settings/overview/VersionCheckRowView";
 import { NanobotClient } from "@/lib/nanobot-client";
 import { ClientProvider } from "@/providers/ClientProvider";
 import type { SettingsPayload } from "@/lib/types";
+import { DEFAULT_LOCAL_PREFS } from "@/lib/local-preferences";
 import { jsonResponse, settingsPayload, renderSettingsView, installSettingsViewTestHooks } from "@/tests/settings-test-utils";
 
   const thirdPartyBrandNotice =
@@ -34,6 +36,52 @@ describe("Settings overview and appearance", () => {
       expect(screen.queryByRole("button", { name: "Update", exact: true })).not.toBeInTheDocument();
     },
   );
+
+  it("displays a caller-owned version result and delegates checking without a client provider", () => {
+    const check = vi.fn();
+    render(<VersionCheckRowView currentVersion="0.3.5" checking={false}
+      result={{ type: "update", latestVersion: "0.3.6", pypiUrl: "https://pypi.org/project/nanobot-ai/" }} onCheck={check} />);
+    expect(screen.getByText("Update available v0.3.6")).toBeVisible();
+    expect(screen.getByRole("link", { name: "PyPI" })).toHaveAttribute("href", "https://pypi.org/project/nanobot-ai/");
+    fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("delegates update actions and keeps saved-job details available in the shared view", () => {
+    const requestUpdate = vi.fn();
+    const dismiss = vi.fn();
+    const props = { currentVersion: "0.3.5", checking: false, onCheck: vi.fn(),
+      onRequestUpdate: requestUpdate, onDismiss: dismiss };
+    const { rerender } = render(<VersionCheckRowView {...props}
+      result={{ type: "update", latestVersion: "0.3.6" }} />);
+    expect(requestUpdate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: "Installation guide" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Update", exact: true }));
+    expect(requestUpdate).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
+    expect(dismiss).toHaveBeenCalledTimes(1);
+
+    rerender(<VersionCheckRowView {...props} currentVersion="0.3.6"
+      result={{ type: "up-to-date" }} hasPendingUpdate />);
+    expect(screen.queryByRole("button", { name: "Update", exact: true })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View details" }));
+    expect(requestUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["granted", "denied"])("updates task notifications only after browser permission is %s", async (permission) => {
+    const requestPermission = vi.fn().mockResolvedValue(permission);
+    vi.stubGlobal("Notification", { permission: "default", requestPermission });
+    const changePreferences = vi.fn();
+    render(<AppearanceSettings theme="light" onToggleTheme={vi.fn()} localPrefs={DEFAULT_LOCAL_PREFS} onChangeLocalPrefs={changePreferences} />);
+    fireEvent.click(screen.getByRole("switch", { name: "Task notifications" }));
+    expect(changePreferences).not.toHaveBeenCalled();
+    await waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    if (permission === "granted") {
+      expect(changePreferences).toHaveBeenCalledTimes(1);
+      expect(changePreferences.mock.calls[0][0](DEFAULT_LOCAL_PREFS).browserNotifications).toBe(true);
+    } else expect(changePreferences).not.toHaveBeenCalled();
+  });
 
   it("links the host's short commit beside its version", () => {
     const commit = "abcdef12".repeat(5);

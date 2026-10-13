@@ -6,37 +6,26 @@ import {
 } from "@/components/icons/product-icons";
 import { useContext, useState, type Dispatch, type SetStateAction } from "react";
 import {
-  ArrowUpCircle,
-  BookOpen,
-  MessageCircle,
-  Check,
   ChevronRight,
-  ExternalLink,
-  Github,
-  Loader2,
   type LucideIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { HostNavigationContext } from "@/components/remote/HostSwitcher";
 import { StarLink } from "@/components/StarPrompt";
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { AboutSettingsView } from "./AboutSettingsView";
+import { AppearanceSettingsView } from "./AppearanceSettingsView";
+import { VersionCheckRowView, type VersionInfoProps } from "./VersionCheckRowView";
 import { DEFAULT_TRANSCRIPTION_SETTINGS } from "@/components/settings/capabilities/TranscriptionSettings";
 import type { SettingsSectionKey } from "@/components/settings/contracts";
 import { settingsProviderConfigured } from "@/components/settings/shared/ModelControls";
 import {
   SettingsGroup,
-  SettingsRow,
   SettingsSectionTitle,
 } from "@/components/settings/shared/SettingsControls";
 import { TokenUsageCard } from "@/components/settings/TokenUsageCard";
-import { ToggleButton } from "@/components/settings/ToggleButton";
-import { Button } from "@/components/ui/button";
-import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
 import type {
-  FileEditDisplayMode,
-  LocalActivityMode,
   LocalPreferences,
 } from "@/lib/local-preferences";
 import { providerBrand, providerDisplayLabel } from "@/lib/provider-brand";
@@ -138,10 +127,7 @@ export function OverviewSettings({
   );
 }
 
-type VersionInfoProps = { currentVersion?: string; currentCommit?: string | null; onRequestUpdate?: () => void; hasPendingUpdate?: boolean };
-
 export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { settings: SettingsPayload; onRequestUpdate?: () => void }) {
-  const { t } = useTranslation();
   const hostPicker = useContext(HostNavigationContext);
   const flow = useUpdateFlow();
   const onRequestUpdate = requestUpdate ?? flow.open;
@@ -167,38 +153,13 @@ export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { se
   reportIssueUrl.searchParams.set("browser", navigator.userAgent);
   reportIssueUrl.searchParams.set("connection", hostPicker?.kind === "embedded"
     ? "Remote host" : hostPicker ? "Local host" : "Direct WebUI");
-  const links = [
-    { key: "sourceCode", icon: Github, href: "https://github.com/HKUDS/nanobot" },
-    { key: "documentation", icon: BookOpen, href: "https://nanobot.wiki/" },
-    { key: "reportIssue", icon: MessageCircle, href: reportIssueUrl.href },
-  ];
-  return (
-    <div className="flex flex-1 flex-col gap-5">
-      <div className="flex flex-col items-center gap-4 py-6 text-center">
-        <img src="/brand/nanobot_mark.svg" alt="" className="h-16 w-16 select-none" draggable={false} />
-        <h1><img src="/brand/nanobot_wordmark.svg" alt="nanobot" className="h-auto w-40 select-none dark:brightness-150" draggable={false} /></h1>
-        <VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit} onRequestUpdate={onRequestUpdate} hasPendingUpdate={flow.pending} />
-      </div>
-      <SettingsGroup>
-        {links.map(({ key, icon: Icon, href }) => (
-          <a key={key} href={href} target="_blank" rel="noopener noreferrer"
-            className="settings-list-row flex select-none items-center gap-3 text-[14px] settings-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <Icon className="h-4 w-4 text-muted-foreground" aria-hidden />
-            <span className="flex-1">{t(`settings.about.${key}`)}</span>
-            <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-          </a>
-        ))}
-      </SettingsGroup>
-      <div className="mt-auto pt-8 text-center">
-        <StarLink />
-      </div>
-    </div>
-  );
+  return <AboutSettingsView reportIssueUrl={reportIssueUrl.href}
+    versionCheck={<VersionCheckRow currentVersion={currentVersion} currentCommit={currentCommit}
+      onRequestUpdate={onRequestUpdate} hasPendingUpdate={flow.pending} />}
+    starLink={<StarLink />} />;
 }
 
 function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPendingUpdate }: VersionInfoProps) {
-  const { t } = useTranslation();
-  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const { checking, result, check, dismiss, dismissedVersion } = useVersionCheck();
   const [manualFeedback, setManualFeedback] = useState(false);
   const pending = checking || manualFeedback;
@@ -211,237 +172,37 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPe
     setManualFeedback(false);
   };
 
-  return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="min-w-0">
-        <div className="sr-only">
-          {tx("settings.about.version", "Version")}
-        </div>
-        <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">
-          {currentVersion ? `v${currentVersion}` : "nanobot"}
-          {currentCommit && (
-            <>
-              <span aria-hidden> (</span>
-              <a href={`https://github.com/HKUDS/nanobot/commit/${currentCommit}`}
-                target="_blank" rel="noopener noreferrer" title={currentCommit}
-                className="font-mono hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                {currentCommit.slice(0, 7)}
-              </a>
-              <span aria-hidden>)</span>
-            </>
-          )}
-        </div>
-      </div>
-      <div className="flex shrink-0 flex-col items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => void checkManually()}
-          disabled={pending}
-          aria-busy={pending}
-          className="rounded-full disabled:opacity-100"
-        >
-          {pending ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
-          ) : (
-            <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-          )}
-          {pending
-            ? tx("settings.about.checking", "Checking...")
-            : tx("settings.about.checkForUpdates", "Check for updates")}
-        </Button>
-        <div role="status" aria-live="polite" aria-atomic="true" className="min-h-4 text-[12px]">
-          {pending ? <span className="sr-only">{tx("settings.about.checking", "Checking...")}</span> : result?.type === "up-to-date" ? (
-            <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-300">
-              <Check className="h-3 w-3" aria-hidden />
-              {tx("settings.about.upToDate", "You're up to date")}
-            </span>
-          ) : result?.type === "error" ? <span className="text-destructive">{result.message}</span> : null}
-        </div>
-        {hasPendingUpdate && onRequestUpdate ? (
-          <Button size="sm" variant="outline" onClick={onRequestUpdate}>
-            {t("settings.about.viewUpdateDetails")}
-          </Button>
-        ) : result?.type === "update" ? (
-          <div className="mt-2 max-w-sm rounded-panel bg-settings-surface p-4 text-start">
-          <div className="flex items-center gap-1.5 text-[13px] font-medium text-blue-600 dark:text-blue-300" role="status">
-            <ArrowUpCircle className="h-3 w-3" aria-hidden />
-            {t("settings.about.updateAvailable", {
-              defaultValue: "Update available v{{version}}",
-              version: result.latestVersion,
-            })}
-            {result.pypiUrl ? (
-              <a
-                href={result.pypiUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline"
-              >
-                PyPI
-                <ExternalLink className="h-2.5 w-2.5" aria-hidden />
-              </a>
-            ) : null}
-          </div>
-          {!onRequestUpdate && <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{t("settings.about.updateInstructions")}</p>}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {onRequestUpdate ? <Button size="sm" onClick={onRequestUpdate}
-              className="bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">{t("settings.about.updateNow")}</Button> :
-              <Button size="sm" variant="outline" asChild><a href="https://github.com/HKUDS/nanobot#-install"
-                target="_blank" rel="noopener noreferrer">{t("settings.about.installationGuide")}<ExternalLink className="ms-1.5 h-3 w-3" aria-hidden /></a></Button>}
-            {dismissedVersion !== result.latestVersion && <Button size="sm" variant="ghost" onClick={dismiss}>{t("settings.about.dismissUpdate")}</Button>}
-          </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+  return <VersionCheckRowView currentVersion={currentVersion} currentCommit={currentCommit}
+    checking={pending} result={result} onCheck={() => void checkManually()}
+    onRequestUpdate={onRequestUpdate} hasPendingUpdate={hasPendingUpdate}
+    onDismiss={dismiss} dismissedVersion={dismissedVersion} />;
 }
 
-export function AppearanceSettings({
-  theme,
-  onToggleTheme,
-  localPrefs,
-  onChangeLocalPrefs,
-}: {
+export function AppearanceSettings({ theme, onToggleTheme, localPrefs, onChangeLocalPrefs }: {
   theme: "light" | "dark";
   onToggleTheme: () => void;
   localPrefs: LocalPreferences;
   onChangeLocalPrefs: Dispatch<SetStateAction<LocalPreferences>>;
 }) {
-  const { t } = useTranslation();
-  const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  return (
-    <div className="settings-stack">
-      <section>
-        <SettingsSectionTitle>{t("settings.sections.interface")}</SettingsSectionTitle>
-        <SettingsGroup>
-          <SettingsRow title={t("settings.rows.theme")}>
-            <SegmentedControl
-              value={theme}
-              ariaLabel={t("settings.rows.theme")}
-              className="bg-muted p-0.5"
-              itemClassName="px-3"
-              options={[
-                { value: "light", label: t("settings.values.light") },
-                { value: "dark", label: t("settings.values.dark") },
-              ]}
-              onChange={(nextTheme) => {
-                if (nextTheme !== theme) onToggleTheme();
-              }}
-            />
-          </SettingsRow>
-
-          <SettingsRow title={t("settings.rows.language")}>
-            <LanguageSwitcher />
-          </SettingsRow>
-        </SettingsGroup>
-      </section>
-
-      <section>
-        <SettingsSectionTitle>{tx("settings.sections.localPreferences", "Local preferences")}</SettingsSectionTitle>
-        <SettingsGroup>
-          <SettingsRow title={tx("settings.rows.activityMode", "Activity detail")}>
-            <SegmentedControl
-              value={localPrefs.activityMode}
-              options={[
-                { value: "auto", label: tx("settings.values.auto", "Auto") },
-                { value: "expanded", label: tx("settings.values.expanded", "Expanded") },
-              ]}
-              onChange={(activityMode) =>
-                onChangeLocalPrefs((prev) => ({ ...prev, activityMode: activityMode as LocalActivityMode }))
-              }
-            />
-          </SettingsRow>
-          <SettingsRow title={tx("settings.rows.fileEditDisplay", "File edit display")}>
-            <SegmentedControl
-              value={localPrefs.fileEditDisplayMode}
-              options={[
-                { value: "summary", label: tx("settings.values.summary", "Summary") },
-                { value: "diff", label: tx("settings.values.diff", "Diff") },
-                { value: "collapsed_diff", label: tx("settings.values.collapsedDiff", "Collapsed diff") },
-              ]}
-              onChange={(fileEditDisplayMode) =>
-                onChangeLocalPrefs((prev) => ({
-                  ...prev,
-                  fileEditDisplayMode: fileEditDisplayMode as FileEditDisplayMode,
-                }))
-              }
-            />
-          </SettingsRow>
-          <SettingsRow title={tx("settings.rows.codeWrap", "Code wrapping")}>
-            <ToggleButton
-              checked={localPrefs.codeWrap}
-              onChange={(codeWrap) => onChangeLocalPrefs((prev) => ({ ...prev, codeWrap }))}
-              ariaLabel={tx("settings.rows.codeWrap", "Code wrapping")}
-              label={localPrefs.codeWrap ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-          <SettingsRow
-            title={tx("settings.rows.brandLogos", "Brand logos")}
-            description={tx(
-              "settings.legal.thirdPartyBrands",
-              "Product names, logos, and brands are property of their respective owners. Use is for identification only and does not imply endorsement.",
-            )}
-          >
-            <ToggleButton
-              checked={localPrefs.brandLogos}
-              onChange={(brandLogos) => onChangeLocalPrefs((prev) => ({ ...prev, brandLogos }))}
-              ariaLabel={tx("settings.rows.brandLogos", "Brand logos")}
-              label={localPrefs.brandLogos ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-          <SettingsRow
-            title={tx("settings.rows.browserNotifications", "Task notifications")}
-            description={tx(
-              "settings.help.browserNotifications",
-              "Notify only when this page is in the background. Off by default.",
-            )}
-          >
-            <ToggleButton
-              checked={localPrefs.browserNotifications}
-              onChange={(enabled) => {
-                if (!enabled) {
-                  onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: false }));
-                  return;
-                }
-                if (typeof Notification === "undefined") return;
-                if (Notification.permission === "granted") {
-                  onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: true }));
-                  return;
-                }
-                void Notification.requestPermission().then((permission) => {
-                  if (permission === "granted") {
-                    onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: true }));
-                  }
-                });
-              }}
-              ariaLabel={tx("settings.rows.browserNotifications", "Task notifications")}
-              label={localPrefs.browserNotifications
-                ? tx("settings.values.on", "On")
-                : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-          <SettingsRow
-            title={tx("settings.rows.notificationSound", "Completion sound")}
-            description={tx(
-              "settings.help.notificationSound",
-              "Play a short chime when a turn finishes, even when this page is in the background. Off by default.",
-            )}
-          >
-            <ToggleButton
-              checked={localPrefs.notificationSound}
-              onChange={(notificationSound) =>
-                onChangeLocalPrefs((prev) => ({ ...prev, notificationSound }))}
-              ariaLabel={tx("settings.rows.notificationSound", "Completion sound")}
-              label={localPrefs.notificationSound
-                ? tx("settings.values.on", "On")
-                : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-        </SettingsGroup>
-      </section>
-    </div>
-  );
+  const changeBrowserNotifications = (enabled: boolean) => {
+    if (!enabled) {
+      onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: false }));
+      return;
+    }
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "granted") {
+      onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: true }));
+      return;
+    }
+    void Notification.requestPermission().then((permission) => {
+      if (permission === "granted") {
+        onChangeLocalPrefs((prev) => ({ ...prev, browserNotifications: true }));
+      }
+    });
+  };
+  return <AppearanceSettingsView theme={theme} onToggleTheme={onToggleTheme}
+    localPrefs={localPrefs} onChangeLocalPrefs={onChangeLocalPrefs}
+    onChangeBrowserNotifications={changeBrowserNotifications} />;
 }
 
 function OverviewRowIcon({
