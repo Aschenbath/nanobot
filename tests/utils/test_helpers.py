@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.utils import helpers, token_encoding
+from nanobot.utils import atomic_file, file_io, token_encoding
 from nanobot.utils.helpers import (
     _write_text_atomic,
     atomic_write_lines,
@@ -159,9 +159,9 @@ def test_write_text_atomic_fsyncs_file_and_parent_directory(
     def fake_fsync(fd: int) -> None:
         fsync_calls.append(fd)
 
-    monkeypatch.setattr(helpers.os, "fsync", fake_fsync)
-    monkeypatch.setattr(helpers.os, "open", lambda path, flags: 12345)
-    monkeypatch.setattr(helpers.os, "close", lambda fd: closed_fds.append(fd))
+    monkeypatch.setattr(file_io.os, "fsync", fake_fsync)
+    monkeypatch.setattr(file_io.os, "open", lambda path, flags: 12345)
+    monkeypatch.setattr(file_io.os, "close", lambda fd: closed_fds.append(fd))
 
     _write_text_atomic(target, '{"approved": {}}')
 
@@ -181,8 +181,8 @@ def test_write_text_atomic_keeps_file_when_directory_fsync_is_unsupported(
     def fake_open(path, flags):
         raise OSError("directory fsync unsupported")
 
-    monkeypatch.setattr(helpers.os, "fsync", lambda fd: fsync_calls.append(fd))
-    monkeypatch.setattr(helpers.os, "open", fake_open)
+    monkeypatch.setattr(file_io.os, "fsync", lambda fd: fsync_calls.append(fd))
+    monkeypatch.setattr(file_io.os, "open", fake_open)
 
     _write_text_atomic(target, '{"pending": {}}')
 
@@ -263,7 +263,7 @@ def test_atomic_write_lines_skips_fsync_when_disabled(
 ) -> None:
     target = tmp_path / "session.jsonl"
     fsync_calls: list[int] = []
-    monkeypatch.setattr(helpers.os, "fsync", lambda fd: fsync_calls.append(fd))
+    monkeypatch.setattr(atomic_file.os, "fsync", lambda fd: fsync_calls.append(fd))
 
     atomic_write_lines(target, ["line"], fsync=False)
 
@@ -277,7 +277,7 @@ def test_atomic_write_lines_suppresses_directory_permission_error(
     """Windows directory open raises PermissionError; the replace must still stick."""
     target = tmp_path / "history.jsonl"
     opened: list[tuple[object, int]] = []
-    real_open = helpers.os.open
+    real_open = atomic_file.os.open
 
     def open_directory(path: object, flags: int, *args: object, **kwargs: object) -> int:
         opened.append((path, flags))
@@ -285,7 +285,7 @@ def test_atomic_write_lines_suppresses_directory_permission_error(
             raise PermissionError("directory open denied")
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(helpers.os, "open", open_directory)
+    monkeypatch.setattr(atomic_file.os, "open", open_directory)
 
     atomic_write_lines(target, ["ok"])
 
@@ -305,9 +305,9 @@ def test_atomic_write_lines_directory_fsync_errors(
     target = tmp_path / "session.jsonl"
     directory_fd = 12345
     fsync_calls = 0
-    real_fsync = helpers.os.fsync
-    real_open = helpers.os.open
-    real_close = helpers.os.close
+    real_fsync = atomic_file.os.fsync
+    real_open = atomic_file.os.open
+    real_close = atomic_file.os.close
     opened: list[tuple[object, int]] = []
     closed: list[int] = []
 
@@ -330,9 +330,9 @@ def test_atomic_write_lines_directory_fsync_errors(
             return
         raise OSError(error_number, "directory fsync failed")
 
-    monkeypatch.setattr(helpers.os, "open", tracking_open)
-    monkeypatch.setattr(helpers.os, "close", tracking_close)
-    monkeypatch.setattr(helpers.os, "fsync", fsync_then_error)
+    monkeypatch.setattr(atomic_file.os, "open", tracking_open)
+    monkeypatch.setattr(atomic_file.os, "close", tracking_close)
+    monkeypatch.setattr(atomic_file.os, "fsync", fsync_then_error)
 
     if error_number == errno.EINVAL:
         atomic_write_lines(target, ["ok"])
