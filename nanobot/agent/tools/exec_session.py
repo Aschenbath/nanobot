@@ -26,6 +26,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.agent.tools.shell_config import ExecToolConfig
 
 DEFAULT_YIELD_MS = 1000
 MAX_YIELD_MS = 30_000
@@ -601,8 +602,6 @@ class ExecSessionTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from nanobot.agent.tools.shell import ExecToolConfig
-
         return ExecToolConfig
 
     @classmethod
@@ -762,8 +761,6 @@ class ListExecSessionsTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from nanobot.agent.tools.shell import ExecToolConfig
-
         return ExecToolConfig
 
     @classmethod

@@ -442,7 +442,6 @@ def _run_claimed_gateway(
     )
     from nanobot.providers.fallback_provider import FallbackProvider
     from nanobot.session.manager import SessionManager
-    from nanobot.session.recovery import RecoveryCoordinator
     from nanobot.session.webui_turns import (
         WebuiTurnCoordinator,
         WebuiTurnRoutePolicy,
@@ -450,6 +449,7 @@ def _run_claimed_gateway(
     )
     from nanobot.triggers.local_runner import run_local_trigger_queue
     from nanobot.triggers.local_store import LocalTriggerStore
+    from nanobot.webui.recovery import RecoveryCoordinator
 
     webui_url = _webui_browser_url(config)
     gateway_host_for_browser = _host_for_local_browser(config.gateway.host)
