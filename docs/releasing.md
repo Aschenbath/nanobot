@@ -172,11 +172,13 @@ of extras, and suffixed/custom installations require their own manager instructi
 
 ## Stable and Preview subscriptions
 
-Settings → About has an **Update channel** selector. Stable is the default, including
-on an existing development build: a version string is not opt-in consent. Preview
-may contain regressions. Changing the selector saves a subscription and checks its
-feed; it does not download, install, stop tasks or restart a gateway. Updating still
-requires a separate exact-version review and confirmation.
+Settings → About keeps one update flow. **Update settings → Receive preview
+updates** is a secondary switch, off by default even on an existing development
+build: a version string is not opt-in consent. Preview may contain regressions.
+Changing the switch saves a subscription and checks its feed; it does not download,
+install, stop tasks or restart a gateway. Updating still requires a separate
+exact-version review and confirmation, with a warning for a Preview target.
+Turning the switch off waits for a newer final release; it never downgrades.
 
 The gateway stores the preference and a revision under the current OS account's
 installation state directory (`~/.nanobot/updates/<environment-id>/channel.json`).
@@ -201,7 +203,10 @@ the gateway's interpreter/platform, not the browser's device. The latest final r
 must also be indexed so Preview subscribers receive it. Advance the catalogue only
 after all referenced public assets are verified. Versions/tags/manifest hashes must
 be immutable; increment generation on changes, never rewind pointers or remove a
-withdrawal to reuse a bad version. Validate proposed metadata with
+withdrawal to reuse a bad version. Once published, a pointer cannot be cleared:
+retain it and withdraw its version to stop offering it. This preserves the observed
+version history even when a channel temporarily has no eligible release. Validate
+proposed metadata with
 `ReleaseCatalogue.validate_successor(previous)` before publication. Clients reject
 rewrites relative to their last accepted catalogue; this is not cryptographic signing.
 

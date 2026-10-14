@@ -57,24 +57,29 @@ def feed(tmp_path, handler, *, platform=PLATFORM, python="3.11.4"):
                        python_version=python, supported_tags=[Tag("py3", "none", platform)])
 
 
-@pytest.mark.parametrize("change", ["older", "changed_bytes", "reinstate"])
-async def test_new_catalogue_generation_cannot_rewrite_observed_release_history(tmp_path, change):
-    pointer, _, _ = preview()
-    old = ReleaseCatalogue(generation=1, preview=pointer, withdrawn={"0.3.6.dev40": "Broken startup"})
+@pytest.mark.parametrize("channel", ["stable", "preview"])
+@pytest.mark.parametrize("change", ["older", "changed_bytes", "reinstate", "removed_pointer"])
+async def test_new_catalogue_generation_cannot_rewrite_observed_release_history(tmp_path, change, channel):
+    pointer, _, _ = preview("0.3.6" if channel == "stable" else "0.3.6.dev42")
+    old = ReleaseCatalogue(generation=1, **{channel: pointer}, withdrawn={"0.3.6.dev40": "Broken startup"})
     selected = old
     async with feed(tmp_path, lambda _: httpx.Response(200, json=selected.model_dump(mode="json"))) as client:
         assert await client.catalogue() == old
         if change == "older":
-            selected = old.model_copy(update={"generation": 2, "preview": preview("0.3.6.dev41")[0]})
+            older = preview("0.3.5" if channel == "stable" else "0.3.6.dev41")[0]
+            selected = old.model_copy(update={"generation": 2, channel: older})
         elif change == "changed_bytes":
-            selected = old.model_copy(update={"generation": 2, "preview": pointer.model_copy(update={"manifest_sha256": "f" * 64})})
+            selected = old.model_copy(update={"generation": 2, channel: pointer.model_copy(update={"manifest_sha256": "f" * 64})})
+        elif change == "removed_pointer":
+            selected = old.model_copy(update={"generation": 2, channel: None})
         else:
             selected = old.model_copy(update={"generation": 2, "withdrawn": {}})
         with pytest.raises(ReleaseFeedError):
             await client.catalogue()
         # A rejected response must not poison a later valid publication.
-        selected = old.model_copy(update={"generation": 2, "preview": preview("0.3.7.dev1")[0]})
-        assert (await client.catalogue()).preview.version == "0.3.7.dev1"
+        newer = preview("0.3.7" if channel == "stable" else "0.3.7.dev1")[0]
+        selected = old.model_copy(update={"generation": 2, channel: newer})
+        assert getattr(await client.catalogue(), channel) == newer
 
 
 @pytest.mark.asyncio

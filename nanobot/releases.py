@@ -152,8 +152,10 @@ class ReleaseCatalogue(ReleaseRecord):
         if not previous.withdrawn.keys() <= self.withdrawn.keys():
             raise ValueError("Release catalogue cannot reinstate withdrawn versions")
         for old, new in ((previous.stable, self.stable), (previous.preview, self.preview)):
-            if old is None or new is None:
+            if old is None:
                 continue
+            if new is None:
+                raise ValueError("Release channel cannot erase a published pointer; withdraw the version instead")
             if Version(new.version) < Version(old.version):
                 raise ValueError("Release channel cannot move to an older version")
             if new.version == old.version and new != old:
