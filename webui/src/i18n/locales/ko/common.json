@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "업데이트 다시 검토",
+    "reviewAgainDescription": "패키지 파일은 변경되지 않았습니다. 설치 및 재시작을 승인하기 전에 업데이트를 다시 검토하세요.",
+    "settleFailed": "이전 업데이트를 안전하게 종료하지 못했습니다. 상태를 다시 확인하거나 복구 안내를 따르세요.",
     "ownerGuide": "설치 방식별 업데이트 안내",
     "recoveryTitle": "게이트웨이 컴퓨터에서 복구",
     "recoveryDescription": "nanobot이 실행 중인 컴퓨터의 터미널에서 실행하세요. 저장된 업데이트를 표시한 후 복구 여부를 확인합니다. 원본 백업을 보관하세요.",

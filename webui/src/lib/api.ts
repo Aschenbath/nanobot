@@ -825,6 +825,9 @@ export function readUpdateJob(token: string, id: string): Promise<{ job: UpdateJ
 export function prepareUpdate(transport: WebUIMutationTransport, id: string): Promise<{ job: UpdateJob }> {
   return mutation(transport, "settings.nanobot.update.prepare", { id });
 }
+export function settleUpdate(transport: WebUIMutationTransport, id: string): Promise<{ job: UpdateJob }> {
+  return mutation(transport, "settings.nanobot.update.settle", { id });
+}
 export function executeUpdate(transport: WebUIMutationTransport, id: string, previousConfirmation?: string): Promise<{ job: UpdateJob }> {
   return mutation(transport, previousConfirmation ? "settings.nanobot.update.retry" : "settings.nanobot.update.execute",
     { id, confirm_restart: true, ...(previousConfirmation ? { previous_confirmation_id: previousConfirmation } : {}) });

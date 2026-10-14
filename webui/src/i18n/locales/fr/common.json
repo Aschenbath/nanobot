@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "Examiner la mise à jour",
+    "reviewAgainDescription": "Aucun fichier du paquet n’a été modifié. Examinez à nouveau la mise à jour avant de confirmer l’installation et le redémarrage.",
+    "settleFailed": "La mise à jour précédente n’a pas pu être clôturée en toute sécurité. Vérifiez à nouveau son état ou suivez les instructions de récupération.",
     "ownerGuide": "Instructions de mise à jour de votre installation",
     "recoveryTitle": "Récupérer sur l’ordinateur de la passerelle",
     "recoveryDescription": "Exécutez cette commande dans un terminal sur l’ordinateur qui héberge nanobot. Elle affiche la mise à jour enregistrée avant de demander confirmation. Conservez la sauvegarde d’origine.",

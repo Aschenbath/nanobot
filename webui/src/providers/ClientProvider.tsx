@@ -53,7 +53,8 @@ export function ClientProvider({
   return (
     <ClientContext.Provider value={value}>
       <VersionCheckProvider token={token} autoCheck={checkUpdatesOnConnect}>
-        <UpdateFlowProvider client={client} token={token} enabled={allowUpdateFlow && webuiCapabilities.includes("webui.update-flow.v1")}>
+        <UpdateFlowProvider client={client} token={token} enabled={allowUpdateFlow && webuiCapabilities.includes("webui.update-flow.v1")}
+          canSettleHandoff={webuiCapabilities.includes("webui.update-jobs.settle-handoff.v1")}>
           {children}
         </UpdateFlowProvider>
       </VersionCheckProvider>

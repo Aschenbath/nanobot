@@ -27,7 +27,11 @@ from nanobot.update_backup import BackupSource
 from nanobot.update_jobs import _worker_archive
 from nanobot.update_plan import InstallationSnapshot, UpdatePlan
 from nanobot.update_profiles import ObservedProfile, ProfileLaunch, ProfileReceipt, inspect_profiles
-from nanobot.update_stop import stop_reviewed_gateways, watch_gateway_stop
+from nanobot.update_stop import (
+    settle_uncommitted_handoff,
+    stop_reviewed_gateways,
+    watch_gateway_stop,
+)
 from nanobot.update_worker import (
     EnvironmentSnapshot,
     JobStatus,
@@ -127,6 +131,46 @@ async def wait_until(predicate, *, timeout=5):
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("phase", [Phase.READY, Phase.HANDOFF_FAILED])
+def test_expired_uncommitted_handoff_can_be_settled_while_gateway_remains_running(protocol, monkeypatch, phase):
+    directory, plan, _, stops = protocol
+    monkeypatch.setattr(time, "time", lambda: plan.expires_at + 1)
+    JobStatus(plan.id, phase, 0, False, "No installation", plan.created_at).save(directory)
+    original = {path.name: path.read_bytes() for path in directory.iterdir() if path.is_file() and path.name != "status.json"}
+    with installation_access():
+        result = settle_uncommitted_handoff(directory)
+        assert result.phase == Phase.CANCELLED and not result.mutation_started
+        assert settle_uncommitted_handoff(directory) == result
+    assert not any(event.is_set() for event in stops)
+    assert original == {path.name: path.read_bytes() for path in directory.iterdir() if path.is_file() and path.name != "status.json"}
+
+
+@pytest.mark.parametrize("lock", ["worker.lock", "handoff-child.lock", "stop.lock"])
+def test_settlement_refuses_live_handoff_owners_without_changing_saved_state(protocol, lock):
+    directory, plan, _, _ = protocol
+    before = (directory / "status.json").read_bytes()
+    with file_access(installation_state_dir(plan.installation.environment) / lock, exclusive=True):
+        with pytest.raises(BlockingIOError):
+            settle_uncommitted_handoff(directory)
+    assert (directory / "status.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("boundary", ["commit", "stopped", "approval", "mutation"])
+def test_settlement_never_undoes_shutdown_or_installation_authority(protocol, boundary):
+    directory, plan, _, _ = protocol
+    JobStatus(plan.id, Phase.HANDOFF_FAILED, 0, boundary == "mutation", "Saved failure", plan.created_at).save(directory)
+    if boundary in {"commit", "stopped"}:
+        write_record(installation_state_dir() / "stop.json", {
+            "plan_id": plan.id, "attempt": uuid4().hex, "phase": boundary, "deadline": time.monotonic() + 10,
+        })
+    elif boundary == "approval":
+        write_record(directory / "approval.json", {"plan_id": plan.id})
+    before = (directory / "status.json").read_bytes()
+    with pytest.raises(ValueError):
+        settle_uncommitted_handoff(directory)
+    assert (directory / "status.json").read_bytes() == before
 
 
 async def test_all_selected_runs_hold_admission_through_committed_shutdown(protocol):

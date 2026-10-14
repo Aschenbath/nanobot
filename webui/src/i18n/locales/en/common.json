@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "Review update",
+    "reviewAgainDescription": "No package files were changed. Review the update again before confirming installation and restart.",
+    "settleFailed": "The previous update could not be cleared safely. Check its status again or follow the recovery instructions.",
     "ownerGuide": "Update instructions for your installation",
     "recoveryTitle": "Recover on the gateway computer",
     "recoveryDescription": "Run this command in a terminal on the computer running nanobot. It reviews the saved job before asking to repair. Keep the original backup.",

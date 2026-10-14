@@ -140,7 +140,7 @@ class UpdateJobService:
                               int(time.time())).save(directory)
 
     def settle(self, plan_id: str) -> UpdateJobView:
-        """Explicitly settle abandoned staging; no retry, deletion or installation."""
+        """Settle inactive work before a new review; never retry or install."""
         job = read_update_job(plan_id)
         root = installation_state_dir()
         directory = root / "jobs" / plan_id
@@ -155,8 +155,12 @@ class UpdateJobService:
                               "Interrupted request settled; no installation was started", int(time.time())).save(directory)
             elif job.recorded_phase == Phase.PREPARING:
                 settle_interrupted_preparation(directory)
+            elif job.recorded_phase in {Phase.READY, Phase.HANDOFF_FAILED, Phase.CANCELLED}:
+                from nanobot.update_stop import settle_uncommitted_handoff
+
+                settle_uncommitted_handoff(directory)
             else:
-                raise ValueError("Only an interrupted preparation can be settled")
+                raise ValueError("Only an interrupted preparation or uncommitted handoff can be settled")
         return read_update_job(plan_id)
 
     async def execute(self, plan_id: str) -> UpdateJobView:

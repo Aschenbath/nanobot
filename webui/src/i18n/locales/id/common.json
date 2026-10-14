@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "Tinjau pembaruan",
+    "reviewAgainDescription": "Tidak ada berkas paket yang diubah. Tinjau kembali pembaruan sebelum menyetujui instalasi dan mulai ulang.",
+    "settleFailed": "Pembaruan sebelumnya belum dapat diakhiri dengan aman. Periksa statusnya lagi atau ikuti petunjuk pemulihan.",
     "ownerGuide": "Petunjuk pembaruan untuk instalasi Anda",
     "recoveryTitle": "Pulihkan di komputer gateway",
     "recoveryDescription": "Jalankan perintah ini di terminal komputer yang menjalankan nanobot. Pembaruan tersimpan akan ditampilkan sebelum meminta konfirmasi perbaikan. Simpan cadangan asli.",

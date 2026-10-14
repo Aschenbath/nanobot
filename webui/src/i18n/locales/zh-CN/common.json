@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "重新确认更新",
+    "reviewAgainDescription": "尚未修改安装文件。请重新查看更新内容，再确认安装并重启。",
+    "settleFailed": "暂时无法安全结束上次更新。请重新检查状态，或按更新恢复说明处理。",
     "ownerGuide": "查看此安装方式的更新说明",
     "recoveryTitle": "在网关电脑上恢复",
     "recoveryDescription": "在运行 nanobot 的电脑上打开终端并运行此命令。它会先显示原更新记录，再询问是否恢复。请保留原备份。",

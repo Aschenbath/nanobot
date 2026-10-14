@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "Revisar atualização",
+    "reviewAgainDescription": "Nenhum arquivo do pacote foi alterado. Revise a atualização antes de confirmar a instalação e a reinicialização.",
+    "settleFailed": "Não foi possível encerrar a atualização anterior com segurança. Verifique o status novamente ou siga as instruções de recuperação.",
     "ownerGuide": "Instruções de atualização para sua instalação",
     "recoveryTitle": "Recuperar no computador do gateway",
     "recoveryDescription": "Execute este comando no terminal do computador que executa o nanobot. Ele mostra a atualização salva antes de pedir confirmação para repará-la. Preserve o backup original.",

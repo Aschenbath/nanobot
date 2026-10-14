@@ -11,7 +11,7 @@ import { settingsPayload } from "@/tests/settings-test-utils";
 
 vi.mock("@/lib/api", async (original) => ({
   ...await original<typeof api>(), createUpdateReview: vi.fn(), readUpdateReview: vi.fn(),
-  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(), checkVersion: vi.fn(),
+  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(), settleUpdate: vi.fn(), checkVersion: vi.fn(),
 }));
 const id = "71c91a73-842e-42e9-aeb4-61a5bfe51135";
 let connectionStatus: ConnectionStatus = "open";
@@ -29,8 +29,8 @@ function Entry() {
   const flow = useUpdateFlow();
   return <button disabled={!flow.open} onClick={flow.open}>Update entry</button>;
 }
-function view(token = "gateway-a", enabled = true) {
-  return <UpdateFlowProvider client={client} token={token} enabled={enabled}><Entry /></UpdateFlowProvider>;
+function view(token = "gateway-a", enabled = true, canSettleHandoff = true) {
+  return <UpdateFlowProvider client={client} token={token} enabled={enabled} canSettleHandoff={canSettleHandoff}><Entry /></UpdateFlowProvider>;
 }
 beforeEach(() => {
   connectionStatus = "open";
@@ -45,6 +45,70 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
 describe("Real update consent and recovery", () => {
+  it("retires a restored failed handoff and reviews a fresh plan before new consent", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("handoff_failed", "previous") });
+    vi.mocked(api.settleUpdate).mockResolvedValue({ job: job("cancelled", "previous") });
+    const nextId = "81c91a73-842e-42e9-aeb4-61a5bfe51135";
+    vi.mocked(api.createUpdateReview).mockResolvedValue({ ...review, plan: { ...review.plan, id: nextId } });
+    render(view());
+    fireEvent.click(await screen.findByRole("button", { name: "Review update" }));
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(api.settleUpdate).toHaveBeenCalledWith(client, id);
+    expect(api.createUpdateReview).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("nanobot.pending-update.v1")).toBeNull();
+    vi.mocked(api.prepareUpdate).mockResolvedValue({ job: { ...job("preparing"), id: nextId } });
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: { ...job("ready"), id: nextId } });
+    fireEvent.click(screen.getByRole("button", { name: "Update & restart" }));
+    await waitFor(() => expect(api.executeUpdate).toHaveBeenCalledWith(client, nextId));
+    expect(api.executeUpdate).toHaveBeenCalledOnce();
+  });
+  it("keeps a refused settlement recoverable and Check again strictly read-only", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("handoff_failed", "previous") });
+    vi.mocked(api.settleUpdate).mockRejectedValue(new api.ApiError(409, "Worker still active"));
+    render(view());
+    fireEvent.click(await screen.findByRole("button", { name: "Review update" }));
+    await screen.findByText(/previous update could not be cleared safely/);
+    expect(sessionStorage.getItem("nanobot.pending-update.v1")).toBe(id);
+    expect(api.createUpdateReview).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await screen.findByRole("button", { name: "Review update" });
+    expect(api.readUpdateJob).toHaveBeenCalledTimes(2);
+    expect(api.settleUpdate).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("can leave an expired READY review without bypassing gateway settlement", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateReview).mockResolvedValue({ ...review, execution_available: false,
+      plan: { ...review.plan, validity: "expired", execution_blocked_reason: "review_changed" } });
+    vi.mocked(api.settleUpdate).mockResolvedValue({ job: job("cancelled") });
+    render(view());
+    fireEvent.click(await screen.findByRole("button", { name: "Review update" }));
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(api.settleUpdate).toHaveBeenCalledWith(client, id);
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("recovers a lost settlement response after reload without restoring consent", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("cancelled", "previous") });
+    vi.mocked(api.settleUpdate).mockResolvedValue({ job: job("cancelled", "previous") });
+    render(view());
+    fireEvent.click(await screen.findByRole("button", { name: "Review update" }));
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("does not retry execution or send unsupported settlement to older hosts", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("handoff_failed", "previous") });
+    render(view("gateway-a", true, false));
+    fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(api.readUpdateJob).toHaveBeenCalledTimes(2));
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+    expect(api.settleUpdate).not.toHaveBeenCalled();
+  });
   it("reviews on open and stages/executes the same exact plan only after confirmation", async () => {
     render(view());
     fireEvent.click(screen.getByText("Update entry"));
@@ -52,7 +116,7 @@ describe("Real update consent and recovery", () => {
     expect(api.prepareUpdate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Update & restart" }));
     await waitFor(() => expect(api.executeUpdate).toHaveBeenCalledOnce());
-    expect(api.executeUpdate).toHaveBeenCalledWith(client, id, undefined);
+    expect(api.executeUpdate).toHaveBeenCalledWith(client, id);
     expect(api.prepareUpdate).toHaveBeenCalledOnce();
     expect(api.prepareUpdate).toHaveBeenCalledWith(client, id);
   });
@@ -165,7 +229,7 @@ describe("Real update consent and recovery", () => {
     await waitFor(() => expect(api.executeUpdate).toHaveBeenCalledOnce());
     expect(api.createUpdateReview).toHaveBeenCalledOnce();
     expect(api.prepareUpdate).toHaveBeenCalledOnce();
-    expect(api.executeUpdate).toHaveBeenCalledWith(client, id, undefined);
+    expect(api.executeUpdate).toHaveBeenCalledWith(client, id);
   });
   it("acknowledges a read-only retry even when the same failure returns immediately", async () => {
     vi.useFakeTimers();

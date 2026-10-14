@@ -285,6 +285,34 @@ async def test_busy_retry_does_not_look_like_an_accepted_new_confirmation(prepar
     assert ExecutionConfirmation.read(directory) == previous
 
 
+async def test_handoff_settlement_route_preserves_permission_and_reads_cancelled_job(preparation_gateway, monkeypatch):
+    from nanobot import update_stop
+
+    gateway, plan, directory = await execution_plan(preparation_gateway)
+    previous = ExecutionConfirmation(uuid4().hex, plan.id, "a" * 64, plan.created_at, plan.expires_at)
+    previous.save(directory)
+    JobStatus(plan.id, Phase.HANDOFF_FAILED, 0, False, "Refused shutdown", plan.created_at).save(directory)
+    calls = []
+
+    def settle(path):
+        calls.append(path)
+        assert path == directory
+        state = JobStatus(plan.id, Phase.CANCELLED, 0, False, "Settled fixture", plan.created_at)
+        state.save(path)
+        return state
+
+    monkeypatch.setattr(update_stop, "settle_uncommitted_handoff", settle)
+    assert (await gateway.http.dispatch_webui_mutation(connection(), SETTLE, {"id": plan.id})).status_code == 403
+    assert calls == []
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), SETTLE, {"id": plan.id})
+    assert response.status_code == 200, response.body
+    assert json.loads(response.body)["job"]["recorded_phase"] == "cancelled"
+    assert json.loads(response.body)["job"]["execution_confirmation_id"] == previous.id
+    assert (await fetch(gateway, JOB + "?id=" + plan.id)).body == response.body
+    assert calls == [directory]
+    assert "webui.update-jobs.settle-handoff.v1" in webui_contract()["capabilities"]
+
+
 @pytest.mark.parametrize("problem", ["self_not_selected", "peer_not_selected", "no_restart"])
 async def test_execution_refuses_unreviewed_gateway_lifecycle(preparation_gateway, monkeypatch, problem):
     fixture = preparation_gateway

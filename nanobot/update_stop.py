@@ -270,3 +270,31 @@ async def stop_reviewed_gateways(directory: Path, *, timeout: float = 30) -> Non
             if time.monotonic() >= deadline:
                 raise TimeoutError("Shutdown was committed but process exit is not confirmed; no package files were changed")
             await asyncio.sleep(_POLL_SECONDS)
+
+
+def settle_uncommitted_handoff(directory: Path) -> JobStatus:
+    """Retire a prepared/failed handoff without undoing a committed shutdown.
+
+    The requesting gateway can remain running. No worker, orphan preflight or
+    stop coordinator may still own the old job. Keep its files and confirmation
+    for diagnosis; CANCELLED prevents a delayed launcher from using that consent.
+    """
+    spec = WorkerSpec.read(directory)
+    root = installation_state_dir(spec.baseline.environment)
+    with (file_access(root / "worker.lock", exclusive=True),
+          file_access(root / "handoff-child.lock", exclusive=True),
+          file_access(root / "stop.lock", exclusive=True),
+          installation_access(environment=spec.baseline.environment)):
+        status = JobStatus.read(directory)
+        if status.mutation_started or status.phase not in {Phase.READY, Phase.HANDOFF_FAILED, Phase.CANCELLED}:
+            raise ValueError("Only an unmodified, inactive handoff can be settled")
+        request = _read_request(spec.baseline.environment)
+        if request is not None and request.plan_id == spec.plan_id and request.phase in {"commit", "stopped"}:
+            raise ValueError("Shutdown was committed; recover the saved update before starting another")
+        if (directory / "approval.json").exists():
+            raise ValueError("Installation was admitted; recover the saved update before starting another")
+        if status.phase != Phase.CANCELLED:
+            status = JobStatus(spec.plan_id, Phase.CANCELLED, status.attempt, False,
+                               "Previous handoff settled; review a new plan before updating", int(time.time()))
+            status.save(directory)
+        return status

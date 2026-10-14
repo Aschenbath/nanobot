@@ -4,7 +4,7 @@ import { Loader2 } from "lucide-react";
 
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { ApiError, createUpdateReview, readUpdateReview, readUpdateJob, prepareUpdate, executeUpdate,
+import { ApiError, createUpdateReview, readUpdateReview, readUpdateJob, prepareUpdate, executeUpdate, settleUpdate,
   type UpdateReviewResponse, type UpdateJob } from "@/lib/api";
 import type { NanobotClient } from "@/lib/nanobot-client";
 
@@ -23,8 +23,8 @@ function remember(id: string | null) {
   try { if (id) sessionStorage.setItem(STORAGE_KEY, id); else { sessionStorage.removeItem(STORAGE_KEY); sessionStorage.removeItem(RECOVERY_KEY); } } catch { /* Memory state still works. */ }
 }
 
-export function UpdateFlowProvider({ client, token, enabled, children }: {
-  client: NanobotClient; token: string; enabled: boolean; children: ReactNode;
+export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = false, children }: {
+  client: NanobotClient; token: string; enabled: boolean; canSettleHandoff?: boolean; children: ReactNode;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -65,14 +65,14 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     setOpen(!!id);
   }, [client, token, enabled]);
 
-  const execute = useCallback(async (id: string, previous?: string) => {
+  const execute = useCallback(async (id: string) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
     const current = generation.current;
     approved.current = null; // Consume once before the request, including a lost response.
     try {
-      const response = await executeUpdate(client, id, previous);
+      const response = await executeUpdate(client, id);
       if (generation.current === current) setJob(response.job);
     } catch {
       // The gateway may already be shutting down. Read the journal before
@@ -151,23 +151,32 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
     return () => { active = false; clearTimeout(timer); };
   }, [client, enabled, pendingId, token, execute, t, pollAttempt]);
 
-  const inspect = async () => {
+  const inspect = async (retireId?: string) => {
     if (inFlight.current) return;
     inFlight.current = true;
     const current = ++generation.current;
     approved.current = null;
     setSubmitting(true);
     setError("");
-    setJob(null);
-    setReview(null);
-    setRecovery("");
-    setPendingId(null);
-    remember(null);
+    let retired = !retireId;
     try {
+      if (retireId) {
+        // Only the gateway can establish that no old worker can still execute.
+        // A lost/refused response keeps the original job and recovery entry.
+        const response = await settleUpdate(client, retireId);
+        if (generation.current !== current) return;
+        if (response.job.recorded_phase !== "cancelled" || response.job.mutation_started) throw new Error("Update not settled");
+        retired = true;
+      }
+      setJob(null);
+      setReview(null);
+      setRecovery("");
+      setPendingId(null);
+      remember(null);
       const next = await createUpdateReview(client);
       if (generation.current === current) setReview(next);
     } catch {
-      if (generation.current === current) setError(t("updates.reviewFailed"));
+      if (generation.current === current) setError(t(retired ? "updates.reviewFailed" : "updates.settleFailed"));
     } finally {
       if (generation.current === current) { setSubmitting(false); inFlight.current = false; }
     }
@@ -210,22 +219,23 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
   const done = job?.recorded_phase === "succeeded" && job.running_version === job.target_version;
   const awaitingRestart = phase === "succeeded" && !done;
   const failed = !!phase && terminal.has(phase) && phase !== "succeeded";
-  const reviewing = submitting && !review && !pendingId;
+  const reviewAgain = canSettleHandoff && job && !job.mutation_started && (phase === "handoff_failed"
+    || phase === "cancelled" || (phase === "ready" && review && review.plan.validity !== "current"));
+  const reviewing = submitting && (!review || !!reviewAgain);
   const busy = checkingStatus || submitting || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
   const title = done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
-  const blocked = !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
+  const blocked = !reviewAgain && !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
   const description = delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
-    : offline || awaitingRestart ? t("updates.reconnectingDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : "updates.preparationFailed")
-    : reviewing ? t("updates.reviewing") : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
+    : offline || awaitingRestart ? t("updates.reconnectingDescription") : reviewing ? t("updates.reviewing")
+    : reviewAgain ? t("updates.reviewAgainDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : "updates.preparationFailed")
+    : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
     : review ? t("updates.confirmDescription", { version: review.plan.target_version, host: review.plan.host }) : t("updates.reviewing"));
-  const retryHandoff = phase === "handoff_failed" && !job?.mutation_started && !!job?.execution_confirmation_id;
   const startAgain = !pendingId || (failed && !job?.mutation_started && !job?.execution_confirmation_id);
   const primary = () => {
     if (checkingStatus) return;
     if (done) close();
-    else if (retryHandoff && job?.execution_confirmation_id) {
-      setError("");
-      void execute(job.id, job.execution_confirmation_id).then(() => setPollAttempt(value => value + 1));
+    else if (reviewAgain && !error) {
+      void inspect(job.id);
     } else if (error || failed) {
       if (startAgain) void inspect();
       else { setCheckingStatus(true); setPollAttempt(value => value + 1); }
@@ -261,7 +271,7 @@ export function UpdateFlowProvider({ client, token, enabled, children }: {
           <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-100" disabled={!blocked && busy} aria-busy={busy}
             onClick={blocked ? close : primary}>
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />}
-            {t(checkingStatus ? "settings.about.checking" : blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error || failed ? "updates.checkAgain" : "updates.apply")}
+            {t(checkingStatus ? "settings.about.checking" : blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error ? "updates.checkAgain" : reviewAgain ? "updates.reviewAgain" : failed ? "updates.checkAgain" : "updates.apply")}
           </Button>
         </div>
       </AlertDialogContent>

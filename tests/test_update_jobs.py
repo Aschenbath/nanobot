@@ -525,6 +525,35 @@ async def test_retry_consumes_one_failed_confirmation_and_rechecks_ownership_and
 
 
 @pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_settled_failed_handoff_rejects_delayed_worker_and_keeps_original_files(installation, tmp_path):
+    from nanobot.update_stop import settle_uncommitted_handoff
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    (directory / "refuse-preflight").touch()
+    process = start_handoff(directory, once=True)
+    assert process is not None and await asyncio.to_thread(process.wait, 40) != 0
+    confirmation = ExecutionConfirmation.read(directory)
+    assert confirmation is not None
+    before = (directory / "request.json").read_bytes()
+    settled = settle_uncommitted_handoff(directory)
+    assert settled.phase == Phase.CANCELLED and not settled.mutation_started
+    assert ExecutionConfirmation.read(directory) == confirmation
+    assert (directory / "request.json").read_bytes() == before
+    (directory / "refuse-preflight").unlink()
+    spec = WorkerSpec.read(directory)
+    late = await asyncio.to_thread(subprocess.run,
+        [spec.baseline.base_python, "-I", str(directory / "worker.pyz"),
+         "--confirmed-handoff", str(directory), confirmation.id], capture_output=True, timeout=10)
+    assert late.returncode == 0  # Already-claimed duplicate reads the cancelled journal.
+    assert JobStatus.read(directory) == settled
+    assert not (directory / "approval.json").exists()
+    with pytest.raises(ValueError, match="unmodified"):
+        retry_handoff(directory, confirmation.id)
+
+
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
 async def test_confirmed_launch_failure_is_not_retry_authority(installation, tmp_path, monkeypatch):
     from nanobot import update_jobs
 

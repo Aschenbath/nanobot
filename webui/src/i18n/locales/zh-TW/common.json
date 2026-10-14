@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "重新確認更新",
+    "reviewAgainDescription": "尚未修改安裝檔案。請重新查看更新內容，再確認安裝並重新啟動。",
+    "settleFailed": "暫時無法安全結束上次更新。請重新檢查狀態，或依更新復原說明處理。",
     "ownerGuide": "查看此安裝方式的更新說明",
     "recoveryTitle": "在閘道電腦上復原",
     "recoveryDescription": "在執行 nanobot 的電腦上開啟終端機並執行此命令。它會先顯示原更新記錄，再詢問是否復原。請保留原備份。",

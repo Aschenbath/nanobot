@@ -421,6 +421,22 @@ saved-job CLI still does not perform initial staging and execution.
 
 ### Explicit recovery before package mutation
 
+In the WebUI, **Check again** only reads the saved update state. It never grants
+fresh installation or restart consent. After a failed handoff, **Review update**
+first asks the gateway to settle the old job, then shows a fresh version and restart
+review. Installation starts only after a separate **Update & restart** confirmation.
+This also allows an expired plan to be replaced without extending its old consent.
+
+The optional `webui.update-jobs.settle-handoff.v1` capability extends the existing
+authenticated `settings.nanobot.update.settle` action to prepared or failed handoffs.
+Settlement requires the worker, preflight and stop-coordinator leases to be free;
+it refuses committed shutdown, admitted installation and any package mutation.
+It marks the old job cancelled without deleting its saved files or starting work.
+Repeated settlement is safe; a lost response can be recovered by reading that job.
+If settlement is refused, the UI keeps the original job for status checks and recovery.
+Older hosts without this capability keep read-only status checks; use their existing
+update or recovery instructions instead of sending an unsupported settlement action.
+
 The optional `webui.update-jobs.retry-handoff.v1` capability accepts authenticated
 WebSocket action `settings.nanobot.update.retry` with `id`,
 `previous_confirmation_id` and `confirm_restart: true`. The existing package-install

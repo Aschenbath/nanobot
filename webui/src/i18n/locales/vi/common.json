@@ -1,5 +1,8 @@
 {
   "updates": {
+    "reviewAgain": "Xem lại bản cập nhật",
+    "reviewAgainDescription": "Chưa có tệp gói nào bị thay đổi. Hãy xem lại bản cập nhật trước khi xác nhận cài đặt và khởi động lại.",
+    "settleFailed": "Chưa thể kết thúc an toàn lần cập nhật trước. Hãy kiểm tra lại trạng thái hoặc làm theo hướng dẫn khôi phục.",
     "ownerGuide": "Hướng dẫn cập nhật cho cách cài đặt của bạn",
     "recoveryTitle": "Khôi phục trên máy tính gateway",
     "recoveryDescription": "Chạy lệnh này trong terminal trên máy tính đang chạy nanobot. Lệnh sẽ hiển thị bản cập nhật đã lưu trước khi yêu cầu xác nhận sửa chữa. Giữ lại bản sao lưu gốc.",
