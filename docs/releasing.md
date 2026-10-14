@@ -222,6 +222,13 @@ browsers may read channel status but cannot change package-install policy. Older
 clients use the legacy check response; statuses they cannot represent return an
 actionable failure instead of a false green “up to date.”
 
+`nanobot update --plan` inspects the saved subscription; `--plan --channel stable`
+or `--plan --channel preview` is a one-time inspection, not a subscription change.
+The legacy `nanobot update` / `--check` commands still target stable PyPI releases,
+and `--dev` means an editable source checkout, not Preview. Use Settings → About
+for channel-aware confirmation/restart. External package-manager commands do not
+read nanobot's subscription, so their channel/version selection remains explicit.
+
 **This PR does not launch a public Preview channel.** Publication still needs maintainer
 approval, protected index ownership, complete verified release assets and a successful
 clean public install/update/recovery check. No daily schedule or public release is

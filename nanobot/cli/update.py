@@ -13,7 +13,7 @@ def update(
     check: bool = typer.Option(False, "--check", help="Check the latest stable release without installing."),
     allow_downgrade: bool = typer.Option(False, "--allow-downgrade", help="Allow an intentional return to an older stable release. Back up data first."),
     plan: bool = typer.Option(False, "--plan", help="Save an exact release plan without installing or restarting."),
-    channel: Literal["stable", "preview"] | None = typer.Option(None, "--channel", help="Release channel to inspect with --plan (default: stable)."),
+    channel: Literal["stable", "preview"] | None = typer.Option(None, "--channel", help="Release channel to inspect with --plan (default: saved subscription)."),
     job: str | None = typer.Option(None, "--job", help="Read an exact saved job in this installation; does not install."),
     retry_handoff: bool = typer.Option(False, "--retry-handoff", help="With --job, explicitly retry shutdown before package mutation."),
     previous_confirmation: str | None = typer.Option(None, "--previous-confirmation", help="The execution confirmation from the job being retried."),
@@ -39,13 +39,13 @@ def update(
         from nanobot.update_plan import describe_plan, preview_release_update
 
         try:
-            typer.echo(describe_plan(asyncio.run(preview_release_update(channel or "stable"))))
+            typer.echo(describe_plan(asyncio.run(preview_release_update(channel))))
         except (RuntimeError, OSError, ValueError, subprocess.SubprocessError, httpx.HTTPError) as exc:
             typer.echo(f"Could not prepare update plan: {exc}", err=True)
             raise typer.Exit(1) from exc
         return
     if channel is not None:
-        raise typer.BadParameter("Channel inspection requires --plan; channel-aware installation is not enabled yet.")
+        raise typer.BadParameter("Channel inspection requires --plan; confirm channel-aware installation in Settings → About.")
 
     if check and dev:
         raise typer.BadParameter("--check checks PyPI releases; use it without --dev.")
