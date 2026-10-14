@@ -10,6 +10,7 @@ import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -332,7 +333,23 @@ async def test_written_commit_is_not_aborted_if_acknowledging_the_write_fails(pr
             stack.close()
 
 
-async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkeypatch):
+@pytest.fixture
+def expire_exit_deadline(monkeypatch):
+    from nanobot import update_stop
+
+    # Let real mailbox preparation finish regardless of filesystem speed. Only
+    # expire the process-exit wait after the test observes a still-running PID.
+    now = 100.0
+    monkeypatch.setattr(update_stop, "time", SimpleNamespace(monotonic=lambda: now))
+
+    def expire():
+        nonlocal now
+        now += 31  # The production stop deadline is 30 seconds.
+
+    return expire
+
+
+async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkeypatch, expire_exit_deadline):
     from nanobot import update_stop
 
     directory, plan, gates, stops = protocol
@@ -340,11 +357,15 @@ async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkey
     watchers = [asyncio.create_task(watch_gateway_stop(item.receipt, lambda gate=gate: gate.pause_if_idle(lambda: False),
                                                      stop, stack))
                 for item, gate, stop, stack in zip(plan.profiles, gates, stops, outer)]
-    monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", lambda self, pid: True)
+    def still_running(_runtime, _pid):
+        expire_exit_deadline()
+        return True
+
+    monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", still_running)
     monkeypatch.setattr(update_stop.GatewayRuntime, "process_identity_match", lambda self, identity, pid: "match")
     try:
         with pytest.raises(TimeoutError, match="process exit is not confirmed"):
-            await stop_reviewed_gateways(directory, timeout=0.5)
+            await asyncio.wait_for(stop_reviewed_gateways(directory), timeout=30)
         assert all(stop.is_set() for stop in stops)
         assert all(gate.paused for gate in gates)
         assert read_record(installation_state_dir() / "stop.json")["phase"] == "commit"
@@ -358,7 +379,7 @@ async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkey
             stack.close()
 
 
-async def test_inactive_unselected_profile_must_also_finish_its_process_exit(protocol, monkeypatch):
+async def test_inactive_unselected_profile_must_also_finish_its_process_exit(protocol, monkeypatch, expire_exit_deadline):
     from nanobot import update_stop
 
     _, original, gates, stops = protocol
@@ -371,14 +392,20 @@ async def test_inactive_unselected_profile_must_also_finish_its_process_exit(pro
             raise ValueError("First gateway has not stopped")
 
     monkeypatch.setattr(update_stop, "require_stopped_profiles", require_stopped)
-    monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", lambda self, pid: pid == second.receipt.pid)
+    def still_running(_runtime, pid):
+        if pid == second.receipt.pid:
+            expire_exit_deadline()
+            return True
+        return False
+
+    monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", still_running)
     monkeypatch.setattr(update_stop.GatewayRuntime, "process_identity_match", lambda self, identity, pid: "match")
     outer = ExitStack()
     watcher = asyncio.create_task(watch_gateway_stop(first.receipt, lambda: gates[0].pause_if_idle(lambda: False),
                                  stops[0], outer))
     try:
         with pytest.raises(TimeoutError, match="process exit is not confirmed"):
-            await stop_reviewed_gateways(directory, timeout=0.5)
+            await asyncio.wait_for(stop_reviewed_gateways(directory), timeout=30)
         assert stops[0].is_set() and not stops[1].is_set()
         monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", lambda self, pid: False)
         await stop_reviewed_gateways(directory)
