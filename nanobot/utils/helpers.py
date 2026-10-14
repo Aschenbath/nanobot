@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 from loguru import logger
 
 from nanobot.utils.atomic_file import atomic_write_lines as atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_text as atomic_write_text
 from nanobot.utils.file_io import ensure_dir as ensure_dir
 from nanobot.utils.file_io import write_text_atomic as _write_text_atomic
 from nanobot.utils.token_encoding import get_token_encoding as _get_token_encoding

@@ -305,8 +305,6 @@ export function Sidebar(props: SidebarProps) {
             updatedChatIds={props.updatedChatIds}
             recoveryChatIds={props.recoveryChatIds}
             density={props.viewState?.density}
-            showPreviews={props.viewState?.show_previews}
-            showTimestamps={props.viewState?.show_timestamps}
             sort={props.viewState?.sort}
             showArchived={props.showArchived}
             defaultWorkspacePath={props.defaultWorkspacePath}

@@ -101,6 +101,35 @@ def read_atomic_bytes(path: Path, *, max_bytes: int = -1) -> bytes:
         return stream.read(max_bytes)
 
 
+def _fsync_directory_after_replace(directory: Path) -> None:
+    """Fsync a directory, ignoring only unsupported platforms/filesystems."""
+    with suppress(PermissionError):
+        fd = os.open(str(directory), os.O_RDONLY)
+        try:
+            try:
+                os.fsync(fd)
+            except OSError as exc:
+                if exc.errno != errno.EINVAL:
+                    raise
+        finally:
+            os.close(fd)
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Create parent directories and durably replace exact UTF-8 text."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "x", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_atomic(tmp, path)
+        _fsync_directory_after_replace(path.parent)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def atomic_write_lines(path: Path, lines: Iterable[str], *, fsync: bool = True) -> None:
     """Replace serialized records, optionally syncing both file and directory.
 
@@ -120,16 +149,7 @@ def atomic_write_lines(path: Path, lines: Iterable[str], *, fsync: bool = True) 
                 os.fsync(handle.fileno())
         _replace_atomic(tmp, path)
         if fsync:
-            with suppress(PermissionError):
-                fd = os.open(str(path.parent), os.O_RDONLY)
-                try:
-                    try:
-                        os.fsync(fd)
-                    except OSError as exc:
-                        if exc.errno != errno.EINVAL:
-                            raise
-                finally:
-                    os.close(fd)
+            _fsync_directory_after_replace(path.parent)
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
