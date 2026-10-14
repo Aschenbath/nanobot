@@ -240,7 +240,18 @@ class ReleaseFeed:
         """
         if channel == "stable" and not Version(current_version).is_prerelease:
             return await self.stable(), False
-        catalogue = await self.catalogue()
+        try:
+            catalogue = await self.catalogue()
+        except (ReleaseFeedError, httpx.HTTPError, ValueError, OSError):
+            if channel != "stable":
+                raise
+            # An unavailable Preview index must not prevent leaving Preview for
+            # a verified newer final. Do not infer that the installed preview is
+            # safe/current when no such successor can replace it.
+            target = await self.stable()
+            if Version(target.version) <= Version(current_version):
+                raise
+            return target, False
         withdrawn = current_version in catalogue.withdrawn
         try:
             if channel == "stable":

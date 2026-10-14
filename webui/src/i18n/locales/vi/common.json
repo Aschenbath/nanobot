@@ -1,12 +1,13 @@
 {
   "updates": {
     "channel": {
-      "label": "Kênh cập nhật",
-      "stable": "Ổn định",
+      "settings": "Cài đặt cập nhật",
+      "receivePreview": "Nhận bản cập nhật xem trước",
+      "previewWarning": "Đây là bản xem trước và có thể có lỗi.",
       "preview": "Xem trước",
-      "hint": "Bản xem trước có thể có lỗi. Đổi kênh không cài đặt hay khởi động lại nanobot.",
+      "hint": "Trải nghiệm tính năng mới sớm; bản xem trước có thể có lỗi. Cập nhật vẫn cần xác nhận. Tắt tùy chọn này không hạ cấp nanobot.",
       "saving": "Đang lưu…",
-      "saved": "Đã lưu kênh",
+      "saved": "Đã lưu tùy chọn cập nhật",
       "ahead": "Phiên bản này mới hơn kênh đã chọn. Sẽ không cài đặt phiên bản cũ hơn.",
       "waiting_stable": "Đã tắt cập nhật xem trước. Tiếp tục dùng phiên bản này cho đến khi có bản ổn định mới hơn.",
       "withdrawn": "Bản xem trước này đã bị thu hồi. Hãy cập nhật khi có phiên bản mới hơn; không hạ cấp đè lên dữ liệu hiện tại.",

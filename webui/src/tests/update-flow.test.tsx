@@ -45,6 +45,15 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
 describe("Real update consent and recovery", () => {
+  it.each(["0.3.7.dev42", "0.3.7"])("shows preview risk only for a preview installation target (%s)", async (version) => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue({ ...review, plan: { ...review.plan, target_version: version } });
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(screen.queryByText("This is a preview release and may have bugs.") !== null).toBe(version.includes(".dev"));
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
   it("retires a restored failed handoff and reviews a fresh plan before new consent", async () => {
     sessionStorage.setItem("nanobot.pending-update.v1", id);
     vi.mocked(api.readUpdateJob).mockResolvedValue({ job: job("handoff_failed", "previous") });

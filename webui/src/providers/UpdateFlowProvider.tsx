@@ -252,6 +252,8 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
           <img src="/brand/nanobot_mark.svg" alt="" draggable={false} className="mb-4 h-11 w-11 select-none" />
           <AlertDialogTitle className="text-lg font-semibold leading-7 tracking-tight">{t(checkingStatus ? "settings.about.checking" : `updates.${title}`)}</AlertDialogTitle>
           <AlertDialogDescription className="mt-2 text-sm leading-6">{description}</AlertDialogDescription>
+          {review && !busy && !blocked && !done && !failed && !error && /\.dev\d+$/.test(review.plan.target_version) &&
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("updates.channel.previewWarning")}</p>}
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}
         </div>

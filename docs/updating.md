@@ -10,6 +10,20 @@ installation method. That first upgrade does not convert pip, pipx, uv or Docker
 into an installer-managed installation; the owner table below still applies.
 Stable users do not opt into previews merely by checking for updates.
 
+In **Settings → About → Update settings**, **Receive preview updates** is off by
+default. Turn it on to try new features early, with a higher risk of bugs. There is
+one update button for both release types; installing a preview shows its risk in
+the confirmation. This preference alone does not download, install or restart.
+It belongs to this installation, not the browser. Changes require authenticated
+local package-install permission; other installation owners keep their own updater.
+
+Turn it off to receive only stable updates. If this preview is newer than the latest
+stable release, keep using it until a newer stable is available. This does not
+downgrade packages or restore old data. A verified newer stable release remains
+available when the Preview index is unavailable; an older or incomplete release
+does not become a recovery target. Installing a final release while this preference
+is on keeps previews enabled for the next development cycle.
+
 If a fresh official installation fails during environment creation or download,
 fix the reported prerequisite/network error and rerun the same installer command.
 Its saved base-package selection preserves that environment's owner across retries;
@@ -165,7 +179,8 @@ external supervisor; the installation owner remains responsible for its files.
 ### Gateway review Interface
 
 The optional `webui.update-plans.v1` capability exposes review only. On an authenticated
-WebSocket, `settings.nanobot.update.plan` accepts `channel` (stable by default),
+WebSocket, `settings.nanobot.update.plan` accepts `channel` (the saved preference
+by default, or Stable if none was saved),
 `restart_running` (false by default), and optional explicit `extras`. It cannot accept
 a download URL, shell command, environment path or caller-supplied plan. A plain HTTP
 request cannot create a plan. This capability does not change `webui.self-update.v1`.

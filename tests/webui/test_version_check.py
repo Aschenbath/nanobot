@@ -103,13 +103,36 @@ def test_preview_subscription_survives_final_release_and_next_cycle(releases, mo
     assert version_check.check_for_update()["updateAvailable"]["latestVersion"] == "0.3.8.dev1"
 
 
-@pytest.mark.parametrize("replacement", ["older", "newer", "incompatible"])
-def test_withdrawn_running_preview_is_not_reported_up_to_date(releases, monkeypatch, replacement):
+def test_leaving_preview_can_find_a_newer_stable_when_catalogue_is_unavailable(releases, monkeypatch):
     select("preview")
+    monkeypatch.setattr(nanobot, "__version__", "0.3.7.dev42")
+    select("stable")
+    releases.missing = True
+    releases.stable = "0.3.7"
+    result = version_check.check_for_update()
+    assert result["updateAvailable"]["latestVersion"] == "0.3.7"
+    assert result["releaseStatus"]["state"] == "available"
+    assert read_update_channel().channel == "stable"
+    # A broken Preview index cannot authorize a partial release or a downgrade,
+    # or turn unverified withdrawal status into a green 'up to date'.
+    releases.partial = True
+    assert version_check.check_for_update()["updateAvailable"] is None
+    releases.partial = False
+    releases.stable = "0.3.6"
+    result = version_check.check_for_update()
+    assert result["updateAvailable"] is None
+    assert result["releaseStatus"]["state"] == "unavailable"
+
+
+@pytest.mark.parametrize("replacement", ["older", "newer", "incompatible"])
+@pytest.mark.parametrize("channel", ["stable", "preview"])
+def test_withdrawn_running_preview_is_not_reported_up_to_date(releases, monkeypatch, replacement, channel):
+    select(channel)
     monkeypatch.setattr(nanobot, "__version__", "0.3.7.dev42")
     releases.withdrawn = {"0.3.7.dev42": "Startup regression"}
     if replacement != "older":
         releases.preview = "0.3.7.dev43"
+        releases.stable = "0.3.7"
     releases.incompatible = replacement == "incompatible"
     result = version_check.check_for_update()
     assert result["releaseStatus"]["state"] == "withdrawn"

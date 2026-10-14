@@ -1,12 +1,13 @@
 {
   "updates": {
     "channel": {
-      "label": "Update channel",
-      "stable": "Stable",
+      "settings": "Update settings",
+      "receivePreview": "Receive preview updates",
+      "previewWarning": "This is a preview release and may have bugs.",
       "preview": "Preview",
-      "hint": "Preview releases may have bugs. Changing channels does not install or restart nanobot.",
+      "hint": "Try new features early; previews may have bugs. Updates still need confirmation. Turning this off does not downgrade nanobot.",
       "saving": "Saving…",
-      "saved": "Channel saved",
+      "saved": "Update preference saved",
       "ahead": "This version is ahead of the selected channel. No downgrade will be installed.",
       "waiting_stable": "Preview updates are off. Keep using this version until a newer stable release is available.",
       "withdrawn": "This preview was withdrawn. Update to a newer release when available; do not downgrade over your current data.",

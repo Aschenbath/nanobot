@@ -1,12 +1,13 @@
 {
   "updates": {
     "channel": {
-      "label": "Canal de actualización",
-      "stable": "Estable",
+      "settings": "Ajustes de actualización",
+      "receivePreview": "Recibir versiones preliminares",
+      "previewWarning": "Esta versión preliminar puede tener errores.",
       "preview": "Preliminar",
-      "hint": "Las versiones preliminares pueden tener errores. Cambiar de canal no instala ni reinicia nanobot.",
+      "hint": "Prueba las novedades antes; pueden tener errores. Cada actualización requiere confirmación. Desactivar esta opción no instala una versión anterior.",
       "saving": "Guardando…",
-      "saved": "Canal guardado",
+      "saved": "Preferencia de actualización guardada",
       "ahead": "Esta versión es más reciente que la del canal seleccionado. No se instalará una versión anterior.",
       "waiting_stable": "Las actualizaciones preliminares están desactivadas. Usa esta versión hasta que haya una versión estable más reciente.",
       "withdrawn": "Esta versión preliminar fue retirada. Actualiza cuando haya una versión más reciente; no instales una anterior sobre tus datos actuales.",
