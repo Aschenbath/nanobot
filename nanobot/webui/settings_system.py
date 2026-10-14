@@ -33,6 +33,7 @@ from nanobot.optional_features import OptionalFeatureError, with_channel_runtime
 from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.security.workspace_access import workspace_sandbox_status
 from nanobot.update import UpdateError, update_blocked_reason
+from nanobot.update_channel import UpdateChannelRequest
 from nanobot.update_jobs import UpdateJobNotFoundError, read_update_job
 from nanobot.update_plan import (
     UpdatePlan,
@@ -564,7 +565,21 @@ class SystemSettingsHandler:
                 operations,
             )
         if action == "version-check":
-            return await self._version_check(operations)
+            return await self._version_check(request, operations)
+        if action == "update-channel":
+            if not self.allow_feature_package_install(request):
+                return SettingsRouteResult.failure(403, "Changing update channels requires package-install permission.")
+            try:
+                options = UpdateChannelRequest.model_validate(request.payload or {})
+            except (ValidationError, ValueError):
+                return SettingsRouteResult.failure(400, "Invalid update channel request")
+            try:
+                self._admission.check()
+                selection = self._update_jobs.change_channel(options)
+            except (RuntimeError, ValueError, OSError, KeyError) as exc:
+                self.logger.warning("could not change update channel ({})", type(exc).__name__)
+                return SettingsRouteResult.failure(409, "Could not change channels. Finish or recover any pending update, then check again.")
+            return SettingsRouteResult.success({"channel": selection.channel, "revision": selection.revision})
         if action in {"update-plan-create", "update-plan-read"}:
             return await self._update_plan(request, create=action == "update-plan-create")
         if action == "update-job-read":
@@ -1225,11 +1240,20 @@ class SystemSettingsHandler:
 
     async def _version_check(
         self,
+        request: SettingsRequest,
         operations: SystemSettingsOperations,
     ) -> SettingsRouteResult:
         try:
             update_info = await asyncio.to_thread(operations.check_for_update)
-        except Exception:
-            self.logger.exception("version check failed")
+        except Exception as exc:
+            self.logger.warning("version check failed ({})", type(exc).__name__)
             return SettingsRouteResult.failure(500, "version check failed")
-        return SettingsRouteResult.success({"updateAvailable": update_info})
+        if query_first(request.query, "channel_status") == "1":
+            return SettingsRouteResult.success({
+                **update_info, "can_change_channel": self.allow_feature_package_install(request),
+            })
+        # An older client cannot interpret waiting/withdrawn/unavailable states.
+        # Report a failure rather than converting them to its green "up to date".
+        if update_info["releaseStatus"]["state"] not in {"available", "current", "ahead"}:
+            return SettingsRouteResult.failure(409, "No verified update result is available. Open this gateway's current WebUI to check its release channel.")
+        return SettingsRouteResult.success({"updateAvailable": update_info["updateAvailable"]})

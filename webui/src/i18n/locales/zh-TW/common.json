@@ -1,5 +1,20 @@
 {
   "updates": {
+    "channel": {
+      "label": "更新頻道",
+      "stable": "正式版",
+      "preview": "預覽版",
+      "hint": "預覽版可能存在問題。切換頻道不會安裝或重新啟動 nanobot。",
+      "saving": "正在儲存…",
+      "saved": "頻道已儲存",
+      "ahead": "目前版本領先於所選頻道，不會安裝較舊版本。",
+      "waiting_stable": "已退出預覽更新。保留目前版本，等待更新的正式版。",
+      "withdrawn": "目前預覽版已撤回。請在修正版可用時升級，不要直接降級覆寫目前資料。",
+      "unavailable": "暫時無法驗證此頻道，可能尚未開放。請檢查網路後重試。",
+      "publishing": "新版本仍在發布中，請稍後再檢查。",
+      "unsupported": "此 Python 版本或平台暫無相容更新。",
+      "releaseNotes": "更新說明"
+    },
     "reviewAgain": "重新確認更新",
     "reviewAgainDescription": "尚未修改安裝檔案。請重新查看更新內容，再確認安裝並重新啟動。",
     "settleFailed": "暫時無法安全結束上次更新。請重新檢查狀態，或依更新復原說明處理。",

@@ -1,5 +1,20 @@
 {
   "updates": {
+    "channel": {
+      "label": "Canal de mise à jour",
+      "stable": "Stable",
+      "preview": "Préversion",
+      "hint": "Les préversions peuvent contenir des erreurs. Changer de canal n’installe ni ne redémarre nanobot.",
+      "saving": "Enregistrement…",
+      "saved": "Canal enregistré",
+      "ahead": "Cette version est plus récente que celle du canal choisi. Aucune version antérieure ne sera installée.",
+      "waiting_stable": "Les préversions sont désactivées. Conservez cette version en attendant une version stable plus récente.",
+      "withdrawn": "Cette préversion a été retirée. Installez une version plus récente dès sa disponibilité ; ne rétrogradez pas avec vos données actuelles.",
+      "unavailable": "Impossible de vérifier ce canal. Il n’est peut-être pas encore disponible. Vérifiez votre connexion et réessayez.",
+      "publishing": "La publication est en cours. Réessayez plus tard.",
+      "unsupported": "Aucune mise à jour compatible avec cette version de Python et cette plateforme.",
+      "releaseNotes": "Notes de version"
+    },
     "reviewAgain": "Examiner la mise à jour",
     "reviewAgainDescription": "Aucun fichier du paquet n’a été modifié. Examinez à nouveau la mise à jour avant de confirmer l’installation et le redémarrage.",
     "settleFailed": "La mise à jour précédente n’a pas pu être clôturée en toute sécurité. Vérifiez à nouveau son état ou suivez les instructions de récupération.",

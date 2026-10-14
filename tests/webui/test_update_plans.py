@@ -48,6 +48,79 @@ PREPARE = "settings.nanobot.update.prepare"
 SETTLE = "settings.nanobot.update.settle"
 EXECUTE = "settings.nanobot.update.execute"
 RETRY = "settings.nanobot.update.retry"
+CHANNEL = "settings.nanobot.update.channel"
+
+
+async def test_channel_mutation_preserves_authority_and_invalidates_old_reviews(preparation_gateway):
+    from nanobot.update_channel import read_update_channel
+
+    fixture = preparation_gateway
+    gateway, plan = await preparation_plan(fixture)
+    # Plain HTTP cannot mutate; remote callers do not acquire install authority.
+    response = await fetch(gateway, "/api/settings/nanobot-update/channel")
+    assert response.status_code == 405
+    response = await gateway.http.dispatch_webui_mutation(connection(), CHANNEL, {"channel": "preview", "revision": 0})
+    assert response.status_code == 403
+    assert read_update_channel().revision == 0
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), CHANNEL, {"channel": "preview", "revision": 0})
+    assert response.status_code == 200, response.body
+    assert json.loads(response.body) == {"channel": "preview", "revision": 1}
+    assert "webui.update-channels.v1" in webui_contract()["capabilities"]
+    reviewed = await fetch(gateway, READ + "?id=" + plan.id)
+    assert json.loads(reviewed.body)["plan"]["validity"] == "channel_changed"
+    prepared = await gateway.http.dispatch_webui_mutation(connection(local=True), PREPARE, {"id": plan.id})
+    assert prepared.status_code == 409
+    assert not (fixture.directory / "jobs" / plan.id / "status.json").exists()
+    # Stale tabs cannot overwrite the newer selection; native uses its distributor.
+    assert (await gateway.http.dispatch_webui_mutation(connection(local=True), CHANNEL,
+                                                     {"channel": "stable", "revision": 0})).status_code == 409
+    assert (await fixture.gateway("native").http.dispatch_webui_mutation(connection(local=True), CHANNEL,
+                                                                         {"channel": "stable", "revision": 1})).status_code == 409
+
+
+@pytest.mark.parametrize("payload", [{"channel": "preview"}, {"channel": "beta", "revision": 0},
+                                      {"channel": "preview", "revision": True},
+                                      {"channel": "preview", "revision": 0, "url": "https://other.example"}])
+async def test_channel_mutation_validates_untrusted_requests(preparation_gateway, payload):
+    gateway = preparation_gateway.gateway()
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), CHANNEL, payload)
+    assert response.status_code == 400
+
+
+async def test_review_uses_saved_channel_and_rejects_a_change_during_discovery(preparation_gateway, monkeypatch):
+    from nanobot.update_channel import UpdateChannelRequest
+
+    fixture = preparation_gateway
+    gateway, stable = await preparation_plan(fixture)
+    service = update_service.UpdateJobService()
+    service.change_channel(UpdateChannelRequest(channel="preview", revision=0))
+    observed = []
+    race = False
+
+    class Feed:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def latest(self, channel):
+            observed.append(channel)
+            if race:
+                service.change_channel(UpdateChannelRequest(channel="stable", revision=1))
+            # Preview subscriptions can receive a final release too.
+            return stable.target
+
+    monkeypatch.setattr(update_plan, "ReleaseFeed", lambda _: Feed())
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), "settings.nanobot.update.plan", {"extras": []})
+    assert response.status_code == 200
+    saved = UpdatePlans(fixture.directory / "plans").load(json.loads(response.body)["plan"]["id"])
+    assert (saved.channel, saved.channel_revision) == ("preview", 1)
+    race = True
+    response = await gateway.http.dispatch_webui_mutation(connection(local=True), "settings.nanobot.update.plan", {"extras": []})
+    assert response.status_code == 409
+    assert observed == ["preview", "preview"]
+    assert not (fixture.directory / "jobs").exists()
 
 
 @pytest.fixture

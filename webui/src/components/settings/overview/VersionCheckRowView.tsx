@@ -2,6 +2,9 @@ import { ArrowUpCircle, Check, ExternalLink, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { ReleaseStatus, UpdateChannel } from "@/lib/api";
+import type { VersionResult } from "@/providers/VersionCheckProvider";
 
 export type VersionInfoProps = {
   currentVersion?: string;
@@ -9,21 +12,24 @@ export type VersionInfoProps = {
   onRequestUpdate?: () => void;
   hasPendingUpdate?: boolean;
 };
-export type VersionCheckState =
-  | { type: "up-to-date" }
-  | { type: "update"; latestVersion: string; pypiUrl?: string }
-  | { type: "error"; message: string }
-  | null;
+export type VersionCheckState = VersionResult;
 
 export function VersionCheckRowView({
   currentVersion, currentCommit, checking, result, onCheck,
   onRequestUpdate, hasPendingUpdate, onDismiss, dismissedVersion,
+  releaseStatus, canChangeChannel, changingChannel, channelError, channelSaved, onChangeChannel,
 }: VersionInfoProps & {
   checking: boolean;
   result: VersionCheckState;
   onCheck: () => void;
   onDismiss?: () => void;
   dismissedVersion?: string | null;
+  releaseStatus?: ReleaseStatus | null;
+  canChangeChannel?: boolean;
+  changingChannel?: boolean;
+  channelError?: string;
+  channelSaved?: boolean;
+  onChangeChannel?: (channel: UpdateChannel) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
@@ -48,12 +54,28 @@ export function VersionCheckRowView({
           )}
         </div>
       </div>
+      {releaseStatus && onChangeChannel && <div className="w-full max-w-sm space-y-2">
+        <div className="flex items-center justify-between gap-3 text-[13px]">
+          <span id="update-channel-label">{t("updates.channel.label")}</span>
+          <Select value={releaseStatus.channel} onValueChange={value => {
+            if (value === "stable" || value === "preview") void onChangeChannel(value);
+          }} disabled={!canChangeChannel || changingChannel || checking}>
+            <SelectTrigger aria-labelledby="update-channel-label" className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="stable">{t("updates.channel.stable")}</SelectItem>
+              <SelectItem value="preview">{t("updates.channel.preview")}</SelectItem></SelectContent>
+          </Select>
+        </div>
+        <p className="text-[12px] leading-5 text-muted-foreground">{t("updates.channel.hint")}</p>
+        <p role="status" className="text-[12px] text-muted-foreground">
+          {changingChannel ? t("updates.channel.saving") : channelError || (channelSaved ? t("updates.channel.saved") : "")}
+        </p>
+      </div>}
       <div className="flex shrink-0 flex-col items-center gap-2">
         <Button
           size="sm"
           variant="outline"
           onClick={onCheck}
-          disabled={checking}
+          disabled={checking || changingChannel}
           aria-busy={checking}
           className="rounded-full disabled:opacity-100"
         >
@@ -72,8 +94,11 @@ export function VersionCheckRowView({
               <Check className="h-3 w-3" aria-hidden />
               {tx("settings.about.upToDate", "You're up to date")}
             </span>
-          ) : result?.type === "error" ? <span className="text-destructive">{result.message}</span> : null}
+          ) : result?.type === "release-status" ? <span className="block max-w-sm text-center text-muted-foreground">{t(`updates.channel.${result.state}`)}</span>
+            : result?.type === "error" ? <span className="text-destructive">{result.message}</span> : null}
         </div>
+        {!checking && releaseStatus?.state === "withdrawn" && result?.type === "update" &&
+          <p role="alert" className="max-w-sm text-[12px] text-destructive">{t("updates.channel.withdrawn")}</p>}
         {hasPendingUpdate && onRequestUpdate ? (
           <Button size="sm" variant="outline" onClick={onRequestUpdate}>
             {t("settings.about.viewUpdateDetails")}
@@ -86,14 +111,14 @@ export function VersionCheckRowView({
               defaultValue: "Update available v{{version}}",
               version: result.latestVersion,
             })}
-            {result.pypiUrl ? (
+            {result.releaseUrl || result.pypiUrl ? (
               <a
-                href={result.pypiUrl}
+                href={result.releaseUrl || result.pypiUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline"
               >
-                PyPI
+                {result.releaseUrl ? t("updates.channel.releaseNotes") : "PyPI"}
                 <ExternalLink className="h-2.5 w-2.5" aria-hidden />
               </a>
             ) : null}

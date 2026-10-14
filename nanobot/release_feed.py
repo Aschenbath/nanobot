@@ -46,6 +46,10 @@ _METADATA_HOSTS = {"pypi.org", "raw.githubusercontent.com", *_DOWNLOAD_HOSTS}
 class ReleaseFeedError(RuntimeError):
     """No verified update can be offered or downloaded."""
 
+    def __init__(self, message: str, *, code: Literal["unavailable", "publishing", "unsupported", "withdrawn"] = "unavailable") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 def _url(url: str, hosts: set[str]) -> str:
     parsed = urlsplit(url)
@@ -184,9 +188,10 @@ class ReleaseFeed:
         with FileLock(str(self.cache_dir / "catalogue.lock"), timeout=5):
             previous = self._cached()
             if previous:
-                old, new = previous.catalogue, candidate.catalogue
-                if new.generation < old.generation or (new.generation == old.generation and new != old):
-                    raise ReleaseFeedError("Release catalogue changed without a newer generation")
+                try:
+                    candidate.catalogue.validate_successor(previous.catalogue)
+                except ValueError as exc:
+                    raise ReleaseFeedError(str(exc)) from exc
             atomic_write_lines(self.cache_dir / "catalogue.json", [candidate.model_dump_json()])
         return candidate.catalogue
 
@@ -201,11 +206,11 @@ class ReleaseFeed:
             raise ReleaseFeedError("PyPI returned a different version than requested")
         required = {name for name in release_filenames(identity) if name.endswith((".whl", ".tar.gz"))}
         if {file.filename for file in release.urls} != required or len(release.urls) != len(required):
-            raise ReleaseFeedError("The stable release is incomplete; no source-build fallback was selected")
+            raise ReleaseFeedError("The stable release is incomplete; no source-build fallback was selected", code="publishing")
         if any(file.yanked for file in release.urls):
-            raise ReleaseFeedError("The release has been withdrawn from PyPI")
+            raise ReleaseFeedError("The release has been withdrawn from PyPI", code="withdrawn")
         if not SpecifierSet(release.info.requires_python).contains(self.python_version, prereleases=True):
-            raise ReleaseFeedError(f"Release requires Python {release.info.requires_python}")
+            raise ReleaseFeedError(f"Release requires Python {release.info.requires_python}", code="unsupported")
         for tag in self.tags:
             for file in release.urls:
                 if not file.filename.endswith(".whl") or tag not in parse_wheel_filename(file.filename)[3]:
@@ -216,7 +221,7 @@ class ReleaseFeed:
                     version=identity, source="pypi", url=file.url,
                     artifact=ReleaseArtifact(filename=file.filename, size=file.size, sha256=file.digests["sha256"]),
                 )
-        raise ReleaseFeedError("No compatible wheel is available for this Python and platform")
+        raise ReleaseFeedError("No compatible wheel is available for this Python and platform", code="unsupported")
 
     async def latest(self, channel: Channel) -> ReleaseTarget:
         if channel == "stable":
@@ -227,10 +232,35 @@ class ReleaseFeed:
             raise ReleaseFeedError("No eligible preview is available")
         return await self._from_pointer(pointer, catalogue.generation)
 
+    async def discover(self, channel: Channel, current_version: str) -> tuple[ReleaseTarget | None, bool]:
+        """Select from one catalogue snapshot and report withdrawal independently.
+
+        Stable installations do not depend on the Preview catalogue. A preview
+        leaving that channel still checks its withdrawal status until replaced.
+        """
+        if channel == "stable" and not Version(current_version).is_prerelease:
+            return await self.stable(), False
+        catalogue = await self.catalogue()
+        withdrawn = current_version in catalogue.withdrawn
+        try:
+            if channel == "stable":
+                return await self.stable(), withdrawn
+            pointer = catalogue.latest(channel)
+            return (await self._from_pointer(pointer, catalogue.generation) if pointer else None), withdrawn
+        except (ReleaseFeedError, httpx.HTTPError, ValueError):
+            if withdrawn:
+                # A missing/incompatible replacement must not hide a freshly
+                # verified warning about the version already running.
+                return None, True
+            raise
+
     async def _from_pointer(self, pointer: ReleasePointer, generation: int) -> ReleaseTarget:
         payload, _ = await self._read(pointer.manifest_url, limit=64 * 1024)
         manifest = pointer.verify_manifest(payload or b"")
-        artifact = manifest.wheel_for(python_version=self.python_version, supported_tags=self.tags)
+        try:
+            artifact = manifest.wheel_for(python_version=self.python_version, supported_tags=self.tags)
+        except ValueError as exc:
+            raise ReleaseFeedError("No compatible Preview wheel is available", code="unsupported") from exc
         # A stable successor in the Preview channel must still be available on PyPI.
         if not Version(manifest.version).is_prerelease:
             stable = await self.stable(manifest.version)

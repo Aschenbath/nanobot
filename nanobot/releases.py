@@ -145,6 +145,20 @@ class ReleaseCatalogue(ReleaseRecord):
                 raise ValueError("A bounded withdrawal reason is required")
         return self
 
+    def validate_successor(self, previous: Self) -> None:
+        """A new index generation cannot rewrite already observed releases."""
+        if self.generation < previous.generation or (self.generation == previous.generation and self != previous):
+            raise ValueError("Release catalogue changed without a newer generation")
+        if not previous.withdrawn.keys() <= self.withdrawn.keys():
+            raise ValueError("Release catalogue cannot reinstate withdrawn versions")
+        for old, new in ((previous.stable, self.stable), (previous.preview, self.preview)):
+            if old is None or new is None:
+                continue
+            if Version(new.version) < Version(old.version):
+                raise ValueError("Release channel cannot move to an older version")
+            if new.version == old.version and new != old:
+                raise ValueError("Published version cannot change its commit or manifest")
+
     def latest(self, channel: Channel, *, minimum_generation: int = 0) -> ReleasePointer | None:
         if self.generation < minimum_generation:
             raise ValueError("Release catalogue is older than the last accepted generation")

@@ -57,6 +57,26 @@ def feed(tmp_path, handler, *, platform=PLATFORM, python="3.11.4"):
                        python_version=python, supported_tags=[Tag("py3", "none", platform)])
 
 
+@pytest.mark.parametrize("change", ["older", "changed_bytes", "reinstate"])
+async def test_new_catalogue_generation_cannot_rewrite_observed_release_history(tmp_path, change):
+    pointer, _, _ = preview()
+    old = ReleaseCatalogue(generation=1, preview=pointer, withdrawn={"0.3.6.dev40": "Broken startup"})
+    selected = old
+    async with feed(tmp_path, lambda _: httpx.Response(200, json=selected.model_dump(mode="json"))) as client:
+        assert await client.catalogue() == old
+        if change == "older":
+            selected = old.model_copy(update={"generation": 2, "preview": preview("0.3.6.dev41")[0]})
+        elif change == "changed_bytes":
+            selected = old.model_copy(update={"generation": 2, "preview": pointer.model_copy(update={"manifest_sha256": "f" * 64})})
+        else:
+            selected = old.model_copy(update={"generation": 2, "withdrawn": {}})
+        with pytest.raises(ReleaseFeedError):
+            await client.catalogue()
+        # A rejected response must not poison a later valid publication.
+        selected = old.model_copy(update={"generation": 2, "preview": preview("0.3.7.dev1")[0]})
+        assert (await client.catalogue()).preview.version == "0.3.7.dev1"
+
+
 @pytest.mark.asyncio
 async def test_stable_selects_and_revalidates_exact_target_not_new_latest(tmp_path):
     requests = []

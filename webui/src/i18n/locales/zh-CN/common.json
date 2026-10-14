@@ -1,5 +1,20 @@
 {
   "updates": {
+    "channel": {
+      "label": "更新频道",
+      "stable": "正式版",
+      "preview": "预览版",
+      "hint": "预览版可能存在问题。切换频道不会安装或重启 nanobot。",
+      "saving": "正在保存…",
+      "saved": "频道已保存",
+      "ahead": "当前版本领先于所选频道，不会安装更旧的版本。",
+      "waiting_stable": "已退出预览更新。保留当前版本，等待更新的正式版。",
+      "withdrawn": "当前预览版已撤回。请在修复版可用时升级，不要直接降级覆盖当前数据。",
+      "unavailable": "暂时无法验证此频道，可能尚未开放。请检查网络后重试。",
+      "publishing": "新版本仍在发布中，请稍后再检查。",
+      "unsupported": "此 Python 版本或平台暂无兼容更新。",
+      "releaseNotes": "更新说明"
+    },
     "reviewAgain": "重新确认更新",
     "reviewAgainDescription": "尚未修改安装文件。请重新查看更新内容，再确认安装并重启。",
     "settleFailed": "暂时无法安全结束上次更新。请重新检查状态，或按更新恢复说明处理。",

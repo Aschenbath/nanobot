@@ -148,6 +148,7 @@ _SYSTEM_ROUTES = {
     "/api/settings/version-check": "version-check",
     "/api/settings/nanobot-update": "update-status",
     "/api/settings/nanobot-update/start": "update-start",
+    "/api/settings/nanobot-update/channel": "update-channel",
     "/api/settings/nanobot-update/plan": "update-plan-read",
     "/api/settings/nanobot-update/plan/create": "update-plan-create",
     "/api/settings/nanobot-update/job": "update-job-read",
@@ -163,6 +164,7 @@ _SYSTEM_ROUTES = {
 
 _SETTINGS_MUTATION_PATHS = frozenset({
     "/api/settings/nanobot-update/start",
+    "/api/settings/nanobot-update/channel",
     "/api/settings/nanobot-update/plan/create",
     "/api/settings/nanobot-update/job/prepare",
     "/api/settings/nanobot-update/job/settle",
@@ -338,6 +340,8 @@ class WebUISettingsRouter:
                     "channel-configure",
                     "channel-connect",
                     "update-start",
+                    "update-channel",
+                    "version-check",
                     "update-status",
                     "update-plan-create",
                     "update-plan-read",
@@ -390,7 +394,7 @@ class WebUISettingsRouter:
                 # Reversible changes are tracked separately from installation and reload failures.
                 result.payload["requires_restart"] = False
         response = self._render_result(result)
-        if action.startswith("update-"):
+        if action.startswith("update-") or action == "version-check":
             # A saved review is immutable, but its local validity and permission
             # are not. Never reuse a cached success after an installation changes.
             response.headers["Cache-Control"] = "no-store"

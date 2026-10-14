@@ -1,5 +1,20 @@
 {
   "updates": {
+    "channel": {
+      "label": "Kênh cập nhật",
+      "stable": "Ổn định",
+      "preview": "Xem trước",
+      "hint": "Bản xem trước có thể có lỗi. Đổi kênh không cài đặt hay khởi động lại nanobot.",
+      "saving": "Đang lưu…",
+      "saved": "Đã lưu kênh",
+      "ahead": "Phiên bản này mới hơn kênh đã chọn. Sẽ không cài đặt phiên bản cũ hơn.",
+      "waiting_stable": "Đã tắt cập nhật xem trước. Tiếp tục dùng phiên bản này cho đến khi có bản ổn định mới hơn.",
+      "withdrawn": "Bản xem trước này đã bị thu hồi. Hãy cập nhật khi có phiên bản mới hơn; không hạ cấp đè lên dữ liệu hiện tại.",
+      "unavailable": "Không thể xác minh kênh này. Kênh có thể chưa được mở. Kiểm tra kết nối rồi thử lại.",
+      "publishing": "Phiên bản đang được phát hành. Vui lòng kiểm tra lại sau.",
+      "unsupported": "Không có bản cập nhật tương thích với phiên bản Python và nền tảng này.",
+      "releaseNotes": "Ghi chú phát hành"
+    },
     "reviewAgain": "Xem lại bản cập nhật",
     "reviewAgainDescription": "Chưa có tệp gói nào bị thay đổi. Hãy xem lại bản cập nhật trước khi xác nhận cài đặt và khởi động lại.",
     "settleFailed": "Chưa thể kết thúc an toàn lần cập nhật trước. Hãy kiểm tra lại trạng thái hoặc làm theo hướng dẫn khôi phục.",

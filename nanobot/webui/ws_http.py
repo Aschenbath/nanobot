@@ -223,6 +223,7 @@ _WEBUI_MUTATION_PATHS = {
     "settings.feature.enable": "/api/settings/nanobot-features/enable",
     "settings.feature.disable": "/api/settings/nanobot-features/disable",
     "settings.nanobot.update": "/api/settings/nanobot-update/start",
+    "settings.nanobot.update.channel": "/api/settings/nanobot-update/channel",
     "settings.nanobot.update.plan": "/api/settings/nanobot-update/plan/create",
     "settings.nanobot.update.prepare": "/api/settings/nanobot-update/job/prepare",
     "settings.nanobot.update.settle": "/api/settings/nanobot-update/job/settle",

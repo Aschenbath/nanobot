@@ -28,6 +28,7 @@ from nanobot.installation_lock import installation_access, installation_id, inst
 from nanobot.installation_receipt import RECEIPT_NAME, managed_extras
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
+from nanobot.update_channel import read_update_channel, validate_channel_revision
 from nanobot.update_manager import ManagerPolicy, read_manager_policy
 from nanobot.update_process import inspect_python_environment
 from nanobot.update_profiles import (
@@ -145,6 +146,7 @@ class UpdatePlan(ReleaseRecord):
     id: str
     installation: InstallationSnapshot
     channel: Channel
+    channel_revision: int | None = Field(default=None, ge=0)
     target: ReleaseTarget
     extras: list[str] | None = None
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=1024)
@@ -218,6 +220,7 @@ class UpdatePlan(ReleaseRecord):
         return manager.restriction(self.target.version) if manager is not None else None
 
     def validate_for(self, installation: InstallationSnapshot, *, now: int | None = None) -> None:
+        validate_channel_revision(self.channel_revision, self.installation.environment)
         checked_at = int(time.time()) if now is None else now
         if checked_at < self.created_at or checked_at >= self.expires_at:
             raise ValueError("Update plan expired; check again before confirming")
@@ -266,7 +269,7 @@ class UpdatePlans:
 
     async def prepare(self, installation: InstallationSnapshot, channel: Channel, feed: ReleaseFeed,
                       *, now: int | None = None, restart_running: bool = False,
-                      extras: list[str] | None = None) -> UpdatePlan:
+                      extras: list[str] | None = None, channel_revision: int | None = None) -> UpdatePlan:
         target = await feed.latest(channel)
         created_at = int(time.time()) if now is None else now
         profiles = inspect_profiles(installation.environment)
@@ -290,6 +293,7 @@ class UpdatePlans:
                         continue
                     participants.append(profile.receipt.id)
         plan = UpdatePlan(id=str(uuid4()), installation=installation, channel=channel, target=target, extras=extras, profiles=profiles,
+                          channel_revision=channel_revision,
                           stop_profiles=participants, restart_profiles=participants,
                           created_at=created_at, expires_at=created_at + 15 * 60)
         return self.save(plan)
@@ -309,7 +313,7 @@ class UpdatePlans:
 class UpdatePlanRequest(ReleaseRecord):
     """An intended change to review, never installation/shutdown permission."""
 
-    channel: Channel = "stable"
+    channel: Channel | None = None
     restart_running: bool = False
     extras: list[str] | None = None
 
@@ -345,7 +349,7 @@ class UpdatePlanReview(ReleaseRecord):
     action: Literal["upgrade", "downgrade", "restart", "none"]
     created_at: int
     expires_at: int
-    validity: Literal["current", "expired", "installation_changed", "profiles_changed"]
+    validity: Literal["current", "expired", "installation_changed", "profiles_changed", "channel_changed"]
     artifact_size: int
     extras: list[str] | None
     owner_restriction: str | None
@@ -356,8 +360,10 @@ class UpdatePlanReview(ReleaseRecord):
 def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: int | None = None,
                 profiles: list[ObservedProfile] | None = None) -> UpdatePlanReview:
     checked_at = int(time.time()) if now is None else now
-    validity: Literal["current", "expired", "installation_changed", "profiles_changed"] = "current"
-    if plan.installation.fingerprint != installation.fingerprint:
+    validity: Literal["current", "expired", "installation_changed", "profiles_changed", "channel_changed"] = "current"
+    if (plan.channel_revision or 0) != read_update_channel(plan.installation.environment).revision:
+        validity = "channel_changed"
+    elif plan.installation.fingerprint != installation.fingerprint:
         validity = "installation_changed"
     elif not plan.created_at <= checked_at < plan.expires_at:
         validity = "expired"
@@ -406,15 +412,17 @@ def _inspect_with_lease() -> InstallationSnapshot:
         return inspect_installation()
 
 
-async def preview_release_update(channel: Channel, *, restart_running: bool = False,
+async def preview_release_update(channel: Channel | None = None, *, restart_running: bool = False,
                                  extras: list[str] | None = None) -> UpdatePlan:
     """Build a read-only installation plan for CLI and future gateway handoff."""
     with installation_access():
         installation = await asyncio.to_thread(_inspect_with_lease)
         directory = installation_state_dir(installation.environment)
+        selection = read_update_channel(installation.environment)
         async with ReleaseFeed(directory / "releases") as feed:
             plan = await UpdatePlans(directory / "plans").prepare(
-                installation, channel, feed, restart_running=restart_running, extras=extras,
+                installation, channel or selection.channel, feed, restart_running=restart_running, extras=extras,
+                channel_revision=selection.revision,
             )
         # External package managers do not participate in our lease. Discovery
         # can be slow: do not return a freshly valid review of a replaced install.

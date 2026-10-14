@@ -39,7 +39,7 @@ def _router(
             refresh_runtime_config=refresh_runtime_config,
         ),
         bus=MessageBus(),
-        logger=SimpleNamespace(exception=lambda *_args: None),
+        logger=SimpleNamespace(exception=lambda *_args: None, warning=lambda *_args: None),
         check_api_token=lambda _request: authorized,
         parse_query=lambda path: parse_qs(urlsplit(path).query),
         json_response=http_json_response,
@@ -801,7 +801,7 @@ async def test_version_check_route_returns_stable_payload(
 ) -> None:
     monkeypatch.setattr(
         "nanobot.webui.settings_routes.check_for_update",
-        lambda: update_info,
+        lambda: {"updateAvailable": update_info, "releaseStatus": {"state": "available" if update_info else "current"}},
     )
     request = SimpleNamespace(path="/api/settings/version-check", headers=Headers())
 
@@ -830,6 +830,23 @@ async def test_version_check_route_enforces_auth_and_bounds_failures(
     assert failed.status_code == 500
     assert json.loads(failed.body) == {"error": "version check failed"}
     assert "upstream secret body" not in failed.body.decode()
+
+
+@pytest.mark.parametrize("state", ["waiting_stable", "withdrawn", "unavailable", "publishing", "unsupported"])
+async def test_channel_status_is_explicit_and_old_clients_never_report_false_success(monkeypatch, state):
+    result = {"updateAvailable": None, "releaseStatus": {
+        "channel": "stable", "revision": 2, "currentVersion": "0.3.7.dev42", "state": state,
+    }}
+    monkeypatch.setattr("nanobot.webui.settings_routes.check_for_update", lambda: result)
+    request = SimpleNamespace(path="/api/settings/version-check", headers=Headers())
+    router = _router()
+    response = await router.dispatch(None, request, request.path)
+    assert response.status_code == 409
+    request.path += "?channel_status=1"
+    response = await router.dispatch(None, request, "/api/settings/version-check")
+    assert response.status_code == 200
+    assert json.loads(response.body)["releaseStatus"] == result["releaseStatus"]
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 async def test_runtime_config_route_authentication_validation_and_restart(tmp_path):

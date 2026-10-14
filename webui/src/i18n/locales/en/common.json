@@ -1,5 +1,20 @@
 {
   "updates": {
+    "channel": {
+      "label": "Update channel",
+      "stable": "Stable",
+      "preview": "Preview",
+      "hint": "Preview releases may have bugs. Changing channels does not install or restart nanobot.",
+      "saving": "Saving…",
+      "saved": "Channel saved",
+      "ahead": "This version is ahead of the selected channel. No downgrade will be installed.",
+      "waiting_stable": "Preview updates are off. Keep using this version until a newer stable release is available.",
+      "withdrawn": "This preview was withdrawn. Update to a newer release when available; do not downgrade over your current data.",
+      "unavailable": "Could not verify this channel. It may not be available yet. Check your connection and try again.",
+      "publishing": "The release is still being published. Check again later.",
+      "unsupported": "No compatible update is available for this Python version and platform.",
+      "releaseNotes": "Release notes"
+    },
     "reviewAgain": "Review update",
     "reviewAgainDescription": "No package files were changed. Review the update again before confirming installation and restart.",
     "settleFailed": "The previous update could not be cleared safely. Check its status again or follow the recovery instructions.",

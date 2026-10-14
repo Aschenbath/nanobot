@@ -12,6 +12,7 @@ import os
 import subprocess
 import time
 from contextlib import ExitStack
+from pathlib import Path
 
 from pydantic import Field, field_validator
 
@@ -20,9 +21,16 @@ from nanobot.installation_lock import (
     installation_access,
     installation_id,
     installation_state_dir,
+    pending_update_path,
 )
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import ReleaseRecord
+from nanobot.update_channel import (
+    UpdateChannel,
+    UpdateChannelRequest,
+    read_update_channel,
+    write_update_channel,
+)
 from nanobot.update_jobs import (
     UpdateJobNotFoundError,
     UpdateJobView,
@@ -72,6 +80,37 @@ class UpdateJobService:
     def has_pending_work(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    def change_channel(self, request: UpdateChannelRequest) -> UpdateChannel:
+        """Change subscription only; retire inactive staged jobs, never rollback."""
+        from nanobot.update_stop import settle_uncommitted_handoff
+
+        root = installation_state_dir()
+        with (file_access(root / "channel.lock", exclusive=True),
+              file_access(root / "preparation-controller.lock", exclusive=True),
+              installation_access(allow_incomplete=True)):
+            current = read_update_channel()
+            if request.revision != current.revision:
+                raise ValueError("Update channel changed in another client; check again")
+            if request.channel == current.channel:
+                return current
+            if self._closing or pending_update_path().exists():
+                raise ValueError("Recover the current update before changing channels")
+            staged: list[Path] = []
+            for path in (root / "jobs").glob("*/status.json"):
+                state = JobStatus.read(path.parent)
+                if state.phase in {Phase.SUCCEEDED, Phase.CANCELLED, Phase.PREPARATION_FAILED}:
+                    continue
+                if state.phase not in {Phase.READY, Phase.HANDOFF_FAILED} or state.mutation_started:
+                    raise ValueError("Finish or recover the current update before changing channels")
+                staged.append(path.parent)
+            # Existing settlement checks real worker leases, shutdown commit and
+            # install admission. Changing preference cannot discard pending work.
+            for directory in staged:
+                settle_uncommitted_handoff(directory)
+            selected = UpdateChannel(channel=request.channel, revision=current.revision + 1)
+            write_update_channel(selected)
+            return selected
+
     def prepare(self, plan_id: str) -> UpdateJobView:
         """Acknowledge one durable staging request; never install or restart."""
         if self._closing:
@@ -89,6 +128,7 @@ class UpdateJobService:
         # profile may return this job's journal, but cannot start competing work.
         leases = ExitStack()
         try:
+            leases.enter_context(file_access(root / "channel.lock", exclusive=False))
             leases.enter_context(file_access(root / "preparation-controller.lock", exclusive=True))
             leases.enter_context(installation_access())
             validate_preparation(plan)

@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 
-import { checkVersion } from "@/lib/api";
+import { checkVersion, changeUpdateChannel, type ReleaseStatus, type UpdateChannel, type WebUIMutationTransport } from "@/lib/api";
 
-type VersionResult =
+export type VersionResult =
   | { type: "up-to-date" }
-  | { type: "update"; latestVersion: string; pypiUrl?: string }
+  | { type: "update"; latestVersion: string; pypiUrl?: string; releaseUrl?: string }
+  | { type: "release-status"; state: ReleaseStatus["state"] }
   | { type: "error"; message: string }
   | null;
 
@@ -14,15 +15,22 @@ interface VersionCheckState {
   dismissedVersion: string | null;
   check: () => Promise<void>;
   dismiss: () => void;
+  releaseStatus: ReleaseStatus | null;
+  canChangeChannel: boolean;
+  changingChannel: boolean;
+  channelError: string;
+  channelSaved: boolean;
+  changeChannel: (channel: UpdateChannel) => Promise<void>;
 }
 
 const VersionCheckContext = createContext<VersionCheckState | null>(null);
 
 // Per-connection store: old responses can only update their original store.
 // Changing credentials must not remount the application or discard chat drafts.
-function createVersionCheck(token: string) {
-  let snapshot: Pick<VersionCheckState, "result" | "checking" | "dismissedVersion"> = {
+function createVersionCheck(token: string, channels: boolean, client?: WebUIMutationTransport) {
+  let snapshot: Omit<VersionCheckState, "check" | "dismiss" | "changeChannel"> = {
     result: null, checking: false, dismissedVersion: null,
+    releaseStatus: null, canChangeChannel: false, changingChannel: false, channelError: "", channelSaved: false,
   };
   let pending: Promise<void> | null = null;
   const listeners = new Set<() => void>();
@@ -35,10 +43,14 @@ function createVersionCheck(token: string) {
     update({ checking: true });
     pending = (async () => {
       try {
-        const response = await checkVersion(token);
+        const response = await checkVersion(token, "", channels);
+        if (channels && !response.releaseStatus) throw new Error("The gateway did not return its update channel. Check again.");
+        if (channels && response.releaseStatus) update({ releaseStatus: response.releaseStatus, canChangeChannel: response.can_change_channel === true });
         update({ result: response.updateAvailable
           ? { type: "update", ...response.updateAvailable }
-          : { type: "up-to-date" } });
+          : response.releaseStatus && response.releaseStatus.state !== "current"
+            ? { type: "release-status", state: response.releaseStatus.state }
+            : { type: "up-to-date" } });
       } catch (error) {
         update({ result: { type: "error", message: (error as Error).message } });
       } finally {
@@ -50,6 +62,21 @@ function createVersionCheck(token: string) {
   };
   return {
     check,
+    changeChannel: async (channel: UpdateChannel) => {
+      if (!channels || !client || !snapshot.releaseStatus || !snapshot.canChangeChannel || snapshot.changingChannel || pending) return;
+      const revision = snapshot.releaseStatus.revision;
+      update({ changingChannel: true, channelError: "", channelSaved: false });
+      try {
+        const selection = await changeUpdateChannel(client, channel, revision);
+        update({ releaseStatus: { ...snapshot.releaseStatus!, ...selection }, result: null, dismissedVersion: null, channelSaved: true });
+      } catch (error) {
+        update({ channelError: (error as Error).message });
+      } finally {
+        // Also resolve a lost mutation response / another tab's newer revision.
+        await check();
+        update({ changingChannel: false });
+      }
+    },
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -61,12 +88,14 @@ function createVersionCheck(token: string) {
   };
 }
 
-export function VersionCheckProvider({ token, autoCheck = false, children }: {
+export function VersionCheckProvider({ token, autoCheck = false, channels = false, client, children }: {
   token: string;
   autoCheck?: boolean;
+  channels?: boolean;
+  client?: WebUIMutationTransport;
   children: ReactNode;
 }) {
-  const store = useMemo(() => createVersionCheck(token), [token]);
+  const store = useMemo(() => createVersionCheck(token, channels, client), [token, channels, client]);
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
 
   useEffect(() => {
@@ -74,7 +103,7 @@ export function VersionCheckProvider({ token, autoCheck = false, children }: {
     if (autoCheck && token) void store.check();
   }, [autoCheck, store, token]);
 
-  return <VersionCheckContext.Provider value={{ ...snapshot, check: store.check, dismiss: store.dismiss }}>
+  return <VersionCheckContext.Provider value={{ ...snapshot, check: store.check, dismiss: store.dismiss, changeChannel: store.changeChannel }}>
     {children}
   </VersionCheckContext.Provider>;
 }

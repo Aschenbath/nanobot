@@ -32,9 +32,17 @@ from nanobot.installation_lock import (
     pending_update_path,
 )
 from nanobot.process_runtime import process_is_running
-from nanobot.release_feed import ReleaseFeed, ReleaseTarget
-from nanobot.releases import PLATFORMS, ReleaseArtifact, release_filenames
+from nanobot.release_feed import CATALOGUE_URL, ReleaseFeed, ReleaseTarget
+from nanobot.releases import (
+    PLATFORMS,
+    ReleaseArtifact,
+    ReleaseCatalogue,
+    ReleaseManifest,
+    ReleasePointer,
+    release_filenames,
+)
 from nanobot.update_backup import BackupSource
+from nanobot.update_channel import UpdateChannelRequest, read_update_channel
 from nanobot.update_jobs import (
     _recovery_command,
     prepare_job,
@@ -188,23 +196,26 @@ def installation(tmp_path, monkeypatch, request):
     for version in ("1.0.0", "2.0.0"):
         wheel(artifacts, "fixture-update-dep", version)
     mode = getattr(request, "param", False)
+    versions = ("0.3.4", "0.3.5")
     restart_contract = b'{"schema_version":1,"handoff_protocols":[1]}'
     if isinstance(mode, dict):
-        restart_contract = mode["restart_contract"]
-        mode = "handoff"
-    previous = wheel(artifacts, "nanobot-ai", "0.3.4", requires=["fixture-update-dep==1.0.0"],
+        versions = mode.get("versions", versions)
+        restart_contract = mode.get("restart_contract", restart_contract)
+        mode = "handoff" if "restart_contract" in mode else False
+    previous_version, next_version = versions
+    previous = wheel(artifacts, "nanobot-ai", previous_version, requires=["fixture-update-dep==1.0.0"],
                      handoff=mode == "handoff")
     subprocess.run([python, "-I", "-m", "pip", "install", "--disable-pip-version-check", str(previous)],
                    check=True, capture_output=True, timeout=60)
     platform = next(tag.platform for tag in sys_tags() if tag.platform in PLATFORMS.values())
-    candidate = wheel(artifacts, "nanobot-ai", "0.3.5", requires=["fixture-update-dep>=2.0.0"], platform=platform,
+    candidate = wheel(artifacts, "nanobot-ai", next_version, requires=["fixture-update-dep>=2.0.0"], platform=platform,
                       broken=mode is True,
                       restart=mode in ("restart", "handoff"),
                       restart_contract=restart_contract)
     baseline = inspect_environment(python)
     site = Path(subprocess.check_output([python, "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
     snapshot = InstallationSnapshot(
-        environment=str(environment.resolve()), python=python, installed_version="0.3.4", running_version="0.3.4",
+        environment=str(environment.resolve()), python=python, installed_version=previous_version, running_version=previous_version,
         package_path=str(site / "nanobot/__init__.py"), running_package=str(site / "nanobot/__init__.py"),
         owner="venv", records={"pyvenv.cfg": baseline.receipt_sha, **baseline.app_records},
     )
@@ -238,29 +249,51 @@ def installation(tmp_path, monkeypatch, request):
                      receipt.model_dump(mode="json"))
         profiles = inspect_profiles(str(environment))
         restart_profiles = [receipt.id]
-    target = ReleaseTarget(version="0.3.5", source="pypi",
+    target = ReleaseTarget.model_construct(version=next_version, source="pypi",
                            url=f"https://files.pythonhosted.org/packages/{candidate.name}",
                            artifact=ReleaseArtifact(filename=candidate.name, size=candidate.stat().st_size,
                                                     sha256=hashlib.sha256(candidate.read_bytes()).hexdigest()))
+    manifest = None
+    catalogue = None
+    if ".dev" in next_version:
+        manifest = ReleaseManifest(version=next_version, source_commit="a" * 40, candidate_commit="b" * 40,
+                                   requires_python=">=3.11",
+                                   artifacts=[target.artifact if name == candidate.name else ReleaseArtifact(
+                                       filename=name, size=1, sha256="b" * 64,
+                                   ) for name in release_filenames(next_version)])
+        pointer = ReleasePointer(version=next_version, candidate_commit=manifest.candidate_commit,
+                                 manifest_sha256=hashlib.sha256(manifest.model_dump_json().encode()).hexdigest())
+        catalogue = ReleaseCatalogue(generation=1, preview=pointer)
+        target = target.model_copy(update={"source": "github", "url": manifest.artifact_url(target.artifact).split("#")[0],
+                                          "pointer": pointer, "catalogue_generation": 1})
+    target = ReleaseTarget.model_validate(target.model_dump())
     now = int(time.time())
-    plan = UpdatePlan(id=str(uuid4()), installation=snapshot, target=target, extras=[], channel="stable",
+    plan = UpdatePlan(id=str(uuid4()), installation=snapshot, target=target, extras=[],
+                      channel="preview" if manifest else "stable",
                       profiles=profiles, restart_profiles=restart_profiles,
                       created_at=now, expires_at=now + 900)
     requests = []
 
     def response(request):
         requests.append(str(request.url))
+        if catalogue and request.url.host in {"github.com", "raw.githubusercontent.com"}:
+            if str(request.url) == CATALOGUE_URL:
+                return httpx.Response(200, json=catalogue.model_dump(mode="json"))
+            if request.url.path.endswith("release-manifest.json"):
+                return httpx.Response(200, content=manifest.model_dump_json().encode())
+            assert request.url.path.endswith(candidate.name)
+            return httpx.Response(200, content=candidate.read_bytes())
         if request.url.host == "files.pythonhosted.org":
             return httpx.Response(200, content=candidate.read_bytes())
-        assert request.url.path == "/pypi/nanobot-ai/0.3.5/json", "execution re-resolved latest"
+        assert request.url.path == f"/pypi/nanobot-ai/{next_version}/json", "execution re-resolved latest"
         files = []
-        for filename in release_filenames("0.3.5"):
+        for filename in release_filenames(next_version):
             if filename.endswith((".whl", ".tar.gz")):
                 selected = filename == candidate.name
                 files.append({"filename": filename, "size": target.artifact.size if selected else 1,
                               "url": f"https://files.pythonhosted.org/packages/{filename}", "yanked": False,
                               "digests": {"sha256": target.artifact.sha256 if selected else "a" * 64}})
-        return httpx.Response(200, json={"info": {"name": "nanobot-ai", "version": "0.3.5", "requires_python": ">=3.11"}, "urls": files})
+        return httpx.Response(200, json={"info": {"name": "nanobot-ai", "version": next_version, "requires_python": ">=3.11"}, "urls": files})
 
     return plan, candidate, site, requests, httpx.MockTransport(response)
 
@@ -303,6 +336,61 @@ async def wait_worker(process):
     assert code == 0
 
 
+async def test_channel_switch_retires_real_staged_job_and_preserves_its_evidence(installation, monkeypatch, tmp_path):
+    plan, _, _, _, transport = installation
+    monkeypatch.setattr(sys, "prefix", plan.installation.environment)
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        spec_bytes = (directory / "request.json").read_bytes()
+        with file_access(installation_state_dir() / "worker.lock", exclusive=True):
+            with pytest.raises(BlockingIOError):
+                UpdateJobService().change_channel(UpdateChannelRequest(channel="preview", revision=0))
+        assert read_update_channel().channel == "stable"
+        assert JobStatus.read(directory).phase == Phase.READY
+        changed = UpdateJobService().change_channel(UpdateChannelRequest(channel="preview", revision=0))
+        assert changed.revision == 1
+        assert JobStatus.read(directory).phase == Phase.CANCELLED
+        assert (directory / "request.json").read_bytes() == spec_bytes
+        with pytest.raises(ValueError):
+            await start_job(directory, feed)
+    assert inspect_environment(plan.installation.python).app_version == plan.installation.installed_version
+    assert not (directory / "approval.json").exists()
+    assert not pending_update_path().exists()
+
+
+async def test_old_plan_without_channel_revision_remains_readable_and_byte_identical(installation, tmp_path):
+    plan, _, _, _, transport = installation
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+    directory.mkdir(parents=True)
+    old = plan.model_dump(mode="json")
+    old.pop("channel_revision")
+    write_record(directory / "plan.json", old)
+    original = (directory / "plan.json").read_bytes()
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        assert await prepare_job(plan, feed) == directory
+        assert await prepare_job(plan, feed) == directory
+    assert (directory / "plan.json").read_bytes() == original
+    WorkerSpec.read(directory).verify_inputs(directory)
+
+
+@pytest.mark.parametrize("installation", [{"versions": ("0.3.6", "0.3.7.dev42")},
+                                        {"versions": ("0.3.7.dev42", "0.3.7.dev43")},
+                                        {"versions": ("0.3.7.dev43", "0.3.7")}], indirect=True)
+async def test_real_channel_upgrade_installs_verified_bytes_and_keeps_user_data(installation, tmp_path):
+    plan, _, site, _, transport = installation
+    profile = Path(plan.profiles[0].receipt.home)
+    original = {path: path.read_bytes() for path in (profile / "config.json", profile / "sessions/chat.jsonl")}
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        assert inspect_environment(plan.installation.python).app_version == plan.installation.installed_version
+        await wait_worker(await start_job(directory, feed))
+    assert JobStatus.read(directory).phase == Phase.INSTALLED
+    assert inspect_environment(plan.installation.python).app_version == plan.target.version
+    assert (site / "nanobot/web/dist/index.html").read_text() == f"verified UI {plan.target.version}"
+    assert all(path.read_bytes() == value for path, value in original.items())
+    assert not pending_update_path(plan.installation.environment).exists()
+
+
 def test_recovery_command_uses_base_python_and_exact_launcher_without_shell_home(monkeypatch, tmp_path):
     import nanobot.update_jobs as jobs
 
@@ -331,6 +419,8 @@ def test_recovery_command_quotes_windows_base_python_for_powershell(monkeypatch)
     )
 
 
+@pytest.mark.parametrize("installation", [False, {"versions": ("0.3.6", "0.3.7.dev42")},
+                                        {"versions": ("0.3.7.dev42", "0.3.7")}], indirect=True)
 async def test_standalone_repair_survives_missing_dependency_and_expired_approval(installation, tmp_path):
     plan, _, site, _, transport = installation
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
@@ -373,6 +463,7 @@ async def test_standalone_repair_survives_missing_dependency_and_expired_approva
     assert repaired.returncode == 0, repaired.stdout + repaired.stderr
     assert JobStatus.read(directory).phase == Phase.INSTALLED
     assert JobStatus.read(directory).attempt == 2
+    assert inspect_environment(plan.installation.python).app_version == plan.target.version
     assert (site / "fixture_update_dep/__init__.py").read_text() == "__version__ = '2.0.0'\n"
     assert (directory / "backup/data.zip").read_bytes() == backup
     assert not pending_update_path(plan.installation.environment).exists()

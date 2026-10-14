@@ -170,6 +170,63 @@ stop gateways or back up data. Stop affected
 writers and complete a backup first. Plain pip environments still require explicit review
 of extras, and suffixed/custom installations require their own manager instructions.
 
+## Stable and Preview subscriptions
+
+Settings → About has an **Update channel** selector. Stable is the default, including
+on an existing development build: a version string is not opt-in consent. Preview
+may contain regressions. Changing the selector saves a subscription and checks its
+feed; it does not download, install, stop tasks or restart a gateway. Updating still
+requires a separate exact-version review and confirmation.
+
+The gateway stores the preference and a revision under the current OS account's
+installation state directory (`~/.nanobot/updates/<environment-id>/channel.json`).
+Profiles sharing that Python environment share the subscription; another installation
+or account does not. Moving/replacing the environment can change its identity and
+requires selecting the channel again. Browser storage is not the source of truth.
+
+| Current install / requested channel | Behavior |
+| --- | --- |
+| Stable → Preview, a newer verified preview exists | Offer that exact preview; install only after confirmation. |
+| Preview → Preview | Offer only a higher verified version, including a final release. |
+| Preview → Stable, stable is newer | Offer the final release; keep Stable selected. |
+| Preview → Stable, stable is older | Save Stable and wait for a newer final release; keep running the preview. |
+| Preview subscriber installs a final release | Keep Preview selected for the next development cycle. |
+| Current preview was withdrawn | Show a warning, including when no safe newer replacement exists; never silently downgrade. |
+| Feed offline, incomplete, missing or incompatible | Show a non-success result; keep the subscription and allow another check. |
+
+The stable checker and planner both require the complete PyPI wheel/sdist upload.
+Preview uses `release-index/catalogue.json` and exact GitHub release manifests, not
+PyPI `--pre` or an arbitrary Git branch. A channel's candidate is validated against
+the gateway's interpreter/platform, not the browser's device. The latest final release
+must also be indexed so Preview subscribers receive it. Advance the catalogue only
+after all referenced public assets are verified. Versions/tags/manifest hashes must
+be immutable; increment generation on changes, never rewind pointers or remove a
+withdrawal to reuse a bad version. Validate proposed metadata with
+`ReleaseCatalogue.validate_successor(previous)` before publication. Clients reject
+rewrites relative to their last accepted catalogue; this is not cryptographic signing.
+
+Changing channels invalidates old reviews, including Stable → Preview → Stable.
+Inactive staged work is cancelled through the normal worker/stop checks and retained
+for diagnosis. Active preparation, committed shutdown, admitted installation or a
+failed mutation blocks switching until settled/recovered. Stale tabs cannot overwrite
+newer selections. Lost responses are followed by a fresh read, never an automatic
+installation retry. After package mutation fails, use the saved recovery command and
+verified staged bytes; do not delete the job, clear its fence, or automatically restore
+old configuration/chat data. An older package may not understand new persisted data.
+
+Channel discovery does not expand installation authority: the official managed venv
+and supported POSIX uv transactions retain their reviewed stop/install/restart flow;
+pipx, source, container, system-managed, unsupported uv/platform configurations and
+native desktop distributions retain their installation-owner/distributor path. Remote
+browsers may read channel status but cannot change package-install policy. Older
+clients use the legacy check response; statuses they cannot represent return an
+actionable failure instead of a false green “up to date.”
+
+**This PR does not launch a public Preview channel.** Publication still needs maintainer
+approval, protected index ownership, complete verified release assets and a successful
+clean public install/update/recovery check. No daily schedule or public release is
+enabled by the selector or by the preflight workflow below.
+
 ## Non-publishing preview preflight
 
 **Verify Release Candidate** is a manually dispatched preparation workflow, not an

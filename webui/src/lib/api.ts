@@ -732,24 +732,39 @@ export async function fetchSettingsUsage(
   );
 }
 
+export type UpdateChannel = "stable" | "preview";
+export interface ReleaseStatus {
+  channel: UpdateChannel;
+  revision: number;
+  currentVersion: string;
+  state: "available" | "current" | "ahead" | "waiting_stable" | "withdrawn" | "unavailable" | "publishing" | "unsupported";
+}
 export interface VersionCheckResult {
+  releaseStatus?: ReleaseStatus;
+  can_change_channel?: boolean;
   updateAvailable: {
     currentVersion: string;
     latestVersion: string;
     pypiUrl?: string;
+    releaseUrl?: string;
   } | null;
 }
 
 export async function checkVersion(
   token: string,
   base: string = "",
+  channelStatus = false,
 ): Promise<VersionCheckResult> {
   return request<VersionCheckResult>(
-    `${base}/api/settings/version-check`,
+    `${base}/api/settings/version-check${channelStatus ? "?channel_status=1" : ""}`,
     token,
     undefined,
-    10_000,
+    90_000,
   );
+}
+
+export function changeUpdateChannel(transport: WebUIMutationTransport, channel: UpdateChannel, revision: number): Promise<{ channel: UpdateChannel; revision: number }> {
+  return mutation(transport, "settings.nanobot.update.channel", { channel, revision });
 }
 
 export async function fetchWorkspaces(
@@ -790,8 +805,9 @@ export interface UpdateReview {
   host: string;
   running_version: string;
   target_version: string;
+  channel?: UpdateChannel;
   action: "upgrade" | "downgrade" | "restart" | "none";
-  validity: "current" | "expired" | "installation_changed" | "profiles_changed";
+  validity: "current" | "expired" | "installation_changed" | "profiles_changed" | "channel_changed";
   execution_blocked_reason: string | null;
   profiles: { id: string; workspace: string; reviewed_state: string; stop: boolean; restart: boolean }[];
 }

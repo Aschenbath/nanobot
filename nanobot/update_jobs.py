@@ -330,12 +330,16 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
         raise ValueError("The recovery launcher path is already owned by another file")
     atomic_write_lines(recovery, source.splitlines())
     recovery.chmod(0o600)
-    with installation_access(environment=plan.installation.environment), file_access(root / "prepare.lock", exclusive=True):
+    with (file_access(root / "channel.lock", exclusive=False),
+          installation_access(environment=plan.installation.environment), file_access(root / "prepare.lock", exclusive=True)):
+        validate_preparation(plan)
         directory = root / "jobs" / plan.id
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (directory / "request.json").exists():
             spec = WorkerSpec.read(directory)
-            if spec.plan_sha256 != hashlib.sha256((plan.model_dump_json() + "\n").encode()).hexdigest():
+            saved = (directory / "plan.json").read_bytes()
+            if (UpdatePlan.model_validate_json(saved) != plan
+                    or spec.plan_sha256 != hashlib.sha256(saved).hexdigest()):
                 raise ValueError("This job already belongs to another approved plan")
             return directory
         if (directory / "status.json").exists() and JobStatus.read(directory).phase == Phase.PREPARING:
@@ -343,8 +347,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
             # Absence of its Python task/lease is not proof that child exited.
             raise ValueError("A previous preparation did not settle; inspect this job before retrying or cleaning it up")
         plan_path = directory / "plan.json"
-        encoded = plan.model_dump_json() + "\n"
-        if plan_path.exists() and plan_path.read_bytes() != encoded.encode():
+        if plan_path.exists() and UpdatePlan.model_validate_json(plan_path.read_bytes()) != plan:
             raise ValueError("This preparation already belongs to another reviewed plan")
         if not plan_path.exists():
             atomic_write_lines(plan_path, [plan.model_dump_json()])
@@ -457,7 +460,8 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     runtime_phases = {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED}
     if JobStatus.read(directory).phase not in runtime_phases:
         await feed.revalidate(plan.target)
-    with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
+    with (file_access(installation_state_dir(spec.baseline.environment) / "channel.lock", exclusive=False),
+          file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True)):
         state = JobStatus.read(directory)
         if state.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.SUCCEEDED}:
             raise ValueError("This job is already finished; it cannot be started again")
@@ -525,7 +529,8 @@ def _start_handoff(directory: Path, *, once: bool,
     if already_confirmed():
         return None
     confirmation = None
-    with (file_access(root / "worker.lock", exclusive=True),
+    with (file_access(root / "channel.lock", exclusive=False),
+          file_access(root / "worker.lock", exclusive=True),
           file_access(root / "handoff-child.lock", exclusive=True),
           installation_access(environment=spec.baseline.environment)):
         state = JobStatus.read(directory)
