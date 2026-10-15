@@ -62,7 +62,8 @@ def test_pip_requires_known_extras_and_uses_exact_interpreter(tmp_path):
     assert installation_method(snapshot) == "pip"
     unknown = update_guide(snapshot, "0.3.7", extras=None)
     assert unknown.reason == "extras" and unknown.update_command is None
-    assert "show" in unknown.inspect_command
+    assert "importlib.metadata" in unknown.inspect_command
+    assert "-m pip" not in unknown.inspect_command
     known = update_guide(snapshot, "0.3.7", extras=["matrix"])
     assert snapshot.python in known.update_command
     assert "nanobot-ai[matrix]==0.3.7" in known.update_command

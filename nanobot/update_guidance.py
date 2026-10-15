@@ -96,7 +96,13 @@ def update_guide(installation: InstallationSnapshot, target_version: str, *,
     elif Version(target_version).is_prerelease:
         return guide.model_copy(update={"reason": "preview"})
     elif extras is None:
-        return guide.model_copy(update={"reason": "extras", "inspect_command": shell_command([installation.python, "-I", "-m", "pip", "show", "nanobot-ai"], windows=windows)})
+        # A venv populated with `uv pip` need not contain pip itself. Inspect
+        # metadata with the standard library, without guessing its original extras.
+        inspect = [installation.python, "-I", "-c",
+                   "import importlib.metadata,sys; d=importlib.metadata.distribution(sys.argv[1]); "
+                   "print(d.metadata[sys.argv[2]], d.version); print(d.locate_file(sys.argv[3]))",
+                   "nanobot-ai", "Name", "."]
+        return guide.model_copy(update={"reason": "extras", "inspect_command": shell_command(inspect, windows=windows)})
     else:
         requirement = "nanobot-ai" + (f"[{','.join(extras)}]" if extras else "") + f"=={target_version}"
         return guide.model_copy(update={"reason": "registry", "update_command": shell_command([installation.python, "-I", "-m", "pip", "install", "--upgrade", requirement], windows=windows)})
