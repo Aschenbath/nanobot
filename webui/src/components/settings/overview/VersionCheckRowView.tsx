@@ -1,10 +1,11 @@
 import { useId } from "react";
-import { ArrowUpCircle, Check, ChevronDown, ExternalLink, Loader2 } from "lucide-react";
+import { ArrowUpCircle, Check, ChevronDown, ExternalLink, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Disclosure } from "@/components/ui/disclosure";
 import { ToggleButton } from "@/components/ui/toggle-button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ReleaseStatus, UpdateChannel } from "@/lib/api";
 import type { VersionResult } from "@/providers/VersionCheckProvider";
 
@@ -37,7 +38,7 @@ export function VersionCheckRowView({
   const previewHelp = useId();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   return (
-    <div className="flex flex-col items-center gap-4">
+    <div className="flex w-full min-w-0 max-w-sm flex-col items-center gap-4">
       <div className="min-w-0">
         <div className="sr-only">
           {tx("settings.about.version", "Version")}
@@ -57,7 +58,7 @@ export function VersionCheckRowView({
           )}
         </div>
       </div>
-      <div className="flex shrink-0 flex-col items-center gap-2">
+      <div className="flex w-full min-w-0 flex-col items-center gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -91,37 +92,43 @@ export function VersionCheckRowView({
             {t("settings.about.viewUpdateDetails")}
           </Button>
         ) : result?.type === "update" ? (
-          <div className="mt-2 max-w-sm rounded-panel bg-settings-surface p-4 text-start">
-          <div className="flex items-center gap-1.5 text-[13px] font-medium text-blue-600 dark:text-blue-300" role="status">
-            <ArrowUpCircle className="h-3 w-3" aria-hidden />
-            {t("settings.about.updateAvailable", {
-              defaultValue: "Update available v{{version}}",
-              version: result.latestVersion,
-            })}
-            {result.releaseUrl || result.pypiUrl ? (
-              <a
-                href={result.releaseUrl || result.pypiUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 underline-offset-2 hover:underline"
-              >
-                {result.releaseUrl ? t("updates.channel.releaseNotes") : "PyPI"}
-                <ExternalLink className="h-2.5 w-2.5" aria-hidden />
-              </a>
-            ) : null}
-          </div>
-          {!onRequestUpdate && <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{t("settings.about.updateInstructions")}</p>}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {onRequestUpdate ? <Button size="sm" onClick={onRequestUpdate}
-              className="bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">{t("settings.about.updateNow")}</Button> :
-              <Button size="sm" variant="outline" asChild><a href="https://github.com/HKUDS/nanobot#-install"
-                target="_blank" rel="noopener noreferrer">{t("settings.about.installationGuide")}<ExternalLink className="ms-1.5 h-3 w-3" aria-hidden /></a></Button>}
-            {onDismiss && dismissedVersion !== result.latestVersion && <Button size="sm" variant="ghost" onClick={onDismiss}>{t("settings.about.dismissUpdate")}</Button>}
-          </div>
+          <div className="mt-2 w-full min-w-0 rounded-panel bg-settings-surface p-4 text-start">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0" role="status">
+                <div className="text-[13px] font-medium leading-5">
+                  {t("settings.about.updateNotice")}
+                </div>
+                <p className="mt-1 break-all text-[12px] leading-5 tabular-nums text-muted-foreground">v{result.latestVersion}</p>
+              </div>
+              {onDismiss && dismissedVersion !== result.latestVersion && <TooltipProvider><Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="icon" variant="ghost" onClick={onDismiss}
+                    className="-me-2 -mt-2 shrink-0 text-muted-foreground"
+                    aria-label={t("settings.about.dismissUpdate")}>
+                    <X className="h-4 w-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("settings.about.dismissUpdate")}</TooltipContent>
+              </Tooltip></TooltipProvider>}
+            </div>
+            {!onRequestUpdate && <p className="mt-2 text-[12px] leading-5 text-muted-foreground">{t("settings.about.updateInstructions")}</p>}
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+              {onRequestUpdate ? <Button size="sm" onClick={onRequestUpdate}
+                className="bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">{t("settings.about.updateNow")}</Button> :
+                <Button size="sm" variant="outline" asChild><a href="https://github.com/HKUDS/nanobot#-install"
+                  target="_blank" rel="noopener noreferrer">{t("settings.about.installationGuide")}<ExternalLink className="ms-1.5 h-3 w-3" aria-hidden /></a></Button>}
+              {result.releaseUrl || result.pypiUrl ? (
+                <a href={result.releaseUrl || result.pypiUrl} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex min-h-9 shrink-0 items-center gap-1 whitespace-nowrap rounded-control text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {result.releaseUrl ? t("updates.channel.releaseNotes") : "PyPI"}
+                  <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+                </a>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
-      {releaseStatus && onChangeChannel && <div className="w-full max-w-sm text-start text-[12px] text-muted-foreground">
+      {releaseStatus && onChangeChannel && <div className="w-full max-w-sm px-4 text-start text-[12px] text-muted-foreground">
         <Disclosure summary={<span className="flex items-center justify-between gap-3 py-2">
           <span>{t("updates.channel.settings")}</span>
           <span className="flex items-center gap-2">

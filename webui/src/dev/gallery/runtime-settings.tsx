@@ -64,15 +64,19 @@ function ChatBindingPreview() {
 }
 
 function AboutPreview() {
-  const [mode, setMode] = useState<"ready" | "checking" | "up-to-date" | "update" | "error">("ready");
+  const [mode, setMode] = useState<"ready" | "checking" | "up-to-date" | "update" | "preview" | "error">("ready");
   const [notice, setNotice] = useState("");
   const result: VersionCheckState = mode === "up-to-date" ? { type: mode }
     : mode === "update" ? { type: mode, latestVersion: "0.3.6", pypiUrl: "https://pypi.org/project/nanobot-ai/" }
+      : mode === "preview" ? { type: "update", latestVersion: "0.3.7.dev2026101501",
+        releaseUrl: "https://github.com/HKUDS/nanobot/releases" }
       : mode === "error" ? { type: mode, message: "无法获取版本信息，请重试。" } : null;
-  return <><StatePicker label="版本状态" value={mode} options={["ready", "checking", "up-to-date", "update", "error"]} onChange={setMode} />
+  return <><StatePicker label="版本状态" value={mode} options={["ready", "checking", "up-to-date", "update", "preview", "error"]} onChange={setMode} />
     <AboutSettingsView reportIssueUrl="https://github.com/HKUDS/nanobot/issues/new?template=bug_report.yml"
       versionCheck={<VersionCheckRowView currentVersion="0.3.5" currentCommit="abcdef1234567890" checking={mode === "checking"}
-        result={result} onCheck={() => setMode("update")} />}
+        result={result} onCheck={() => setMode("update")}
+        onRequestUpdate={mode === "preview" ? () => setNotice("打开更新确认；组件预览不会安装或重启。") : undefined}
+        onDismiss={() => { setMode("ready"); setNotice("已收起更新提示"); }} />}
       starLink={<StarLinkView onActivate={() => setNotice("选择了 GitHub 链接")} />} />
     {notice ? <p role="status" className="mt-4 text-xs text-muted-foreground">{notice}</p> : null}</>;
 }

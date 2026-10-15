@@ -41,7 +41,8 @@ describe("Settings overview and appearance", () => {
     const check = vi.fn();
     render(<VersionCheckRowView currentVersion="0.3.5" checking={false}
       result={{ type: "update", latestVersion: "0.3.6", pypiUrl: "https://pypi.org/project/nanobot-ai/" }} onCheck={check} />);
-    expect(screen.getByText("Update available v0.3.6")).toBeVisible();
+    expect(screen.getByText("Update available")).toBeVisible();
+    expect(screen.getByText("v0.3.6")).toBeVisible();
     expect(screen.getByRole("link", { name: "PyPI" })).toHaveAttribute("href", "https://pypi.org/project/nanobot-ai/");
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     expect(check).toHaveBeenCalledTimes(1);
@@ -53,7 +54,11 @@ describe("Settings overview and appearance", () => {
     const props = { currentVersion: "0.3.5", checking: false, onCheck: vi.fn(),
       onRequestUpdate: requestUpdate, onDismiss: dismiss };
     const { rerender } = render(<VersionCheckRowView {...props}
-      result={{ type: "update", latestVersion: "0.3.6" }} />);
+      result={{ type: "update", latestVersion: "0.3.7.dev2026101501",
+        releaseUrl: "https://github.com/HKUDS/nanobot/releases/tag/v0.3.7.dev2026101501" }} />);
+    expect(screen.getByText("v0.3.7.dev2026101501")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Release notes" })).toHaveAttribute("href",
+      "https://github.com/HKUDS/nanobot/releases/tag/v0.3.7.dev2026101501");
     expect(requestUpdate).not.toHaveBeenCalled();
     expect(screen.queryByRole("link", { name: "Installation guide" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Update", exact: true }));
