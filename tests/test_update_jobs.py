@@ -1566,6 +1566,35 @@ async def test_service_restore_refuses_an_activated_candidate(installation, tmp_
     assert not (directory / "restoration.json").exists()
 
 
+@pytest.mark.parametrize("installation", ["restart"], indirect=True)
+async def test_service_restore_completes_reservation_after_interrupted_journal(installation, tmp_path, monkeypatch):
+    from nanobot import update_worker
+    from nanobot.update_fallback import restore_service
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    spec = WorkerSpec.read(directory)
+    root = installation_state_dir(spec.baseline.environment)
+    # Backup failed before mutation. Original program is intact; restoration
+    # wrote its journal but failed before reserving data and recording restart.
+    JobStatus(plan.id, Phase.FAILED, 0, False, "Backup failure", int(time.time())).save(directory)
+    write_record(directory / "handoff-approval.json", {
+        "plan_id": spec.plan_id, "request_sha256": hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
+        "created_at": int(time.time()), "expires_at": int(time.time()) + 900,
+    })
+    write_record(root / "stop.json", {"plan_id": plan.id, "phase": "stopped"})
+    write_record(directory / "restoration.json", {"plan_id": plan.id, "state": "restarting"})
+    restarts = []
+    def restart(path, request):
+        assert JobStatus.read(path).phase == Phase.RESTARTING
+        assert read_record(pending_update_path(request.baseline.environment))["version"] == request.baseline.app_version
+        restarts.append(path)
+    monkeypatch.setattr(update_worker, "restart_runtime", restart)
+    restore_service(directory)
+    assert restarts == [directory]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["baseline", "dependencies", "final-probe"])
 async def test_cancelled_preparation_keeps_lease_until_native_work_exits(installation, monkeypatch, tmp_path, stage):

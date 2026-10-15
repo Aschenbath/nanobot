@@ -226,12 +226,14 @@ def restore_service(directory: Path) -> None:
         restoration_path = directory / "restoration.json"
         if restoration_path.exists():
             restoration = read_record(restoration_path)
-            if restoration == {"plan_id": spec.plan_id, "state": "restarting"}:
+            if (restoration == {"plan_id": spec.plan_id, "state": "restarting"}
+                    and status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED}):
                 # Program restoration already committed. Resume only its runtime
                 # handoff, including cleanup after old-version activation.
                 restart_runtime(directory, spec)
                 return
-            if restoration != {"plan_id": spec.plan_id, "state": "restoring"}:
+            if restoration not in ({"plan_id": spec.plan_id, "state": "restoring"},
+                                   {"plan_id": spec.plan_id, "state": "restarting"}):
                 raise ValueError("Invalid original-program restoration journal")
         # Durable activation can mean the new runtime has accepted tasks. Never
         # downgrade or roll data back after that point.
@@ -253,7 +255,7 @@ def restore_service(directory: Path) -> None:
         with (installation_access(updating=True, environment=spec.baseline.environment),
               data_access((s.path for s in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
             require_pending_owner(spec)
-            if not restoring:
+            if not restoring or not status.mutation_started:
                 check_environment(spec, repairing=status.mutation_started, current=_inspect_metadata(spec))
             if status.mutation_started:
                 require_unchanged_user_data(directory, spec)
@@ -261,7 +263,9 @@ def restore_service(directory: Path) -> None:
             else:
                 write_record(directory / "restoration.json", {"plan_id": spec.plan_id, "state": "restarting"})
             data.reserve()
-            write_record(pending_update_path(spec.baseline.environment), {
+            pending = pending_update_path(spec.baseline.environment)
+            pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            write_record(pending, {
                 "schema_version": 2, "job_id": spec.plan_id, "version": spec.baseline.app_version,
             })
             JobStatus(spec.plan_id, Phase.RESTARTING, status.attempt, status.mutation_started,
