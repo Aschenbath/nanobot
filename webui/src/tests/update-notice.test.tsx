@@ -30,6 +30,30 @@ function Surface() {
 const view = (token = "host-a") => <ClientProvider client={client} token={token} checkUpdatesOnConnect><Surface /></ClientProvider>;
 
 describe("Sidebar update entry", () => {
+  it("closes the About notice, restores focus, and reveals it on an explicit check", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn(async () => jsonResponse(available()));
+    vi.stubGlobal("fetch", fetcher);
+    render(<ClientProvider client={client} token="dismiss-about" checkUpdatesOnConnect>
+      <AboutSettings settings={settingsPayload()} onRequestUpdate={vi.fn()} />
+    </ClientProvider>);
+    await act(async () => {});
+    const dismiss = screen.getByRole("button", { name: "Dismiss update notice" });
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    expect(screen.queryByText("Update available")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Update", exact: true })).toBeNull();
+    const check = screen.getByRole("button", { name: "Check for updates" });
+    expect(check).toHaveFocus();
+    fireEvent.click(check);
+    expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(screen.getByText("Update available")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Update", exact: true })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Dismiss update notice" })).toBeVisible();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("acknowledges every manual check, including fast cached results, failure and slow retry", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ updateAvailable: null })));

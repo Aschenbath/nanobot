@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useRef } from "react";
 import { ArrowUpCircle, Check, ChevronDown, ExternalLink, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -36,6 +36,7 @@ export function VersionCheckRowView({
 }) {
   const { t } = useTranslation();
   const previewHelp = useId();
+  const checkButton = useRef<HTMLButtonElement>(null);
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   return (
     <div className="flex w-full min-w-0 max-w-sm flex-col items-center gap-4">
@@ -60,6 +61,7 @@ export function VersionCheckRowView({
       </div>
       <div className="flex w-full min-w-0 flex-col items-center gap-2">
         <Button
+          ref={checkButton}
           size="sm"
           variant="outline"
           onClick={onCheck}
@@ -91,7 +93,7 @@ export function VersionCheckRowView({
           <Button size="sm" variant="outline" onClick={onRequestUpdate}>
             {t("settings.about.viewUpdateDetails")}
           </Button>
-        ) : result?.type === "update" ? (
+        ) : result?.type === "update" && dismissedVersion !== result.latestVersion ? (
           <div className="mt-2 w-full min-w-0 rounded-panel bg-settings-surface p-4 text-start">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0" role="status">
@@ -100,9 +102,12 @@ export function VersionCheckRowView({
                 </div>
                 <p className="mt-1 break-all text-[12px] leading-5 tabular-nums text-muted-foreground">v{result.latestVersion}</p>
               </div>
-              {onDismiss && dismissedVersion !== result.latestVersion && <TooltipProvider><Tooltip>
+              {onDismiss && <TooltipProvider><Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="icon" variant="ghost" onClick={onDismiss}
+                  <Button size="icon" variant="ghost" onClick={() => {
+                    onDismiss();
+                    checkButton.current?.focus();
+                  }}
                     className="-me-2 -mt-2 shrink-0 text-muted-foreground"
                     aria-label={t("settings.about.dismissUpdate")}>
                     <X className="h-4 w-4" aria-hidden />

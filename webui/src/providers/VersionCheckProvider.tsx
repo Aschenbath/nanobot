@@ -13,7 +13,7 @@ interface VersionCheckState {
   result: VersionResult;
   checking: boolean;
   dismissedVersion: string | null;
-  check: () => Promise<void>;
+  check: (options?: { revealNotice?: boolean }) => Promise<void>;
   dismiss: () => void;
   releaseStatus: ReleaseStatus | null;
   canChangeChannel: boolean;
@@ -38,7 +38,8 @@ function createVersionCheck(token: string, channels: boolean, client?: WebUIMuta
     snapshot = { ...snapshot, ...patch };
     listeners.forEach((listener) => listener());
   };
-  const check = () => {
+  const check = ({ revealNotice = false }: { revealNotice?: boolean } = {}) => {
+    if (revealNotice) update({ dismissedVersion: null });
     if (pending) return pending;
     update({ checking: true });
     pending = (async () => {

@@ -169,7 +169,7 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPe
     setManualFeedback(true);
     // A cached response can finish before the first paint. Keep this button's
     // acknowledgement readable without delaying the shared check or its result.
-    await Promise.all([check(), new Promise(resolve => setTimeout(resolve, 600))]);
+    await Promise.all([check({ revealNotice: true }), new Promise(resolve => setTimeout(resolve, 600))]);
     setManualFeedback(false);
   };
 
