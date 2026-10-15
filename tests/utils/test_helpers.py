@@ -258,7 +258,7 @@ def test_atomic_writes_clean_temp_when_replace_fails(
     def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise error_type("replace failed")
 
-    monkeypatch.setattr("nanobot.utils.atomic_file._replace_atomic", fail_replace)
+    monkeypatch.setattr("nanobot.utils.atomic_file.replace_atomic", fail_replace)
 
     with pytest.raises(error_type, match="replace failed"):
         write(target, "new")

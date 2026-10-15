@@ -222,6 +222,8 @@ jobs:
           uv run --no-sync python -m pytest
           tests/test_installation_lock.py
           tests/utils/test_helpers.py::test_atomic_record_reader_does_not_block_concurrent_replacement
+          tests/gateway/test_runtime.py::test_runtime_state_publish_keeps_existing_snapshot_readable
+          tests/gateway/test_runtime.py::test_runtime_state_reader_does_not_block_publish_while_decoding
           -q
 
       - name: Run tests with coverage

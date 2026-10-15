@@ -42,7 +42,7 @@ def _open_snapshot(path: Path) -> BinaryIO:
     return os.fdopen(descriptor, "rb")
 
 
-def _replace_atomic(source: Path, destination: Path) -> None:
+def replace_atomic(source: Path, destination: Path) -> None:
     """Publish a new inode while existing snapshot readers retain the old one."""
     if os.name != "nt":
         os.replace(source, destination)
@@ -124,7 +124,7 @@ def atomic_write_text(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        _replace_atomic(tmp, path)
+        replace_atomic(tmp, path)
         _fsync_directory_after_replace(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
@@ -147,7 +147,7 @@ def atomic_write_lines(path: Path, lines: Iterable[str], *, fsync: bool = True) 
             if fsync:
                 handle.flush()
                 os.fsync(handle.fileno())
-        _replace_atomic(tmp, path)
+        replace_atomic(tmp, path)
         if fsync:
             _fsync_directory_after_replace(path.parent)
     finally:
