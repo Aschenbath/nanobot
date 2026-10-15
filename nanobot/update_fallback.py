@@ -61,10 +61,16 @@ def _inspect_metadata(spec: WorkerSpec) -> EnvironmentSnapshot:
     versions: dict[str, str] = {}
     records: dict[str, str] = {}
     for distribution in distributions(path=[str(sites[0])]):
-        name = re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower()
+        raw_name, version = distribution.metadata["Name"], distribution.version
+        if not raw_name or not version:
+            # Interrupted pip transactions can leave an incomplete dist-info.
+            # Missing targets are allowed by check_environment(repairing=True);
+            # missing unrelated distributions still fail its baseline comparison.
+            continue
+        name = re.sub(r"[-_.]+", "-", raw_name).lower()
         payload = "\n".join(distribution.read_text(f) or "" for f in ("METADATA", "RECORD", "direct_url.json"))
         items[name] = hashlib.sha256(payload.encode()).hexdigest()
-        versions[name] = distribution.version
+        versions[name] = version
         if name == "nanobot-ai":
             records = {key: hashlib.sha256((distribution.read_text(key) or "").encode()).hexdigest()
                        for key in ("RECORD", "direct_url.json")}

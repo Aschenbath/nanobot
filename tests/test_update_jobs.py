@@ -1441,7 +1441,7 @@ async def test_broken_release_keeps_recovery_record_and_never_overwrites_an_exte
 
 
 @pytest.mark.parametrize("installation", [True], indirect=True)
-@pytest.mark.parametrize("interrupted", [None, "rename", "journal"])
+@pytest.mark.parametrize("interrupted", [None, "rename", "journal", "metadata"])
 async def test_program_restore_after_real_broken_install_preserves_user_data(installation, tmp_path, monkeypatch, interrupted):
     from nanobot.update_fallback import (
         preserve_program,
@@ -1460,13 +1460,22 @@ async def test_program_restore_after_real_broken_install_preserves_user_data(ins
         process = await start_job(directory, feed)
         assert await asyncio.to_thread(process.wait, 40) != 0
         assert JobStatus.read(directory).mutation_started
+        if interrupted == "metadata":
+            from nanobot.update_fallback import _inspect_metadata
+            from nanobot.update_worker import check_environment
+
+            # A killed installer can leave dist-info after removing METADATA.
+            # Same-target import probes fail, but restoring the saved program
+            # must not depend on importing or parsing the damaged package.
+            next(Path(spec.baseline.environment).rglob(f"nanobot_ai-{spec.version}.dist-info/METADATA")).unlink()
+            check_environment(spec, repairing=True, current=_inspect_metadata(spec))
         config = Path(plan.profiles[0].receipt.config)
         chat = Path(plan.profiles[0].receipt.data_dir) / "sessions/chat.jsonl"
         before = config.read_bytes(), chat.read_bytes()
         with (installation_access(updating=True, environment=spec.baseline.environment),
               data_access((s.path for s in spec.backup_sources), updating=True, job_id=spec.plan_id)):
             require_unchanged_user_data(directory, spec)
-            if interrupted:
+            if interrupted in {"rename", "journal"}:
                 from nanobot import update_worker
 
                 rename = os.rename
