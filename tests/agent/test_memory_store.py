@@ -225,7 +225,7 @@ class TestHistoryWithCursor:
         def failing_replace(*args, **kwargs):
             raise RuntimeError("Simulated failure")
 
-        monkeypatch.setattr('nanobot.utils.atomic_file._replace_atomic', failing_replace)
+        monkeypatch.setattr('nanobot.utils.atomic_file.replace_atomic', failing_replace)
 
         with pytest.raises(RuntimeError):
             store._write_entries(entries)
