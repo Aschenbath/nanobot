@@ -37,11 +37,9 @@ describe("Installation-owned release channels", () => {
       .mockResolvedValueOnce(jsonResponse(state("preview", 1, "unavailable")));
     vi.stubGlobal("fetch", fetcher);
     render(view(client));
-    const settings = await screen.findByRole("button", { name: "Update settings" });
-    expect(screen.queryByRole("switch")).toBeNull();
-    expect(settings).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(settings);
-    const selector = screen.getByRole("switch", { name: "Receive preview updates" });
+    const selector = await screen.findByRole("switch", { name: "Receive preview updates" });
+    expect(selector).toBeVisible();
+    expect(selector).toHaveAccessibleDescription(/previews may have bugs/);
     expect(selector).toHaveAttribute("aria-checked", "false");
     fireEvent.change(screen.getByLabelText("Draft"), { target: { value: "Keep writing" } });
     fireEvent.click(selector);
@@ -53,8 +51,7 @@ describe("Installation-owned release channels", () => {
     await act(async () => resolve({ channel: "preview", revision: 1 }));
     await waitFor(() => expect(selector).toBeEnabled());
     expect(selector).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(settings);
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(selector).toBeVisible();
     expect(screen.getByText(/Update preference saved/)).toBeVisible();
     expect(screen.getByText(/Could not verify/)).toBeVisible();
     expect(screen.queryByText("You're up to date")).toBeNull();
@@ -69,10 +66,8 @@ describe("Installation-owned release channels", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(state("preview", 1)))
       .mockResolvedValueOnce(jsonResponse(state("stable", 2, "waiting_stable"))));
     render(view(client));
-    fireEvent.click(await screen.findByRole("button", { name: /Update settings/ }));
-    fireEvent.click(screen.getByText("Subscribe stable"));
+    fireEvent.click(await screen.findByRole("switch", { name: "Receive preview updates" }));
     await waitFor(() => expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false"));
-    fireEvent.click(screen.getByRole("button", { name: "Update settings" }));
     expect(screen.getByText(/Channel changed elsewhere/)).toBeVisible();
     expect(screen.getByText(/newer stable release/)).toBeVisible();
     expect(screen.queryByText("You're up to date")).toBeNull();
@@ -87,11 +82,10 @@ describe("Installation-owned release channels", () => {
       .mockResolvedValueOnce(jsonResponse(state("stable", 4)))
       .mockResolvedValueOnce(jsonResponse(state("preview", 1))));
     const { rerender } = render(view(client));
-    fireEvent.click(await screen.findByRole("button", { name: "Update settings" }));
-    fireEvent.click(screen.getByText("Subscribe preview"));
+    fireEvent.click(await screen.findByRole("switch", { name: "Receive preview updates" }));
     fireEvent.change(screen.getByLabelText("Draft"), { target: { value: "Survives" } });
     rerender(view(client, "channel-b"));
-    fireEvent.click(await screen.findByRole("button", { name: "Update settings" }));
+    await screen.findByRole("switch", { name: "Receive preview updates" });
     await waitFor(() => expect(screen.getByRole("switch")).toBeEnabled());
     await act(async () => resolve({ channel: "preview", revision: 1 }));
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
@@ -110,12 +104,13 @@ describe("Installation-owned release channels", () => {
     const mutation = vi.spyOn(client, "requestMutation");
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ ...state(), can_change_channel: false })));
     const { rerender } = render(view(client));
-    fireEvent.click(await screen.findByRole("button", { name: "Update settings" }));
-    expect(screen.getByRole("switch")).toBeDisabled();
+    const selector = await screen.findByRole("switch", { name: "Receive preview updates" });
+    expect(selector).toBeDisabled();
+    expect(selector).toHaveAccessibleDescription(/Open this gateway on localhost or allow remote package installation/);
     fireEvent.click(screen.getByText("Subscribe preview"));
     expect(mutation).not.toHaveBeenCalled();
     rerender(view(client, "native", true));
-    await waitFor(() => expect(screen.queryByRole("button", { name: /Update settings/ })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("switch")).toBeNull());
     expect(mutation).not.toHaveBeenCalled();
   });
 });

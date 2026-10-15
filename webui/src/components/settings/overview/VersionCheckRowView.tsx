@@ -1,9 +1,8 @@
 import { useId, useRef } from "react";
-import { ArrowUpCircle, Check, ChevronDown, ExternalLink, Loader2, X } from "lucide-react";
+import { ArrowUpCircle, Check, ExternalLink, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { Disclosure } from "@/components/ui/disclosure";
 import { ToggleButton } from "@/components/ui/toggle-button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ReleaseStatus, UpdateChannel } from "@/lib/api";
@@ -134,22 +133,17 @@ export function VersionCheckRowView({
         ) : null}
       </div>
       {releaseStatus && onChangeChannel && <div className="w-full max-w-sm px-4 text-start text-[12px] text-muted-foreground">
-        <Disclosure summary={<span className="flex items-center justify-between gap-3 py-2">
-          <span>{t("updates.channel.settings")}</span>
-          <span className="flex items-center gap-2">
-            {releaseStatus.channel === "preview" && <span>{t("updates.channel.preview")}</span>}
-            <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]/disclosure:rotate-180 motion-reduce:transition-none" aria-hidden />
-          </span>
-        </span>} summaryClassName="rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <div className="flex items-center justify-between gap-4 py-2">
-            <span className="text-[13px] text-foreground">{t("updates.channel.receivePreview")}</span>
-            <ToggleButton checked={releaseStatus.channel === "preview"}
-              onChange={enabled => { void onChangeChannel(enabled ? "preview" : "stable"); }}
-              disabled={!canChangeChannel || changingChannel || checking}
-              label={t("updates.channel.receivePreview")} aria-describedby={previewHelp} />
-          </div>
-          <p id={previewHelp} className="pb-2 leading-5">{t("updates.channel.hint")}</p>
-        </Disclosure>
+        <div className="flex min-h-11 items-center justify-between gap-4">
+          <span className="text-[13px] text-foreground">{t("updates.channel.receivePreview")}</span>
+          <ToggleButton checked={releaseStatus.channel === "preview"}
+            onChange={enabled => { void onChangeChannel(enabled ? "preview" : "stable"); }}
+            disabled={!canChangeChannel || changingChannel || checking}
+            label={t("updates.channel.receivePreview")} aria-describedby={previewHelp} />
+        </div>
+        <p id={previewHelp} className="pb-2 leading-5">
+          {t("updates.channel.hint")}
+          {!canChangeChannel && <span className="mt-2 block">{t("updates.blocked.permission")}</span>}
+        </p>
         <p role="status" className="leading-5">
           {changingChannel ? t("updates.channel.saving") : channelError || (channelSaved ? t("updates.channel.saved") : "")}
         </p>

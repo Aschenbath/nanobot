@@ -2,6 +2,100 @@
 
 Use this checklist with the [Release Packaging Contract](../CONTRIBUTING.md#release-packaging-contract). Preparing a release does not publish it. Pushing a Git tag, publishing a GitHub Release, uploading to PyPI, and deploying the documentation are separate operations.
 
+## Release cadence
+
+Use one product and two release feeds, not two separate interfaces. Stable is
+the default; Preview is optional and easy to find in Settings → About. Both require
+confirmation before installation. A faster release cadence never grants permission
+to stop a user's tasks or restart their gateway automatically.
+
+| Release | When to prepare it | Public destination | User experience |
+| --- | --- | --- | --- |
+| Stable feature release | At the planned feature milestone | Final GitHub Release and PyPI; also index its manifest for Preview subscribers | Normal update notice |
+| Stable patch | When a reviewed fix or small, compatible improvement is ready; do not wait for the next monthly milestone | Same stable destinations and checks | Normal update notice, no Preview opt-in required |
+| Preview | At most one routine candidate per day with eligible changes and passing checks; urgent repairs can use a new sequence | GitHub prerelease plus the protected `release-index` catalogue; not PyPI in this design | Same update notice, only for subscribers; risk shown before installation |
+
+These are release policies, not a promise of a new version every day. An unchanged
+source, failed check, missing platform asset, incomplete acceptance or absent
+publication approval leaves the last verified release in place. Users can skip
+intermediate previews. Release acceptance must cover upgrading from the supported
+stable baseline and an earlier Preview, not only the immediately previous build.
+
+### Stable patch procedure
+
+1. Select the supported stable baseline and the reviewed fixes. If `main` contains
+   unfinished features, prepare a release branch from that baseline and backport
+   only the required fixes. Do not relabel an unverified Preview as stable.
+2. Allocate an unused final version, update both version declarations, and follow
+   **Prepare a candidate** below. Patch releases have the same package, licensing,
+   native startup, data-preservation and update/recovery gates as feature releases.
+   A small diff is not permission to skip those gates.
+3. Publish the approved, immutable files in the order below: GitHub files, PyPI,
+   public-download checks, then the catalogue's `stable` pointer. Keep the existing
+   `preview` pointer and withdrawal history. Preview subscribers select the newer
+   eligible version; a stable patch older than their installed Preview is not a
+   downgrade offer.
+4. Publish concise notes describing the fixes and any required operator action.
+   Existing users who lack this updater still need the original installation method
+   for their first upgrade. External package/deployment owners keep their own route.
+
+### Daily Preview procedure
+
+1. Select an exact, reviewed `main` commit whose required CI passed. Compare its
+   source SHA with the last accepted candidate; skip an unchanged source. Record
+   the next unreleased stable base and an unused increasing Preview sequence.
+2. Run **Verify Release Candidate** for that exact ref and base. It creates a
+   separate version-only candidate, builds the WebUI and five native TUI bundles,
+   and verifies the full package set. Ordinary users install these built packages,
+   not a source checkout that needs Bun. The workflow remains manual and read-only.
+3. For a candidate intended for publication, explicitly retain its installable
+   handoff and preserve it before expiry. Run the remaining native and packaged
+   old-to-new update/recovery acceptance checks against those exact bytes. Keep
+   candidate SHA, manifest hash, coverage, known issues and source-offer approval
+   together. CI reports alone are not an installable release or publication consent.
+4. With separate maintainer approval, publish an immutable `v<version>` tag at the
+   **candidate** commit and a GitHub **prerelease**. Do not mark it as the latest
+   stable release. Upload the complete verified artifact set and manifest, plus
+   release notes. The pinned installer source must also be publicly reachable.
+5. Check every public artifact's size/hash and run the clean public install/update
+   acceptance. Only then advance the protected catalogue's `preview` pointer with
+   a new generation. Validate it against the latest catalogue, preserve `stable`
+   and all withdrawals, and serialize writes with stable publication/withdrawal.
+   A stale publisher must reread and revalidate instead of overwriting a newer index.
+6. On partial upload, keep the feed unchanged and resume only from the original
+   verified files. If those bytes are lost or changed, allocate a new version and
+   repeat acceptance. If a published candidate is unsafe, withdraw it with a reason
+   and offer a newer fixed version; do not rewind the feed or restore user data.
+
+Use `X.Y.Z.devN`, ordered by Python's version rules, not a display-date comparison.
+For example, `0.3.6.dev42 < 0.3.6.dev43 < 0.3.6 < 0.3.7.dev1`. Examples are not
+published versions. Once `0.3.6` ships, new previews need a later base; a stable
+patch can consume a previously planned base, so allocate it before the next build.
+The current workflow uses `github.run_number` for `N`; do not reset or replace that
+sequence without checking published versions. Rerunning a job does not authorize
+replacing files for the same version. A final release must be rebuilt, tested and
+published under its own final identity; do not rename `.devN` wheels.
+
+### Launch gates and automation boundary
+
+This PR implements discovery, consent, update/recovery and manual candidate
+preparation. It does **not** enable a cron schedule, a protected publisher, PyPI
+uploads or a public Preview channel. A daily public channel still needs maintainers
+to approve index ownership/protection, publication credentials, source retention
+and the exact packaged/public-download acceptance. The candidate workflow's
+one-day installable retention is opt-in (~400 MB); do not turn it on for every
+routine scheduled build. Preserve approved release bytes and corresponding source
+for their required lifetime outside expiring CI storage.
+
+To automate later, add a separately reviewed schedule that selects changed, green
+source commits and a protected publication stage with the gates above. Keep build
+permissions read-only and publication permissions restricted to that stage. Record
+the last accepted source/version and use one catalogue writer; retries must not
+reuse a published version for different bytes. No schedule is activated here.
+Announce Preview availability, including one dismissible discovery hint for existing
+users if added, only after its public feed is verified. Do not show a blue update
+badge for an unavailable channel or enroll stable users merely because they check.
+
 ## Prepare a candidate
 
 1. Choose the previous release and the exact candidate commit. Work in a clean worktree; do not include local configuration, session data, credentials, or unrelated changes.
@@ -72,15 +166,25 @@ The final PyPI upload set is **five platform wheels plus one source distribution
 
 Keep an artifact manifest with the source commit, version, filenames, hashes, checks performed, and any remaining release gates. Rebuild and recheck if the packaged source changes.
 
+Final releases also need `release-manifest.json` for the catalogue's `stable`
+pointer. From the clean final-version checkout, `scripts.release_candidate assemble`
+can build the complete upload set from the intermediate wheel, sdist and verified
+TUI archives, using the final commit itself as `--source-commit` (no Preview
+version preparation). See the assembly commands below. Upload these same five
+wheels, sdist, ten native archive/checksum files and manifest to GitHub; upload
+only the wheels and sdist to PyPI. Verify the manifest against the exact final
+source and public bytes before advancing the catalogue. A TUI-only GitHub Release
+cannot serve Preview subscribers a final release through this catalogue.
+
 ## Publish, with maintainer approval
 
 1. Confirm all pre-tag gates above are complete. Create and push exactly `vX.Y.Z`; do not move or reuse a published version tag.
 2. Create the matching GitHub Release. A draft may be used while assembling its attachments. Pushing the tag alone does not run `Publish Terminal UI` or upload anything to PyPI.
-3. Attach the already verified five TUI archives and their `.sha256` files, after confirming the tag's packaged sources match the artifact manifest. Verify the uploaded bytes match their preflight hashes; never upload a naked executable.
+3. Attach the complete verified set: five platform wheels, sdist, five TUI archives, their `.sha256` files and `release-manifest.json`, after confirming the tag's packaged sources match the manifest. Verify the uploaded bytes match their preflight hashes; never upload a naked executable.
 4. If instead rebuilding through **Publish Terminal UI**, use `tag=vX.Y.Z` and confirm the already completed compliance review. Wait for all five targets and repeat artifact checks on those new outputs. Do not substitute their new bytes under the old artifact hashes.
 5. Make the GitHub Release and all TUI attachments publicly available. Verify their public downloads for fallback/source-built installations. Supported platform-wheel installs do not need these downloads to start the TUI.
 6. Upload only the checked `nanobot_ai-X.Y.Z.tar.gz` and the five final platform wheels to PyPI. Do not upload the intermediate universal wheel or stale files from a shared `dist/` directory. This repository has no automatic PyPI publication workflow.
-7. Verify installation from PyPI, bundled WebUI startup, and bundled TUI startup without downloads in clean environments. Merge the prepared wiki PR only when the stable package is available: merging its `main` deploys the site automatically. Confirm all localized `/docs/latest/` routes select the new version and old version links still work.
+7. Verify installation from PyPI, bundled WebUI startup, and bundled TUI startup without downloads in clean environments. After all public GitHub/PyPI files pass, advance the protected catalogue's `stable` pointer to this manifest, retaining Preview and withdrawal history. Verify discovery for both subscriptions. Merge the prepared wiki PR only when the stable package is available: merging its `main` deploys the site automatically. Confirm all localized `/docs/latest/` routes select the new version and old version links still work.
 8. Publish the release announcement and add the dated entry to [Release Archive](./release-archive.md). Complete any coordinated advisory publication and reporter notification. Record links and completion status in the release tracking issue.
 
 ## If a gate fails
@@ -172,9 +276,10 @@ of extras, and suffixed/custom installations require their own manager instructi
 
 ## Stable and Preview subscriptions
 
-Settings → About keeps one update flow. **Update settings → Receive preview
-updates** is a secondary switch, off by default even on an existing development
-build: a version string is not opt-in consent. Preview may contain regressions.
+Settings → About keeps one update flow. **Receive preview updates** is directly
+visible below the check/update area, without an extra disclosure or separate mode.
+It is off by default even on an existing development build: a version string is
+not opt-in consent. Preview may contain regressions.
 Changing the switch saves a subscription and checks its feed; it does not download,
 install, stop tasks or restart a gateway. Updating still requires a separate
 exact-version review and confirmation, with a warning for a Preview target.
@@ -223,7 +328,8 @@ Channel discovery does not expand installation authority: the official managed v
 and supported POSIX uv transactions retain their reviewed stop/install/restart flow;
 pipx, source, container, system-managed, unsupported uv/platform configurations and
 native desktop distributions retain their installation-owner/distributor path. Remote
-browsers may read channel status but cannot change package-install policy. Older
+browsers without explicit package-install permission may read channel status but
+cannot change the subscription. Enabling Preview does not grant that permission. Older
 clients use the legacy check response; statuses they cannot represent return an
 actionable failure instead of a false green “up to date.”
 

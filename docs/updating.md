@@ -10,12 +10,15 @@ installation method. That first upgrade does not convert pip, pipx, uv or Docker
 into an installer-managed installation; the owner table below still applies.
 Stable users do not opt into previews merely by checking for updates.
 
-In **Settings → About → Update settings**, **Receive preview updates** is off by
-default. Turn it on to try new features early, with a higher risk of bugs. There is
+In **Settings → About**, **Receive preview updates** is visible below the update
+check; there is no section to expand first. It is off by default. Turn it on to
+try new features early, with a higher risk of bugs. There is
 one update button for both release types; installing a preview shows its risk in
 the confirmation. This preference alone does not download, install or restart.
-It belongs to this installation, not the browser. Changes require authenticated
-local package-install permission; other installation owners keep their own updater.
+It belongs to this installation, not the browser. Changes require an authenticated
+local browser or the gateway's explicit remote package-install permission; other
+installation owners keep their own updater. Without that permission the preference
+is read-only, with guidance beside the disabled switch.
 
 Turn it off to receive only stable updates. If this preview is newer than the latest
 stable release, keep using it until a newer stable is available. This does not
@@ -23,6 +26,16 @@ downgrade packages or restore old data. A verified newer stable release remains
 available when the Preview index is unavailable; an older or incomplete release
 does not become a recovery target. Installing a final release while this preference
 is on keeps previews enabled for the next development cycle.
+
+Stable is not restricted to monthly releases. Validated fixes can ship as stable
+patches between feature releases, without joining Preview. The release policy aims
+to offer a Preview on days with eligible changes and passing release checks, not
+to publish every commit or require an update every day. You can skip intermediate
+previews and install the latest compatible version offered by the checker.
+Normal users receive prebuilt WebUI and native TUI packages; they do not need Bun
+to compile the interface. Source installations retain their development workflow.
+See the [release cadence and publication gates](releasing.md#release-cadence).
+Daily publication is not enabled by this PR or by turning on the preference.
 
 If a fresh official installation fails during environment creation or download,
 fix the reported prerequisite/network error and rerun the same installer command.
