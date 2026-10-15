@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "Si la actualización falla, nanobot intentará recuperar el servicio con el programa anterior cuando sea seguro. Los datos de los chats no se revertirán.",
+    "restored": "Versión anterior restaurada",
+    "restoredDescription": "La actualización no se completó. v{{version}} vuelve a funcionar. No se han restaurado copias anteriores de tu configuración ni de tus chats.",
     "recoveryBeforeInstall": "La actualización se detuvo antes de instalar. No se modificaron archivos del paquete. Recupera la actualización guardada para continuar.",
     "channel": {
       "settings": "Ajustes de actualización",

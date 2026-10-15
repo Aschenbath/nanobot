@@ -809,6 +809,7 @@ export interface UpdateReview {
   action: "upgrade" | "downgrade" | "restart" | "none";
   validity: "current" | "expired" | "installation_changed" | "profiles_changed" | "channel_changed";
   execution_blocked_reason: string | null;
+  automatic_recovery?: boolean;
   profiles: { id: string; workspace: string; reviewed_state: string; stop: boolean; restart: boolean }[];
 }
 export interface UpdateReviewResponse {
@@ -825,6 +826,10 @@ export interface UpdateJob {
   target_version: string;
   running_version: string;
   recorded_phase: UpdateJobPhase;
+  recovery_active?: boolean;
+  service_restored?: boolean;
+  automatic_recovery?: boolean;
+  previous_version?: string;
   mutation_started: boolean;
   execution_confirmation_id: string | null;
   recovery_command?: string;

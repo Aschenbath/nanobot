@@ -320,9 +320,24 @@ Inactive staged work is cancelled through the normal worker/stop checks and reta
 for diagnosis. Active preparation, committed shutdown, admitted installation or a
 failed mutation blocks switching until settled/recovered. Stale tabs cannot overwrite
 newer selections. Lost responses are followed by a fresh read, never an automatic
-installation retry. After package mutation fails, use the saved recovery command and
-verified staged bytes; do not delete the job, clear its fence, or automatically restore
-old configuration/chat data. An older package may not understand new persisted data.
+installation retry. Installer-owned background gateways have a frozen, independent
+recovery supervisor: one exact-target repair, then verified original-program
+restoration only before activation and only if protected data is unchanged. It
+restarts and checks the reviewed service without browser or terminal intervention.
+Other installation owners keep their existing repair route. Do not delete the job,
+clear its fence, or automatically restore old configuration/chat data. An older
+package may not understand new persisted data.
+
+Release acceptance must exercise both a healthy packaged upgrade and injected
+candidate import/startup failure, backup failure after shutdown, worker termination,
+and interruption between the journaled program renames. Verify real gateway health,
+version, authenticated history reads, continued writes and a second start; compare
+configuration and existing conversation bytes. Also prove that data changes,
+activation, live owners and changed installation ownership prevent unsafe rollback.
+Run native Windows checks for file-lock/rename behavior, not only POSIX mocks. Loss
+of both supervisor and worker, permanent storage damage and incompatible data writes
+are not claimed to recover automatically. Keep these limits in release notes and
+the operator guide; a green unit suite alone is not packaged release acceptance.
 
 Channel discovery does not expand installation authority: the official managed venv
 and supported POSIX uv transactions retain their reviewed stop/install/restart flow;

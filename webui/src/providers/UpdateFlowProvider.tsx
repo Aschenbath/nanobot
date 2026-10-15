@@ -39,6 +39,7 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   const [delayed, setDelayed] = useState(false);
   const [pollAttempt, setPollAttempt] = useState(0);
   const [recovery, setRecovery] = useState("");
+  const [automaticRecovery, setAutomaticRecovery] = useState(false);
   const generation = useRef(0);
   const approved = useRef<string | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
@@ -61,7 +62,8 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
     try {
       const saved = JSON.parse(sessionStorage.getItem(RECOVERY_KEY) || "null");
       setRecovery(saved?.id === id && typeof saved.command === "string" ? saved.command : "");
-    } catch { setRecovery(""); }
+      setAutomaticRecovery(saved?.id === id && saved.automatic === true);
+    } catch { setRecovery(""); setAutomaticRecovery(false); }
     setPendingId(id);
     setOpen(!!id);
   }, [client, token, enabled]);
@@ -107,9 +109,10 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
         const { job: next } = await readUpdateJob(token, pendingId).finally(() => feedback);
         if (!active) return;
         setJob(next);
+        setAutomaticRecovery(next.automatic_recovery === true);
         if (next.recovery_command) {
           setRecovery(next.recovery_command);
-          try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify({ id: next.id, command: next.recovery_command })); } catch { /* Still available until reload. */ }
+          try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify({ id: next.id, command: next.recovery_command, automatic: next.automatic_recovery === true })); } catch { /* Still available until reload. */ }
         }
         setOffline(false);
         setDelayed(false);
@@ -119,7 +122,9 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
           await execute(next.id);
         }
         if (!active) return;
-        if (terminal.has(next.recorded_phase) && !(next.recorded_phase === "succeeded" && next.running_version !== next.target_version)) return;
+        if (!next.recovery_active && terminal.has(next.recorded_phase)
+          && !(next.recorded_phase === "succeeded" && next.running_version !== next.target_version)
+          && !(next.service_restored && next.running_version !== next.previous_version)) return;
         // A refresh can recover files already staged, but not installation consent.
         if (next.recorded_phase === "ready" && !next.execution_confirmation_id) {
           try {
@@ -172,6 +177,7 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
       setJob(null);
       setReview(null);
       setRecovery("");
+      setAutomaticRecovery(false);
       setPendingId(null);
       remember(null);
       const next = await createUpdateReview(client);
@@ -202,6 +208,8 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
     setSubmitting(true);
     setError("");
     remember(id);
+    setAutomaticRecovery(review.plan.automatic_recovery === true);
+    try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify({ id, automatic: review.plan.automatic_recovery === true })); } catch { /* Memory state still works. */ }
     try {
       const response = await prepareUpdate(client, id);
       if (generation.current === current) { setJob(response.job); setPendingId(id); }
@@ -233,9 +241,10 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   };
 
   const phase = job?.recorded_phase;
-  const done = job?.recorded_phase === "succeeded" && job.running_version === job.target_version;
+  const restored = job?.service_restored && job.running_version === job.previous_version;
+  const done = restored || (phase === "succeeded" && job?.running_version === job?.target_version);
   const awaitingRestart = phase === "succeeded" && !done;
-  const failed = !!phase && terminal.has(phase) && phase !== "succeeded";
+  const failed = !job?.recovery_active && !job?.service_restored && !!phase && terminal.has(phase) && phase !== "succeeded";
   // Backup can fail after shutdown/admission but before any package mutation.
   // That saved job still needs the standalone recovery path, not another update.
   const needsRecovery = failed && (job?.mutation_started || phase === "failed");
@@ -244,9 +253,9 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   const restoringReview = !!pendingId && phase === "ready" && !job?.execution_confirmation_id && !review && !error;
   const reviewing = (submitting && (!review || !!reviewAgain)) || restoringReview;
   const busy = checkingStatus || submitting || restoringReview || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
-  const title = done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
+  const title = restored ? "restored" : done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
   const blocked = !reviewAgain && !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
-  const description = delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
+  const description = delayed ? t(automaticRecovery ? "updates.automaticRecovery" : "updates.delayed") : error || (restored ? t("updates.restoredDescription", { version: job?.previous_version }) : done ? t("updates.doneDescription", { version: job?.target_version })
     : offline || awaitingRestart ? t("updates.reconnectingDescription") : reviewing ? t("updates.reviewing")
     : reviewAgain ? t("updates.reviewAgainDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : needsRecovery ? "updates.recoveryBeforeInstall" : "updates.preparationFailed")
     : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
@@ -273,12 +282,14 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
           <img src="/brand/nanobot_mark.svg" alt="" draggable={false} className="mb-4 h-11 w-11 select-none" />
           <AlertDialogTitle className="text-lg font-semibold leading-7 tracking-tight">{t(checkingStatus ? "settings.about.checking" : `updates.${title}`)}</AlertDialogTitle>
           <AlertDialogDescription className="mt-2 text-sm leading-6">{description}</AlertDialogDescription>
+          {review?.plan.automatic_recovery && !pendingId && !busy && !blocked && !error &&
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("updates.automaticRecovery")}</p>}
           {review && !busy && !blocked && !done && !failed && !error && /\.dev\d+$/.test(review.plan.target_version) &&
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("updates.channel.previewWarning")}</p>}
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}
         </div>
-        {pendingId && recovery && (delayed || needsRecovery) && <div className="mt-4 space-y-2 border-t pt-4">
+        {pendingId && recovery && !job?.recovery_active && ((delayed && !automaticRecovery) || needsRecovery) && <div className="mt-4 space-y-2 border-t pt-4">
           <p className="text-sm font-medium">{t("updates.recoveryTitle")}</p>
           <p className="text-xs leading-5 text-muted-foreground">{t("updates.recoveryDescription")}</p>
           <Textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}

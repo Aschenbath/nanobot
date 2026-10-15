@@ -794,6 +794,9 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
         "attempt": 0, "mutation_started": False, "updated_at": plan.created_at,
         "execution_confirmation_id": None,
         "running_version": nanobot.__version__,
+        "recovery_active": False,
+        "service_restored": False,
+        "automatic_recovery": False,
     }
     assert not (directory / "request.json").exists(), "An early journal must not require committed staging"
     assert "webui.update-jobs.read.v1" in webui_contract()["capabilities"]
@@ -820,6 +823,14 @@ async def test_job_reads_survive_refresh_expiry_and_unavailable_installation(rev
     assert {"message", "running", "can_retry", "python", "url", "profiles"}.isdisjoint(job)
     assert len(fixture.requests) == 1
     assert not (directory / "approval.json").exists()
+
+    # A completed program restoration is not a successful installation. Keep
+    # the legacy wire phase readable while exposing the precise new result.
+    JobStatus(plan_id, Phase.RESTORED, 2, True, "Private recovery detail", plan.expires_at).save(directory)
+    response = await fetch(fixture.gateway(), JOB + "?id=" + plan_id)
+    job = json.loads(response.body)["job"]
+    assert job["recorded_phase"] == "failed" and job["service_restored"] is True
+    assert b"Private recovery detail" not in response.body
 
 
 async def test_job_reads_reject_missing_foreign_and_corrupt_records(review_gateway, monkeypatch):

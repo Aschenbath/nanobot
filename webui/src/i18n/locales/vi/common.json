@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "Nếu cập nhật thất bại, nanobot sẽ thử khôi phục dịch vụ bằng chương trình trước đó khi an toàn. Dữ liệu trò chuyện sẽ không bị hoàn nguyên.",
+    "restored": "Đã khôi phục phiên bản trước",
+    "restoredDescription": "Cập nhật chưa hoàn tất. v{{version}} đã chạy lại. Cấu hình và cuộc trò chuyện không bị hoàn nguyên về dữ liệu cũ.",
     "recoveryBeforeInstall": "Bản cập nhật đã dừng trước khi cài đặt. Chưa có tệp gói nào bị thay đổi. Khôi phục bản cập nhật đã lưu để tiếp tục.",
     "channel": {
       "settings": "Cài đặt cập nhật",

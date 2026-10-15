@@ -355,6 +355,7 @@ class UpdatePlanReview(ReleaseRecord):
     owner_restriction: str | None
     profiles: list[ProfileReview]
     execution_blocked_reason: str | None = None
+    automatic_recovery: bool = False
 
 
 def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: int | None = None,
@@ -376,6 +377,7 @@ def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: in
         channel=plan.channel, action=plan.action, created_at=plan.created_at, expires_at=plan.expires_at,
         validity=validity, artifact_size=plan.target.artifact.size, extras=plan.extras,
         owner_restriction=plan.owner_restriction, execution_blocked_reason=inline_update_blocked_reason(plan, validity),
+        automatic_recovery=bool(plan.restart_profiles) and RECEIPT_NAME in plan.installation.records,
         profiles=[ProfileReview(
             id=item.receipt.id, workspace=item.receipt.workspace, reviewed_state=item.state,
             stop=item.receipt.id in plan.stop_profiles, restart=item.receipt.id in plan.restart_profiles,

@@ -3,7 +3,7 @@
 The gateway controller keeps authenticated staging separate from execution consent.
 The caller owns explicit shutdown/restart selection. A detached worker revalidates,
 stops reviewed idle gateways, backs up data, installs, and restarts selected runtimes.
-Confirmed execution is idempotent; an interrupted job needs explicit recovery.
+Confirmed execution is idempotent; managed installs have bounded detached recovery.
 """
 
 from __future__ import annotations
@@ -84,6 +84,9 @@ class UpdateJobView(ReleaseRecord):
     execution_confirmation_id: str | None = None
     running_version: str = ""
     recovery_command: str = ""
+    recovery_active: bool = False
+    service_restored: bool = False
+    automatic_recovery: bool = False
 
 
 def _recovery_command(plan_id: str) -> str:
@@ -126,14 +129,34 @@ def read_update_job(plan_id: str) -> UpdateJobView:
     # receive typed facts and can localize phases, never raw journal messages.
     from nanobot import __version__
 
+    recovery_active = False
+    supervision = directory / "supervision.json"
+    recovery_failed = False
+    if supervision.exists():
+        record = read_record(supervision)
+        if record.get("plan_id") == plan_id:
+            recovery_failed = (record.get("state") == "needs_attention"
+                               and status.phase not in {Phase.SUCCEEDED, Phase.RESTORED, Phase.CANCELLED})
+            try:
+                with file_access(installation_state_dir() / "supervisor.lock", exclusive=True):
+                    pass
+            except BlockingIOError:
+                recovery_active = True
+
     return UpdateJobView(
         id=plan_id, installation_id=plan.installation.installation_id, host=platform.node(),
         previous_version=plan.installation.installed_version, target_version=plan.target.version,
-        channel=plan.channel, recorded_phase=status.phase, attempt=status.attempt,
+        # Older clients know FAILED and must not display a rolled-back update
+        # as successful. New clients use the additive service result below.
+        channel=plan.channel, recorded_phase=Phase.FAILED if status.phase == Phase.RESTORED or recovery_failed else status.phase,
+        attempt=status.attempt,
         mutation_started=status.mutation_started, updated_at=status.updated_at,
         execution_confirmation_id=confirmation.id if confirmation else None,
         running_version=__version__,
         recovery_command=_recovery_command(plan_id),
+        recovery_active=recovery_active,
+        service_restored=status.phase == Phase.RESTORED,
+        automatic_recovery=bool(plan.restart_profiles) and "nanobot-install.json" in plan.installation.records,
     )
 
 
@@ -200,7 +223,8 @@ def _worker_archive(path: Path) -> str:
     # The frozen worker must not shadow the newly installed application when
     # handing off to its runtime. Keep only the copied stdlib helpers in this
     # private namespace; intentional application imports retain `nanobot`.
-    modules = ("update_worker", "update_uv", "update_process", "update_backup", "data_access", "installation_lock", "utils.atomic_file")
+    modules = ("update_worker", "update_uv", "update_process", "update_backup", "update_fallback",
+               "update_restart", "data_access", "installation_lock", "utils.atomic_file")
     with ZipFile(path, "x") as bundle:
         files = {"__main__.py": b"from _nanobot_update.update_worker import main\nmain()\n",
                  "_nanobot_update/__init__.py": b"", "_nanobot_update/utils/__init__.py": b""}
@@ -414,7 +438,8 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
                                        config=Path(receipt.config), workspace=Path(receipt.workspace)))
         sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
     spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), hashlib.sha256(archive.read_bytes()).hexdigest(),
-                      baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv)
+                      baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv,
+                      automatic_recovery=bool(plan.restart_profiles) and baseline.installer_receipt_sha is not None)
     for path in [archive, *(directory / "wheels" / item.filename for item in records)]:
         path.chmod(0o600)
         with path.open("r+b") as stream:
@@ -463,7 +488,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
     with (file_access(installation_state_dir(spec.baseline.environment) / "channel.lock", exclusive=False),
           file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True)):
         state = JobStatus.read(directory)
-        if state.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.SUCCEEDED}:
+        if state.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.SUCCEEDED, Phase.RESTORED}:
             raise ValueError("This job is already finished; it cannot be started again")
         restarting = state.phase in runtime_phases
         if state.mutation_started and not repair:
@@ -529,7 +554,8 @@ def _start_handoff(directory: Path, *, once: bool,
     if already_confirmed():
         return None
     confirmation = None
-    with (file_access(root / "channel.lock", exclusive=False),
+    with (file_access(root / "supervisor.lock", exclusive=True) if spec.automatic_recovery else nullcontext(),
+          file_access(root / "channel.lock", exclusive=False),
           file_access(root / "worker.lock", exclusive=True),
           file_access(root / "handoff-child.lock", exclusive=True),
           installation_access(environment=spec.baseline.environment)):
@@ -583,7 +609,9 @@ def _start_handoff(directory: Path, *, once: bool,
 
 def _spawn_worker(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
                   confirmation_id: str | None = None) -> subprocess.Popen[bytes]:
-    command = [spec.baseline.base_python, "-I", str(directory / "worker.pyz")]
+    command = [spec.baseline.base_python, "-I", "-S", str(directory / "worker.pyz")]
+    if spec.automatic_recovery:
+        command.extend(["--supervise", str(directory)])
     if confirmation_id is not None:
         command.extend(["--confirmed-handoff", str(directory), confirmation_id])
     else:

@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "Jika pembaruan gagal, nanobot akan mencoba memulihkan layanan dengan program sebelumnya jika aman. Data chat tidak akan dikembalikan ke versi lama.",
+    "restored": "Versi sebelumnya dipulihkan",
+    "restoredDescription": "Pembaruan belum selesai. v{{version}} berjalan kembali. Konfigurasi dan chat Anda tidak dikembalikan ke data lama.",
     "recoveryBeforeInstall": "Pembaruan berhenti sebelum instalasi. Tidak ada berkas paket yang diubah. Pulihkan pembaruan tersimpan untuk melanjutkan.",
     "channel": {
       "settings": "Pengaturan pembaruan",

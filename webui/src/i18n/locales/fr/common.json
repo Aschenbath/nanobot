@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "Si la mise à jour échoue, nanobot tentera de rétablir le service avec le programme précédent si cela est sûr. Les discussions ne seront pas remplacées par une sauvegarde.",
+    "restored": "Version précédente rétablie",
+    "restoredDescription": "La mise à jour a échoué. La version v{{version}} fonctionne à nouveau. Vos paramètres et discussions n’ont pas été remplacés par une sauvegarde.",
     "recoveryBeforeInstall": "La mise à jour s’est arrêtée avant l’installation. Aucun fichier du paquet n’a été modifié. Reprenez la mise à jour enregistrée pour continuer.",
     "channel": {
       "settings": "Réglages des mises à jour",

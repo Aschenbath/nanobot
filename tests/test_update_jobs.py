@@ -1312,8 +1312,8 @@ update_worker.run_job(Path(sys.argv[2]))
 """
 
     def launch(command, **kwargs):
-        if len(command) == 4 and str(command[2]).endswith("worker.pyz"):
-            command = [command[0], "-I", "-c", wrapper, command[2], command[3], str(ready)]
+        if len(command) == 5 and str(command[3]).endswith("worker.pyz"):
+            command = [command[0], "-I", "-S", "-c", wrapper, command[3], command[4], str(ready)]
         return original_popen(command, **kwargs)
 
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
@@ -1438,6 +1438,123 @@ async def test_broken_release_keeps_recovery_record_and_never_overwrites_an_exte
         with pytest.raises(ValueError, match="cannot overwrite"):
             await start_job(directory, feed, repair=True)
     assert inspect_environment(plan.installation.python).app_version == "0.3.6"
+
+
+@pytest.mark.parametrize("installation", [True], indirect=True)
+@pytest.mark.parametrize("interrupted", [None, "rename", "journal"])
+async def test_program_restore_after_real_broken_install_preserves_user_data(installation, tmp_path, monkeypatch, interrupted):
+    from nanobot.update_fallback import (
+        preserve_program,
+        require_unchanged_user_data,
+        restore_program,
+    )
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+        spec = replace(WorkerSpec.read(directory), automatic_recovery=True)
+        # No service participants in this fixture: exercise actual package and
+        # dependency restoration separately from the packaged gateway E2E.
+        with installation_access(updating=True, environment=spec.baseline.environment):
+            preserve_program(directory, spec)
+        process = await start_job(directory, feed)
+        assert await asyncio.to_thread(process.wait, 40) != 0
+        assert JobStatus.read(directory).mutation_started
+        config = Path(plan.profiles[0].receipt.config)
+        chat = Path(plan.profiles[0].receipt.data_dir) / "sessions/chat.jsonl"
+        before = config.read_bytes(), chat.read_bytes()
+        with (installation_access(updating=True, environment=spec.baseline.environment),
+              data_access((s.path for s in spec.backup_sources), updating=True, job_id=spec.plan_id)):
+            require_unchanged_user_data(directory, spec)
+            if interrupted:
+                from nanobot import update_worker
+
+                rename = os.rename
+                publish = update_worker.write_record
+                def interrupt_switch(source, destination):
+                    if Path(source).name == f".nanobot-original-{spec.plan_id}":
+                        raise OSError("Injected interruption between program renames")
+                    return rename(source, destination)
+                def interrupt_publish(path, value, **kwargs):
+                    if path.name == "restoration.json" and value.get("state") == "restarting":
+                        raise OSError("Injected interruption after program switch")
+                    return publish(path, value, **kwargs)
+                with monkeypatch.context() as patch:
+                    if interrupted == "rename":
+                        patch.setattr(os, "rename", interrupt_switch)
+                    else:
+                        patch.setattr(update_worker, "write_record", interrupt_publish)
+                    with pytest.raises(OSError, match="Injected interruption"):
+                        restore_program(directory, spec)
+                assert Path(spec.baseline.environment).exists() is (interrupted == "journal")
+                assert read_record(directory / "restoration.json")["state"] == "restoring"
+            restore_program(directory, spec)
+            assert read_record(directory / "restoration.json")["state"] == "restarting"
+        restored = inspect_environment(plan.installation.python)
+        assert restored.app_version == spec.baseline.app_version
+        assert restored.versions == spec.baseline.versions
+        assert (config.read_bytes(), chat.read_bytes()) == before
+        # A new conversation write must never be replaced by the old backup.
+        chat.write_bytes(before[1] + b'{"content":"new message"}\n')
+        with pytest.raises(ValueError, match="User data changed"):
+            require_unchanged_user_data(directory, spec)
+        assert chat.read_bytes().endswith(b'{"content":"new message"}\n')
+
+
+@pytest.mark.parametrize("outcome", ["repaired", "restored", "unsafe"])
+async def test_supervisor_has_one_repair_budget_and_replays_transient_restore(installation, tmp_path, monkeypatch, outcome):
+    from nanobot import update_fallback
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    spec = replace(WorkerSpec.read(directory), automatic_recovery=True,
+                   restart_profiles=(plan.profiles[0].receipt.id,))
+    monkeypatch.setattr(WorkerSpec, "read", classmethod(lambda cls, directory: spec))
+    calls = []
+    restored = []
+    def child(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            # Abrupt worker exit after admission leaves a non-terminal journal.
+            write_record(directory / "approval.json", {"admitted": True})
+            phase = Phase.INSTALLING
+        else:
+            assert command[-2:] == ["--recover", str(directory)]
+            phase = Phase.SUCCEEDED if outcome == "repaired" else Phase.FAILED
+        JobStatus(spec.plan_id, phase, len(calls), True, "Injected execution result", int(time.time())).save(directory)
+        return subprocess.CompletedProcess(command, 91 if len(calls) == 1 else 0)
+    def restore(path):
+        restored.append(path)
+        if outcome == "unsafe":
+            raise ValueError("User data changed")
+        if len(restored) == 1:
+            raise OSError("Transient rename failure")
+        JobStatus(spec.plan_id, Phase.RESTORED, 2, True, "Restored", int(time.time())).save(directory)
+    monkeypatch.setattr(update_fallback.subprocess, "run", child)
+    monkeypatch.setattr(update_fallback, "restore_service", restore)
+    update_fallback.supervise(directory, ["--handoff", str(directory)])
+    assert len(calls) == 2
+    assert len(restored) == {"repaired": 0, "restored": 2, "unsafe": 1}[outcome]
+    if outcome == "unsafe":
+        assert read_record(directory / "supervision.json")["state"] == "needs_attention"
+    update_fallback.supervise(directory, ["--handoff", str(directory)])
+    assert len(calls) == 2, "A duplicate launch cannot acquire another recovery budget"
+
+
+async def test_service_restore_refuses_an_activated_candidate(installation, tmp_path):
+    from nanobot.update_fallback import restore_service
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    before = inspect_environment(plan.installation.python)
+    write_record(directory / "activation.json", {"plan_id": plan.id})
+    JobStatus(plan.id, Phase.RESTART_FAILED, 1, True, "Lost readiness after activation", int(time.time())).save(directory)
+    with pytest.raises(ValueError, match="activated"):
+        restore_service(directory)
+    assert inspect_environment(plan.installation.python) == before
+    assert not (directory / "restoration.json").exists()
 
 
 @pytest.mark.asyncio
@@ -1912,8 +2029,8 @@ update_worker.run_job(Path(sys.argv[2]))
 """
 
     def launch(command, **kwargs):
-        if len(command) == 4 and str(command[2]).endswith("worker.pyz"):
-            command = [command[0], "-I", "-c", wrapper, command[2], command[3]]
+        if len(command) == 5 and str(command[3]).endswith("worker.pyz"):
+            command = [command[0], "-I", "-S", "-c", wrapper, command[3], command[4]]
         return original_popen(command, **kwargs)
 
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:

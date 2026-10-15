@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "If the update fails, nanobot will try to restore service, using the previous program when safe. Your chat data will not be rolled back.",
+    "restored": "Previous version restored",
+    "restoredDescription": "The update did not finish. v{{version}} is running again. Your configuration and chats were not rolled back.",
     "recoveryBeforeInstall": "The update stopped before installation. No package files were changed. Recover the saved update to continue.",
     "channel": {
       "settings": "Update settings",

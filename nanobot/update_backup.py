@@ -118,6 +118,15 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def current_file_hashes(sources: tuple[BackupSource, ...]) -> dict[str, str]:
+    """Compare user contents with a backup using the same bounded path policy."""
+    entries = _inventory(sources)
+    result = {item.path: _file_digest(Path(item.path)) for item in entries if item.kind == "file"}
+    if _inventory(sources) != entries:
+        raise ValueError("User data changed during recovery verification")
+    return result
+
+
 def verify_backup(directory: Path, sources: tuple[BackupSource, ...], request_sha256: str, *, unchanged: bool = False) -> Path:
     """Verify the original snapshot; before first mutation, require unchanged data."""
     root = directory / "backup"

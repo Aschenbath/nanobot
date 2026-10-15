@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "Se a atualização falhar, o nanobot tentará restaurar o serviço com o programa anterior, quando for seguro. Os dados das conversas não serão revertidos.",
+    "restored": "Versão anterior restaurada",
+    "restoredDescription": "A atualização não foi concluída. A v{{version}} está funcionando novamente. Suas configurações e conversas não foram revertidas.",
     "recoveryBeforeInstall": "A atualização parou antes da instalação. Nenhum arquivo do pacote foi alterado. Recupere a atualização salva para continuar.",
     "channel": {
       "settings": "Configurações de atualização",

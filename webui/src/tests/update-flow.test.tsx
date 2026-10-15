@@ -45,6 +45,45 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
 describe("Real update consent and recovery", () => {
+  it("does not send a managed-install user to the terminal during a long reconnect", async () => {
+    vi.useFakeTimers();
+    connectionStatus = "closed";
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    sessionStorage.setItem("nanobot.pending-update-recovery.v1", JSON.stringify({
+      id, command: "private recovery command", automatic: true,
+    }));
+    render(view());
+    await act(async () => { await vi.advanceTimersByTimeAsync(123_000); });
+    expect(screen.getByText(/nanobot will try to restore service/)).toBeVisible();
+    expect(screen.queryByDisplayValue("private recovery command")).not.toBeInTheDocument();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+    expect(api.readUpdateJob).not.toHaveBeenCalled();
+  });
+  it("reports a restored service without claiming the update succeeded or asking for terminal repair", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("failed", "confirmed"), previous_version: "0.3.5", service_restored: true,
+      mutation_started: true, recovery_command: "private recovery command",
+    } });
+    render(view());
+    await screen.findByText("Previous version restored");
+    expect(screen.getByText(/v0.3.5 is running again/)).toBeInTheDocument();
+    expect(screen.queryByText("Update complete")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("private recovery command")).not.toBeInTheDocument();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("keeps polling a failed attempt while its independent recovery owner is active", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    vi.mocked(api.readUpdateJob).mockResolvedValueOnce({ job: {
+      ...job("failed", "confirmed"), recovery_active: true, mutation_started: true,
+    } }).mockResolvedValue({ job: {
+      ...job("failed", "confirmed"), previous_version: "0.3.5", service_restored: true,
+    } });
+    render(view());
+    await screen.findByText("Previous version restored", {}, { timeout: 4000 });
+    expect(api.readUpdateJob).toHaveBeenCalledTimes(2);
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
   it.each(["0.3.7.dev42", "0.3.7"])("shows preview risk only for a preview installation target (%s)", async (version) => {
     vi.mocked(api.createUpdateReview).mockResolvedValue({ ...review, plan: { ...review.plan, target_version: version } });
     render(view());

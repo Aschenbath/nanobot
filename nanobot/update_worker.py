@@ -254,6 +254,7 @@ class WorkerSpec:
     backup_sources: tuple[BackupSource, ...]
     restart_profiles: tuple[str, ...] = ()
     uv: UVPreparation | None = None
+    automatic_recovery: bool = False
 
     @classmethod
     def read(cls, directory: Path) -> WorkerSpec:
@@ -283,9 +284,13 @@ class WorkerSpec:
         restart_profiles = tuple(_sha(value) for value in cast(list[object], participants))
         if len(restart_profiles) > 1024 or len(set(restart_profiles)) != len(restart_profiles):
             raise ValueError("Invalid restart participants")
+        automatic_recovery = data.get("automatic_recovery", False)
+        if type(automatic_recovery) is not bool:
+            raise ValueError("Invalid automatic recovery selection")
         spec = cls(plan_id, _sha(data["plan_sha256"]), _sha(data["worker_sha256"]), EnvironmentSnapshot.parse(data["baseline"]),
                    _text(data["version"]), wheels, sources, restart_profiles,
-                   UVPreparation.parse(data["uv"]) if data.get("uv") is not None else None)
+                   UVPreparation.parse(data["uv"]) if data.get("uv") is not None else None,
+                   automatic_recovery)
         if (spec.uv is None) != (spec.baseline.manager_receipt_sha is None):
             raise ValueError("Installer preparation does not match the environment owner")
         if spec.uv is not None and (spec.uv.receipt_sha256 != spec.baseline.manager_receipt_sha
@@ -338,6 +343,7 @@ class Phase(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RESTORED = "restored"
 
 
 @dataclass(frozen=True)
@@ -390,7 +396,7 @@ class ExecutionConfirmation:
         write_record(directory / "confirmation.json", asdict(self), max_bytes=2048)
 
 
-def _check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
+def check_approval(directory: Path, spec: WorkerSpec, *, handoff: bool = False,
                     confirmation_id: str | None = None, check_expiry: bool = True) -> dict[str, object]:
     approval = read_record(directory / ("handoff-approval.json" if handoff else "approval.json"))
     now = int(time.time())
@@ -418,7 +424,7 @@ def _prepare_handoff_child(directory: Path, confirmation_id: str | None = None) 
     child_leases.enter_context(file_access(
         installation_state_dir(spec.baseline.environment) / "handoff-child.lock", exclusive=True))
     child_leases.enter_context(installation_access(environment=spec.baseline.environment))
-    _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+    check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     initialize_runtime(spec.baseline.python, spec.baseline.environment)
     from nanobot.update_handoff import prepare_handoff
 
@@ -427,13 +433,13 @@ def _prepare_handoff_child(directory: Path, confirmation_id: str | None = None) 
 
 def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> None:
     status = JobStatus.read(directory)
-    _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+    check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     JobStatus(spec.plan_id, Phase.CHECKING, status.attempt, False,
               "Rechecking the exact release and installation before shutdown", int(time.time())).save(directory)
     subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                     "--prepare-handoff", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    approval = _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+    approval = check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     current = inspect_job_environment(directory, spec)
     with (installation_access(updating=True, environment=spec.baseline.environment),
           data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
@@ -468,7 +474,7 @@ def check_environment(spec: WorkerSpec, *, repairing: bool, current: Environment
                 raise ValueError("Another update changed a target package; repair cannot overwrite its version")
 
 
-def _pending_owner(spec: WorkerSpec) -> None:
+def require_pending_owner(spec: WorkerSpec) -> None:
     pending = pending_update_path(spec.baseline.environment)
     if pending.exists() and read_record(pending).get("job_id") != spec.plan_id:
         raise ValueError("Another incomplete update owns this installation")
@@ -502,7 +508,7 @@ def _inspection_child(directory: Path) -> None:
     if status.phase != Phase.FINALIZING:
         child_leases.enter_context(data_access(
             (source.path for source in spec.backup_sources), updating=not restarting, job_id=spec.plan_id))
-    _pending_owner(spec)
+    require_pending_owner(spec)
     initialize_runtime(spec.baseline.python, spec.baseline.environment)
     print(json.dumps(asdict(current_environment(uv=spec.uv is not None))))
 
@@ -514,10 +520,10 @@ def _installer_child(directory: Path, confirmation_id: str | None = None) -> Non
         (source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id))
     status = JobStatus.read(directory)
     if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
-                        Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
+                        Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED, Phase.RESTORED}:
         raise ValueError("This update job is already finished")
-    _check_approval(directory, spec, confirmation_id=confirmation_id)
-    _pending_owner(spec)
+    check_approval(directory, spec, confirmation_id=confirmation_id)
+    require_pending_owner(spec)
     initialize_runtime(spec.baseline.python, spec.baseline.environment)
     check_environment(spec, repairing=status.mutation_started, current=current_environment(uv=spec.uv is not None))
     spec.verify_inputs(directory)
@@ -664,7 +670,7 @@ def _approve_recovery(directory: Path, spec: WorkerSpec, status: JobStatus) -> N
     """
     if status.phase in {Phase.CANCELLED, Phase.PREPARATION_FAILED, Phase.PREPARING, Phase.PREPARATION_REQUESTED}:
         raise ValueError("This job cannot be repaired; no installation was admitted")
-    _check_approval(directory, spec, check_expiry=False)
+    check_approval(directory, spec, check_expiry=False)
     spec.verify_inputs(directory)
     current = inspect_job_environment(directory, spec)
     check_environment(spec, repairing=status.mutation_started, current=current)
@@ -700,7 +706,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                 # A duplicate or delayed launcher is history, not a retry, even
                 # if the first worker exited before updating its journal.
                 return JobStatus.read(directory)
-            _check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
+            check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
             write_record(claimed, {"id": confirmation_id}, max_bytes=2048)
         if handoff:
             # An orphan preflight child may still own the old runtime. Refuse a
@@ -708,6 +714,8 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             with file_access(root / "handoff-child.lock", exclusive=True):
                 pass
         status = JobStatus.read(directory)
+        if status.phase == Phase.RESTORED:
+            raise ValueError("This update was settled by service recovery; review a new update instead")
         if status.phase == Phase.CANCELLED:
             raise ValueError("This update job was cancelled")
         if recover:
@@ -724,30 +732,34 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                 spec.verify_inputs(directory)
                 _handoff(directory, spec, confirmation_id)
             if status.phase in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}:
-                return _restart_runtime(directory, spec, confirmation_id)
+                return restart_runtime(directory, spec, confirmation_id)
             if status.phase == Phase.INSTALLED:
                 # Recover a crash after saving the result but before removing
                 # the startup fence. Verification owns independent leases.
                 with (installation_access(updating=True, environment=spec.baseline.environment),
                       data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
-                    _pending_owner(spec)
+                    require_pending_owner(spec)
                     needs_verification = pending_update_path(spec.baseline.environment).exists()
                 if needs_verification:
                     _verify(spec, directory)
                 with (installation_access(updating=True, environment=spec.baseline.environment),
                       data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
-                    _pending_owner(spec)
+                    require_pending_owner(spec)
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
                     data.release_reservation()
                 return status
-            _check_approval(directory, spec, confirmation_id=confirmation_id)
+            check_approval(directory, spec, confirmation_id=confirmation_id)
             current = inspect_job_environment(directory, spec)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
-                _pending_owner(spec)
-                _check_approval(directory, spec, confirmation_id=confirmation_id)
+                require_pending_owner(spec)
+                check_approval(directory, spec, confirmation_id=confirmation_id)
                 check_environment(spec, repairing=status.mutation_started, current=current)
                 spec.verify_inputs(directory)
+                if not status.mutation_started:
+                    from nanobot.update_fallback import preserve_program
+
+                    preserve_program(directory, spec)
                 JobStatus(spec.plan_id, Phase.BACKING_UP, status.attempt, status.mutation_started,
                           "Preserving the original scoped data backup", int(time.time())).save(directory)
                 ensure_backup(directory, spec.backup_sources,
@@ -772,7 +784,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             _verify(spec, directory)
             with (installation_access(updating=True, environment=spec.baseline.environment),
                   data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
-                _pending_owner(spec)
+                require_pending_owner(spec)
                 status = JobStatus(spec.plan_id, Phase.RESTARTING if spec.restart_profiles else Phase.INSTALLED,
                                    status.attempt, True,
                                    "Files installed and checked; running gateway not yet verified", int(time.time()))
@@ -781,7 +793,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                     pending_update_path(spec.baseline.environment).unlink()
                     data.release_reservation()
                     return status
-            return _restart_runtime(directory, spec, confirmation_id)
+            return restart_runtime(directory, spec, confirmation_id)
         except InstallationBusyError:
             # An orphan pip child may still be alive. Do not turn its ongoing
             # installation into a terminal failure or overwrite its journal.
@@ -816,20 +828,20 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             if not status.mutation_started and not handoff_failed:
                 with (installation_access(updating=True, environment=spec.baseline.environment),
                       data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
-                    _pending_owner(spec)
+                    require_pending_owner(spec)
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
                     data.release_reservation()
             raise
 
 
-def _restart_runtime(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> JobStatus:
+def restart_runtime(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> JobStatus:
     # Use the target Python, but enter through frozen stdlib code so its shared
     # installation lease is held before importing the mutable target runtime.
     subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                     "--restart", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     result = JobStatus.read(directory)
-    if result.phase != Phase.SUCCEEDED:
+    if result.phase not in {Phase.SUCCEEDED, Phase.RESTORED}:
         raise ValueError("Runtime handoff did not verify the updated gateways")
     return result
 
@@ -839,14 +851,22 @@ def _runtime_child(directory: Path, participant: str | None = None, confirmation
     if not spec.restart_profiles or (participant is not None and participant not in spec.restart_profiles):
         raise ValueError("This gateway is not a reviewed restart participant")
     child_leases.enter_context(installation_access(allow_incomplete=True, environment=spec.baseline.environment))
-    _pending_owner(spec)
+    require_pending_owner(spec)
     if confirmation_id is not None:
         # Completion can take longer than consent's launch window. Bind the
         # identity, without treating elapsed time as a reason to reinstall.
-        _check_approval(directory, spec, confirmation_id=confirmation_id, check_expiry=False)
+        check_approval(directory, spec, confirmation_id=confirmation_id, check_expiry=False)
     initialize_runtime(spec.baseline.python, spec.baseline.environment)
     # Deliberately import the installed application, not a frozen stub.
-    from nanobot.update_restart import run_gateway, run_restarts
+    if (directory / "restoration.json").exists():
+        # Recovery uses the original frozen restart implementation. An older
+        # installed package need not understand the newer recovery journal.
+        from .update_restart import run_gateway, run_restarts
+    else:
+        import importlib
+
+        restart = importlib.import_module("nanobot.update_restart")
+        run_gateway, run_restarts = restart.run_gateway, restart.run_restarts
 
     if participant is None:
         run_restarts(directory)
@@ -863,7 +883,7 @@ def cancel_job(directory: Path) -> JobStatus:
             status = JobStatus.read(directory)
             if status.mutation_started:
                 raise ValueError("Installation has begun; this job needs verification or repair, not cancellation")
-            _pending_owner(spec)
+            require_pending_owner(spec)
             pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
             data.release_reservation()
             status = JobStatus(spec.plan_id, Phase.CANCELLED, status.attempt, False,
@@ -874,6 +894,11 @@ def cancel_job(directory: Path) -> JobStatus:
 
 
 def main() -> None:
+    if len(sys.argv) >= 4 and sys.argv[1] == "--supervise":
+        from nanobot.update_fallback import supervise
+
+        supervise(Path(sys.argv[2]).resolve(), sys.argv[3:])
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--inspect":
         try:
             _inspection_child(Path(sys.argv[2]).resolve())

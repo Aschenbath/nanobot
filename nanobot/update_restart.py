@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +36,16 @@ from nanobot.update_profiles import (
 from nanobot.update_worker import JobStatus, Phase, WorkerSpec, read_record, write_record
 
 _TOKEN_ENV = "NANOBOT_UPDATE_STARTUP_TOKEN"
-_HANDOFF_PHASES = {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED}
+_HANDOFF_PHASES = {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED, Phase.RESTORED}
 
 
 def _read_plan(directory: Path) -> tuple[WorkerSpec, UpdatePlan]:
     spec = WorkerSpec.read(directory)
+    if (directory / "restoration.json").exists():
+        restoration = read_record(directory / "restoration.json")
+        if restoration != {"plan_id": spec.plan_id, "state": "restarting"}:
+            raise ValueError("The original program restoration has not completed")
+        spec = replace(spec, version=spec.baseline.app_version)
     plan = UpdatePlan.model_validate_json((directory / "plan.json").read_bytes())
     if (Path(sys.prefix).resolve() != Path(spec.baseline.environment)
             or nanobot.__version__ != spec.version or plan.id != spec.plan_id
@@ -74,13 +79,13 @@ class GatewayStartup:
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             status = JobStatus.read(self.directory)
-            if status.phase not in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.SUCCEEDED}:
+            if status.phase not in {Phase.RESTARTING, Phase.ACTIVATING, Phase.FINALIZING, Phase.SUCCEEDED, Phase.RESTORED}:
                 raise ValueError("Update handoff stopped before gateway activation")
             try:
                 decision = read_record(self.directory / "activation.json")
             except FileNotFoundError:
                 decision = {}
-            if (status.phase in {Phase.ACTIVATING, Phase.FINALIZING, Phase.SUCCEEDED}
+            if (status.phase in {Phase.ACTIVATING, Phase.FINALIZING, Phase.SUCCEEDED, Phase.RESTORED}
                     and decision.get("plan_id") == self.grant.job_id
                     and decision.get(self.previous.id) == asdict(identity)):
                 return
@@ -164,7 +169,11 @@ def run_restarts(directory: Path) -> None:
     profiles = [item.receipt for item in plan.profiles if item.receipt.id in spec.restart_profiles]
     deadline = time.monotonic() + 120
     pending = pending_update_path()
-    if status.phase == Phase.SUCCEEDED:
+    restored = (directory / "restoration.json").exists()
+    final_phase = Phase.RESTORED if restored else Phase.SUCCEEDED
+    final_message = ("The original service is running; the update was not installed and user data was not restored"
+                     if restored else "The reviewed gateways are running the verified target version")
+    if status.phase in {Phase.SUCCEEDED, Phase.RESTORED}:
         # Completed jobs are history, not authority to relaunch stopped gateways.
         return
     if pending.exists() and read_record(pending).get("job_id") != spec.plan_id:
@@ -174,8 +183,8 @@ def run_restarts(directory: Path) -> None:
         # Do not rerun or reactivate applications to recover only this cleanup.
         finish_data_handoff((item.path for item in spec.backup_sources), job_id=spec.plan_id)
         pending.unlink(missing_ok=True)
-        JobStatus(spec.plan_id, Phase.SUCCEEDED, status.attempt, True,
-                  "The reviewed gateways are running the verified target version", int(time.time())).save(directory)
+        JobStatus(spec.plan_id, final_phase, status.attempt, status.mutation_started,
+                  final_message, int(time.time())).save(directory)
         return
     if not pending.exists():
         raise ValueError("The runtime handoff no longer owns an installation fence")
@@ -196,7 +205,10 @@ def run_restarts(directory: Path) -> None:
             elif current.state == "unconfirmed":
                 raise ValueError("The restart participant's process owner is unconfirmed")
             elif not unchanged:
-                validate_restart_identity(previous, current.receipt, version=spec.version, job_id=spec.plan_id)
+                # A failed, parked candidate may have recorded its run before
+                # exiting. Its stopped receipt is history, not launch authority.
+                version = plan.target.version if restored and current.state == "stopped" else spec.version
+                validate_restart_identity(previous, current.receipt, version=version, job_id=spec.plan_id)
             elif current.state != "stopped":
                 raise ValueError("An original gateway is still running")
 
@@ -225,5 +237,5 @@ def run_restarts(directory: Path) -> None:
         # fails. Active participants continue holding their own shared leases.
         data.release_reservation()
         pending.unlink()
-        JobStatus(spec.plan_id, Phase.SUCCEEDED, status.attempt, True,
-                  "The reviewed gateways are running the verified target version", int(time.time())).save(directory)
+        JobStatus(spec.plan_id, final_phase, status.attempt, status.mutation_started,
+                  final_message, int(time.time())).save(directory)

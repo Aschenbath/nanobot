@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "업데이트 실패 시 안전한 경우 이전 프로그램으로 서비스를 자동 복구합니다. 채팅 데이터는 이전 상태로 되돌리지 않습니다.",
+    "restored": "이전 버전 복구됨",
+    "restoredDescription": "업데이트가 완료되지 않아 v{{version}}이 다시 실행 중입니다. 설정과 채팅 기록은 이전 데이터로 되돌리지 않았습니다.",
     "recoveryBeforeInstall": "설치 전에 업데이트가 중단되었습니다. 패키지 파일은 변경되지 않았습니다. 저장된 업데이트를 복구하여 계속하세요.",
     "channel": {
       "settings": "업데이트 설정",

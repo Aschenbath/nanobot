@@ -98,7 +98,7 @@ class UpdateJobService:
             staged: list[Path] = []
             for path in (root / "jobs").glob("*/status.json"):
                 state = JobStatus.read(path.parent)
-                if state.phase in {Phase.SUCCEEDED, Phase.CANCELLED, Phase.PREPARATION_FAILED}:
+                if state.phase in {Phase.SUCCEEDED, Phase.RESTORED, Phase.CANCELLED, Phase.PREPARATION_FAILED}:
                     continue
                 if state.phase not in {Phase.READY, Phase.HANDOFF_FAILED} or state.mutation_started:
                     raise ValueError("Finish or recover the current update before changing channels")

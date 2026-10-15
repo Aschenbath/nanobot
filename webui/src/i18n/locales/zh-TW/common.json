@@ -1,5 +1,8 @@
 {
   "updates": {
+    "automaticRecovery": "更新失敗時，nanobot 會嘗試自動恢復服務，安全時恢復原程式。聊天資料不會回退。",
+    "restored": "已恢復原版本",
+    "restoredDescription": "更新未完成，已重新執行 v{{version}}。設定和聊天記錄未被回復為舊資料。",
     "recoveryBeforeInstall": "更新在安裝前停止，尚未修改安裝檔案。請復原原更新以繼續。",
     "channel": {
       "settings": "更新設定",

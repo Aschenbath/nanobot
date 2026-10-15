@@ -105,18 +105,60 @@ that no job exists, the page offers a fresh review and requires confirmation aga
 A timeout or lost response does not establish rejection, and a missing journal alone
 does not authorize a second update. A lost execution response is resolved by reading the same job,
 not creating or executing a second update. A recorded pre-mutation handoff failure
-can be explicitly retried using its existing confirmation. If the gateway remains
-offline, the page cannot prove the worker's status: retain the job and backup and use
-the standalone recovery command below. This recovery path also applies when backup
-fails after shutdown, before any package files change. Automatic data rollback is
-never attempted.
+can be explicitly retried using its existing confirmation. The official managed
+installation also has the independent recovery owner described below. Closing the
+browser does not stop it. An offline page cannot prove the worker's status; do not
+start another installation while it reconnects. Automatic data rollback is never
+attempted.
+
+## Automatic service recovery
+
+For an installer-owned, dedicated venv with reviewed background gateways, confirming
+the update also authorizes bounded recovery of that same operation. Before replacing
+packages, the frozen worker preserves the complete original program and dependencies
+in a verified sibling directory. Configuration, conversations and other user stores
+remain in their original locations; the program copy is separate from their backup.
+Insufficient snapshot space aborts installation rather than removing the old program.
+
+An independent supervisor survives the requesting gateway and observes the worker:
+
+1. If the worker fails or exits unexpectedly, try the already admitted exact target
+   once, using the verified local files. Do not download another version, repeat the
+   shutdown request or create another update.
+2. If that fails before the new gateway is activated, compare protected user files
+   against the original backup. Only when their contents are unchanged may recovery
+   restore the original program and dependencies and restart the reviewed gateways.
+   A backup failure before package mutation can restart the intact original program.
+3. Verify each gateway's actual run identity, version and readiness before clearing
+   maintenance. The page reports **Previous version restored**, not update success,
+   and does not ask for terminal repair while automatic recovery is running.
+
+The program switch uses journaled same-filesystem renames and keeps the failed
+generation for diagnosis. One transient filesystem failure during restoration is
+replayed using that journal. Duplicate launches do not get another recovery budget.
+A successful upgrade removes its redundant original program copy, but retains the
+original data backup. A restored service needs a fresh review and confirmation before
+another update.
+
+Recovery never restores an old conversation/configuration backup over current data.
+If the candidate wrote user data or already activated, automatically running older
+code could corrupt it: only same-target completion is allowed. Changed ownership,
+missing/corrupt snapshots, persistent filesystem failures, unavailable base Python,
+or losing both supervisor and worker (for example a power loss) can still require
+operator assistance. Reservations and recovery evidence are retained instead of
+guessing. This is not an OS boot-time recovery service or a zero-failure guarantee.
+External package managers, unsupported installation layouts and jobs prepared by an
+older version keep their documented owner/standalone recovery route; they are not
+silently converted into managed installs.
 
 ## Standalone recovery
 
 Before shutdown, preparation saves a stdlib-only launcher at
 `~/.nanobot/updates/recover.py`, outside the environment being updated. The WebUI
-retains the exact job ID and displays the host's command after failure or prolonged
-reconnection. That command uses absolute paths for both the host's base Python and
+retains the exact job ID. For installations without automatic recovery, or a
+confirmed recovery failure, it can display the host's repair command. This is an
+advanced fallback, not the normal managed-install failure flow. The command uses
+absolute paths for both the host's base Python and
 the saved launcher, so it does not depend on a working application venv, a `python`
 command on PATH, or the terminal sharing the gateway's HOME. The launcher keeps its
 original job/lock directory when starting the saved worker. Copy it from the WebUI
@@ -154,7 +196,8 @@ Keep the original job directory and backup until verified recovery. Missing/chan
 backup, a removed base Python, disk damage or an independently modified environment
 requires operator repair; the tool refuses to guess or overwrite it. Do not install
 another version over a pending job, delete its fence, or restore a backup into live
-data. Downgrades and data restoration remain explicit owner-managed operations.
+data. Apart from the verified, pre-activation program-only restoration above,
+downgrades and data restoration remain explicit owner-managed operations.
 
 ## Review an exact release
 
