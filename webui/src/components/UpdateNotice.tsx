@@ -43,8 +43,8 @@ export function UpdateNotice({ version, collapsed = false, onOpen, onDismiss, on
         <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5">
           <Button type="button" variant="ghost" size="sm" className="touch-target h-8 px-2.5 text-xs text-muted-foreground"
             onClick={() => { setOpen(false); onDismiss(); }}>{t("settings.about.dismissUpdate")}</Button>
-          <Button type="button" size="sm"
-            className="touch-target h-8 px-2.5 text-xs bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-400 dark:text-slate-950 dark:hover:bg-blue-300"
+          <Button type="button" size="sm" variant="accent"
+            className="touch-target h-8 px-2.5 text-xs"
             onClick={() => { setOpen(false); onOpen(); }}>{t("settings.about.viewUpdateDetails")}</Button>
         </div>
       </PopoverContent>

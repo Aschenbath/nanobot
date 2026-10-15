@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { ApiError, createUpdateReview, readUpdateReview, readUpdateJob, prepareUpdate, executeUpdate, settleUpdate,
   type UpdateReviewResponse, type UpdateJob } from "@/lib/api";
 import type { NanobotClient } from "@/lib/nanobot-client";
@@ -246,7 +247,7 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   return <UpdateFlowContext.Provider value={{ open: enabled ? show : undefined, pending: enabled && !!pendingId }}>
     {children}
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogContent className="max-w-[384px] gap-0 rounded-panel p-6 motion-reduce:animate-none"
+      <AlertDialogContent className="max-h-[calc(100dvh-2rem)] max-w-[384px] gap-0 overflow-y-auto rounded-panel p-6 motion-reduce:animate-none"
         onCloseAutoFocus={(event) => { event.preventDefault(); if (trigger.current?.isConnected) trigger.current.focus(); }}>
         <div aria-live="polite" aria-atomic="true">
           <img src="/brand/nanobot_mark.svg" alt="" draggable={false} className="mb-4 h-11 w-11 select-none" />
@@ -260,17 +261,17 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
         {pendingId && recovery && (delayed || (failed && job?.mutation_started)) && <div className="mt-4 space-y-2 border-t pt-4">
           <p className="text-sm font-medium">{t("updates.recoveryTitle")}</p>
           <p className="text-xs leading-5 text-muted-foreground">{t("updates.recoveryDescription")}</p>
-          <textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}
+          <Textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}
             onFocus={event => event.currentTarget.select()}
-            className="w-full resize-none rounded-lg border bg-muted/40 p-2 font-mono text-xs leading-5" />
+            className="resize-none font-mono text-xs leading-5" />
         </div>}
-        {blocked && <a className="mt-3 text-sm text-blue-600 underline-offset-4 hover:underline" href="https://github.com/HKUDS/nanobot/blob/main/docs/updating.md#installation-owners"
+        {blocked && <a className="mt-3 rounded-control text-sm text-blue-600 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-400" href="https://github.com/HKUDS/nanobot/blob/main/docs/updating.md#installation-owners"
           target="_blank" rel="noreferrer">{t("updates.ownerGuide")}</a>}
         <div className={`mt-6 grid ${done || blocked ? "grid-cols-1" : "grid-cols-2"} gap-2.5`}>
-          {!done && !blocked && <Button variant="secondary" className="h-10 dark:bg-foreground/10 dark:hover:bg-foreground/15" onClick={close}>
+          {!done && !blocked && <Button variant="secondary" onClick={close}>
             {t(done || failed || error || blocked ? "updates.close" : busy ? "updates.hide" : "updates.cancel")}
           </Button>}
-          <Button className="h-10 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-100" disabled={!blocked && busy} aria-busy={busy}
+          <Button variant="accent" className="min-w-0 whitespace-normal" disabled={!blocked && busy} aria-busy={busy}
             onClick={blocked ? close : primary}>
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />}
             {t(checkingStatus ? "settings.about.checking" : blocked ? "updates.close" : done ? "updates.return" : busy ? "updates.wait" : error ? "updates.checkAgain" : reviewAgain ? "updates.reviewAgain" : failed ? "updates.checkAgain" : "updates.apply")}

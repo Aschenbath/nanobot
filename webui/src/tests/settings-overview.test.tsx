@@ -73,6 +73,20 @@ describe("Settings overview and appearance", () => {
     expect(requestUpdate).toHaveBeenCalledTimes(2);
   });
 
+  it("lets the visible Preview label toggle the setting without consenting to an update", () => {
+    const changeChannel = vi.fn().mockResolvedValue(undefined);
+    const requestUpdate = vi.fn();
+    render(<VersionCheckRowView currentVersion="0.3.6" checking={false} result={null} onCheck={vi.fn()}
+      releaseStatus={{ channel: "stable", revision: 1, currentVersion: "0.3.6", state: "current" }}
+      canChangeChannel onChangeChannel={changeChannel} onRequestUpdate={requestUpdate} />);
+    const toggle = screen.getByRole("switch", { name: "Receive preview updates" });
+    expect(toggle).toHaveAccessibleDescription(/Updates still need confirmation/);
+    fireEvent.click(document.querySelector(`label[for="${toggle.id}"]`)!);
+    expect(changeChannel).toHaveBeenCalledTimes(1);
+    expect(changeChannel).toHaveBeenCalledWith("preview");
+    expect(requestUpdate).not.toHaveBeenCalled();
+  });
+
   it.each(["granted", "denied"])("updates task notifications only after browser permission is %s", async (permission) => {
     const requestPermission = vi.fn().mockResolvedValue(permission);
     vi.stubGlobal("Notification", { permission: "default", requestPermission });
