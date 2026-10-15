@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from zipfile import ZipFile
 
-from nanobot.data_access import data_access
 from nanobot.installation_lock import (
     InstallationBusyError,
     file_access,
@@ -251,14 +250,12 @@ def restore_service(directory: Path) -> None:
             stop = {}
         if stop.get("plan_id") != spec.plan_id or stop.get("phase") not in {"commit", "stopped"}:
             if not status.mutation_started:
-                JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, status.attempt, False,
-                          "Shutdown was not committed; review the update again", int(time.time())).save(directory)
+                status.advance(directory, Phase.HANDOFF_FAILED, "Shutdown was not committed; review the update again", mutation_started=False)
             return  # A refused preflight left the original service running.
         with file_access(root / "handoff-child.lock", exclusive=True):
             pass
         restoring = restoration_path.exists()
-        with (installation_access(updating=True, environment=spec.baseline.environment),
-              data_access((s.path for s in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+        with spec.mutation_access() as (_, data):
             require_pending_owner(spec)
             if not restoring or not status.mutation_started:
                 check_environment(spec, repairing=status.mutation_started, current=_inspect_metadata(spec))
@@ -273,8 +270,7 @@ def restore_service(directory: Path) -> None:
             write_record(pending, {
                 "schema_version": 2, "job_id": spec.plan_id, "version": spec.baseline.app_version,
             })
-            JobStatus(spec.plan_id, Phase.RESTARTING, status.attempt, status.mutation_started,
-                      "Restoring the original service without changing user data", int(time.time())).save(directory)
+            status.advance(directory, Phase.RESTARTING, "Restoring the original service without changing user data")
         restart_runtime(directory, spec)
 
 
@@ -343,9 +339,8 @@ def supervise(directory: Path, arguments: list[str]) -> None:
             # Keep fences, snapshots and the exact failure state. A hardware,
             # ownership or changed-data failure is not permission to discard data.
             status = JobStatus.read(directory)
-            JobStatus(spec.plan_id, status.phase, status.attempt, status.mutation_started,
-                      "Automatic recovery could not safely finish; original backup and program generations are retained",
-                      int(time.time())).save(directory)
+            status.advance(directory, status.phase,
+                           "Automatic recovery could not safely finish; original backup and program generations are retained")
             write_record(journal, {"plan_id": spec.plan_id, "confirmation_id": confirmation, "state": "needs_attention"})
 
 

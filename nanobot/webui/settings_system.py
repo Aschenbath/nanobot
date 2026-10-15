@@ -32,7 +32,6 @@ from nanobot.llm_usage import llm_usage_payload
 from nanobot.optional_features import OptionalFeatureError, with_channel_runtime_status
 from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.security.workspace_access import workspace_sandbox_status
-from nanobot.update import UpdateError, update_blocked_reason
 from nanobot.update_channel import UpdateChannelRequest
 from nanobot.update_jobs import UpdateJobNotFoundError, read_update_job
 from nanobot.update_plan import (
@@ -59,7 +58,6 @@ from nanobot.webui.settings_contracts import (
     query_first_alias,
 )
 from nanobot.webui.settings_runtime import runtime_config_payload
-from nanobot.webui.update_service import UpdateService
 
 if TYPE_CHECKING:
     from nanobot.channels.plugin import ChannelPlugin
@@ -455,7 +453,6 @@ class SystemSettingsHandler:
         self._channel_connectors: dict[str, ChannelConnector] = {}
         self._remove_pending_work: Callable[[], None] | None = None
         self._closing_connectors = False
-        self._updates = UpdateService()
         self._update_jobs = UpdateJobService()
         self._remove_update_work: Callable[[], None] | None = None
 
@@ -467,7 +464,6 @@ class SystemSettingsHandler:
 
     async def close(self) -> None:
         """Release channel-owned setup sessions during gateway shutdown."""
-        await self._updates.close()
         await self._update_jobs.close()
         if self._remove_update_work is not None:
             self._remove_update_work()
@@ -588,25 +584,6 @@ class SystemSettingsHandler:
             return self._update_job_action(request, prepare=action == "update-job-prepare")
         if action in {"update-job-execute", "update-job-retry"}:
             return await self._execute_update_job(request, retry=action == "update-job-retry")
-        if action == "update-status":
-            return SettingsRouteResult.success({
-                **self._updates.status(),
-                "can_update": self.allow_feature_package_install(request),
-                "release_blocked_reason": update_blocked_reason(),
-                "source_blocked_reason": update_blocked_reason(dev=True),
-            }, decorate_restart=True, restart_section="runtime")
-        if action == "update-start":
-            if not self.allow_feature_package_install(request):
-                return SettingsRouteResult.failure(
-                    403, "Updating from a remote WebUI is disabled. Use localhost or enable remote package installation.",
-                )
-            dev = (request.payload or {}).get("dev", False)
-            if not isinstance(dev, bool):
-                return SettingsRouteResult.failure(400, "dev must be boolean")
-            try:
-                return SettingsRouteResult.success({**self._updates.start(dev=dev), "can_update": True})
-            except UpdateError as exc:
-                return SettingsRouteResult.failure(409, str(exc))
         return SettingsRouteResult.failure(404, "unknown settings action")
 
     async def _execute_update_job(self, request: SettingsRequest, *, retry: bool) -> SettingsRouteResult:
@@ -620,8 +597,9 @@ class SystemSettingsHandler:
             return SettingsRouteResult.failure(400, "Confirm the saved update plan and its gateway restart.")
         try:
             self._admission.check()
-            job = (await self._update_jobs.retry(options.id, options.previous_confirmation_id)
-                   if isinstance(options, UpdateRetryRequest) else await self._update_jobs.execute(options.id))
+            job = await self._update_jobs.execute(
+                options.id, previous_confirmation_id=options.previous_confirmation_id if isinstance(options, UpdateRetryRequest) else None,
+            )
         except UpdateJobNotFoundError:
             return SettingsRouteResult.failure(404, "No saved update job is available. Review and prepare the update first.")
         except (RuntimeError, ValueError, OSError, KeyError) as exc:

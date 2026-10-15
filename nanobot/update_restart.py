@@ -183,8 +183,7 @@ def run_restarts(directory: Path) -> None:
         # Do not rerun or reactivate applications to recover only this cleanup.
         finish_data_handoff((item.path for item in spec.backup_sources), job_id=spec.plan_id)
         pending.unlink(missing_ok=True)
-        JobStatus(spec.plan_id, final_phase, status.attempt, status.mutation_started,
-                  final_message, int(time.time())).save(directory)
+        status.advance(directory, final_phase, final_message)
         return
     if not pending.exists():
         raise ValueError("The runtime handoff no longer owns an installation fence")
@@ -212,8 +211,7 @@ def run_restarts(directory: Path) -> None:
             elif current.state != "stopped":
                 raise ValueError("An original gateway is still running")
 
-        JobStatus(spec.plan_id, Phase.RESTARTING, status.attempt, True,
-                  "Starting the reviewed gateways with task intake closed", int(time.time())).save(directory)
+        status.advance(directory, Phase.RESTARTING, "Starting the reviewed gateways with task intake closed", mutation_started=True)
         for previous in profiles:
             if observed[previous.id].state == "stopped":
                 grant = data.grant_startup(previous.id, profile_data_paths(
@@ -225,17 +223,14 @@ def run_restarts(directory: Path) -> None:
         # job identity still has to match. A fresh handoff must prove intake shut.
         resuming_activation = (directory / "activation.json").exists()
         parked = _wait_verified(profiles, spec, maintenance=None if resuming_activation else True, deadline=deadline)
-        JobStatus(spec.plan_id, Phase.ACTIVATING, status.attempt, True,
-                  "Verified runtime identities; enabling the reviewed gateways", int(time.time())).save(directory)
+        status.advance(directory, Phase.ACTIVATING, "Verified runtime identities; enabling the reviewed gateways", mutation_started=True)
         write_record(directory / "activation.json", {
             "plan_id": spec.plan_id, **{item.id: asdict(item.health_identity) for item in parked},
         })
         _wait_verified(profiles, spec, maintenance=False, deadline=deadline)
-        JobStatus(spec.plan_id, Phase.FINALIZING, status.attempt, True,
-                  "Verified running gateways; completing maintenance cleanup", int(time.time())).save(directory)
+        status.advance(directory, Phase.FINALIZING, "Verified running gateways; completing maintenance cleanup", mutation_started=True)
         # Clearing data first retains the installation fence if either operation
         # fails. Active participants continue holding their own shared leases.
         data.release_reservation()
         pending.unlink()
-        JobStatus(spec.plan_id, final_phase, status.attempt, status.mutation_started,
-                  final_message, int(time.time())).save(directory)
+        status.advance(directory, final_phase, final_message)

@@ -146,8 +146,6 @@ _SYSTEM_ROUTES = {
     "/api/settings/pairing/deny": "pairing-deny",
     "/api/settings/mcp-presets": "mcp-list",
     "/api/settings/version-check": "version-check",
-    "/api/settings/nanobot-update": "update-status",
-    "/api/settings/nanobot-update/start": "update-start",
     "/api/settings/nanobot-update/channel": "update-channel",
     "/api/settings/nanobot-update/plan": "update-plan-read",
     "/api/settings/nanobot-update/plan/create": "update-plan-create",
@@ -163,7 +161,6 @@ _SYSTEM_ROUTES = {
 }
 
 _SETTINGS_MUTATION_PATHS = frozenset({
-    "/api/settings/nanobot-update/start",
     "/api/settings/nanobot-update/channel",
     "/api/settings/nanobot-update/plan/create",
     "/api/settings/nanobot-update/job/prepare",
@@ -339,10 +336,8 @@ class WebUISettingsRouter:
                     "features-enable",
                     "channel-configure",
                     "channel-connect",
-                    "update-start",
                     "update-channel",
                     "version-check",
-                    "update-status",
                     "update-plan-create",
                     "update-plan-read",
                     "update-job-prepare",

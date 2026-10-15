@@ -219,6 +219,14 @@ class UpdatePlan(ReleaseRecord):
         manager = self.installation.manager
         return manager.restriction(self.target.version) if manager is not None else None
 
+    @property
+    def can_restart_inline(self) -> bool:
+        """The review includes this gateway and every confirmed running peer."""
+        running = {item.receipt.id for item in self.profiles if item.state == "running"}
+        return (not any(item.state == "unconfirmed" for item in self.profiles)
+                and any(item.state == "running" and item.receipt.pid == os.getpid() for item in self.profiles)
+                and running == set(self.stop_profiles) == set(self.restart_profiles))
+
     def validate_for(self, installation: InstallationSnapshot, *, now: int | None = None) -> None:
         validate_channel_revision(self.channel_revision, self.installation.environment)
         checked_at = int(time.time()) if now is None else now
@@ -398,10 +406,7 @@ def inline_update_blocked_reason(plan: UpdatePlan, validity: str = "current") ->
         return "installation_owner"
     if plan.extras is None or plan.owner_restriction:
         return "installation_policy"
-    running = {item.receipt.id for item in plan.profiles if item.state == "running"}
-    if (any(item.state == "unconfirmed" for item in plan.profiles)
-            or not any(item.state == "running" and item.receipt.pid == os.getpid() for item in plan.profiles)
-            or running != set(plan.stop_profiles) or running != set(plan.restart_profiles)):
+    if not plan.can_restart_inline:
         return "external_restart"
     return None
 

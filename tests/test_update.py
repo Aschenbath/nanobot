@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -18,7 +17,6 @@ from nanobot import update
 from nanobot.cli.update import update as update_command
 from nanobot.installation_lock import installation_access
 from nanobot.optional_features import install_packages
-from nanobot.webui.update_service import UpdateService
 
 
 def git(root: Path, *args: str) -> str:
@@ -123,19 +121,6 @@ def test_release_update_does_not_modify_a_live_runtime(isolated_update):
     assert not update.incomplete_update()
 
 
-@pytest.mark.asyncio
-async def test_webui_cannot_replace_the_gateway_under_its_runtime_lease(isolated_update):
-    with installation_access():
-        service = UpdateService()
-        service.start(dev=False)
-        await service.close()
-        status = service.status()
-    assert status["state"] == "failed"
-    assert "Stop its nanobot gateways" in status["message"]
-    assert not status["needs_repair"]
-    isolated_update.assert_not_called()
-
-
 def test_update_verifies_in_fresh_interpreter(isolated_update, monkeypatch):
     monkeypatch.setattr(update, "_is_editable", lambda: False)
     checked = Mock(return_value=json.dumps(["0.3.4", "/env/nanobot/__init__.py"]))
@@ -185,44 +170,6 @@ def test_installer_preserves_satisfied_dependencies():
     assert command[:4] == [sys.executable, "-m", "pip", "install"]
     assert command[command.index("--upgrade-strategy") + 1] == "only-if-needed"
     assert "--force-reinstall" not in command
-
-
-@pytest.mark.asyncio
-async def test_web_update_survives_readers_and_rejects_duplicates(monkeypatch):
-    release = threading.Event()
-
-    def install(*, dev, output):
-        assert dev is True
-        output("Building WebUI")
-        assert release.wait(5)
-        return {"version": "0.3.5", "source": "test", "requires_restart": True}
-
-    monkeypatch.setattr("nanobot.webui.update_service.update_installation", install)
-    service = UpdateService()
-    try:
-        assert service.start(dev=True)["state"] == "running"
-        with pytest.raises(update.UpdateError, match="already running"):
-            service.start(dev=False)
-        snapshot = service.status()
-        snapshot["message"] = "client edit"
-        assert service.status()["message"] != "client edit"
-    finally:
-        release.set()
-        await service.close()
-    assert service.status()["state"] == "succeeded"
-    assert service.status()["requires_restart"] is True
-
-
-@pytest.mark.asyncio
-async def test_web_update_reports_failure_and_allows_retry(monkeypatch):
-    monkeypatch.setattr("nanobot.webui.update_service.update_installation", Mock(side_effect=update.UpdateError("offline")))
-    service = UpdateService()
-    for _ in range(2):
-        service.start(dev=False)
-        await service.close()
-        assert service.status()["state"] == "failed"
-        assert service.status()["message"] == "offline"
-        assert service.status()["requires_restart"] is False
 
 
 def test_cli_check_is_read_only(monkeypatch):
@@ -329,14 +276,13 @@ def test_preview_does_not_silently_downgrade_to_stable(isolated_update, monkeypa
     assert not update.incomplete_update()
 
 
-def test_failed_install_survives_gateway_restart_and_success_clears_marker(isolated_update, monkeypatch):
+def test_failed_install_retains_marker_until_successful_retry(isolated_update, monkeypatch):
     monkeypatch.setattr(update, "_is_editable", lambda: False)
     isolated_update.side_effect = update.UpdateError("package install failed")
     with pytest.raises(update.UpdateError, match="No automatic rollback") as error:
         update.update_installation()
     assert error.value.needs_repair
-    recovered = UpdateService().status()
-    assert recovered["state"] == "failed" and recovered["needs_repair"]
+    assert update.incomplete_update()
     isolated_update.side_effect = None
     update.update_installation()
     assert not update.incomplete_update()

@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import platform
 import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from email.parser import BytesParser
 from pathlib import Path
 from typing import Literal, Self
@@ -144,13 +146,13 @@ class ReleaseFeed:
     async def __aexit__(self, *_: object) -> None:
         await self.client.aclose()
 
-    async def _read(self, url: str, *, limit: int, etag: str | None = None) -> tuple[bytes | None, str | None]:
+    @asynccontextmanager
+    async def _stream(self, url: str, *, hosts: set[str], etag: str | None = None) -> AsyncGenerator[httpx.Response]:
+        """Validate every redirect and keep the final response open for its reader."""
         headers = {"If-None-Match": etag} if etag else {}
         for _ in range(4):
-            _url(url, _METADATA_HOSTS)
+            _url(url, hosts)
             async with self.client.stream("GET", url, headers=headers) as response:
-                if response.status_code == 304 and etag is not None:
-                    return None, etag
                 if response.status_code in {301, 302, 303, 307, 308}:
                     location = response.headers.get("location")
                     if not location:
@@ -158,14 +160,21 @@ class ReleaseFeed:
                     url = urljoin(url, location)
                     headers = {}
                     continue
-                response.raise_for_status()
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > limit:
-                        raise ReleaseFeedError("Release metadata exceeds its size limit")
-                return bytes(data), response.headers.get("etag")
+                yield response
+                return
         raise ReleaseFeedError("Too many release redirects")
+
+    async def _read(self, url: str, *, limit: int, etag: str | None = None) -> tuple[bytes | None, str | None]:
+        async with self._stream(url, hosts=_METADATA_HOSTS, etag=etag) as response:
+            if response.status_code == 304 and etag is not None:
+                return None, etag
+            response.raise_for_status()
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise ReleaseFeedError("Release metadata exceeds its size limit")
+            return bytes(data), response.headers.get("etag")
 
     def _cached(self) -> _CatalogueCache | None:
         path = self.cache_dir / "catalogue.json"
@@ -305,33 +314,23 @@ class ReleaseFeed:
             _verify_wheel(destination, target)
             return destination
         temporary = directory / f".{uuid4().hex}.part"
-        url = target.url
         try:
-            for _ in range(4):
-                _url(url, _DOWNLOAD_HOSTS)
-                async with self.client.stream("GET", url) as response:
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location")
-                        if not location:
-                            raise ReleaseFeedError("Release redirect has no destination")
-                        url = urljoin(url, location)
-                        continue
-                    response.raise_for_status()
-                    size = 0
-                    with temporary.open("xb") as handle:
-                        async for chunk in response.aiter_bytes():
-                            size += len(chunk)
-                            if size > target.artifact.size:
-                                raise ReleaseFeedError("Release download exceeds its verified size")
-                            handle.write(chunk)
-                    _verify_wheel(temporary, target)
-                    # Never clobber a file another update already staged.
-                    try:
-                        destination.hardlink_to(temporary)
-                    except FileExistsError:
-                        _verify_wheel(destination, target)
-                    return destination
-            raise ReleaseFeedError("Too many release download redirects")
+            async with self._stream(target.url, hosts=_DOWNLOAD_HOSTS) as response:
+                response.raise_for_status()
+                size = 0
+                with temporary.open("xb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > target.artifact.size:
+                            raise ReleaseFeedError("Release download exceeds its verified size")
+                        handle.write(chunk)
+                _verify_wheel(temporary, target)
+                # Never clobber a file another update already staged.
+                try:
+                    destination.hardlink_to(temporary)
+                except FileExistsError:
+                    _verify_wheel(destination, target)
+                return destination
         finally:
             temporary.unlink(missing_ok=True)
 

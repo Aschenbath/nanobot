@@ -84,11 +84,7 @@ to a release, stop nanobot, install the release in a separate environment, and l
 outside the checkout. In-place source-to-release switching is refused because a restart
 can otherwise load the old source with the new package's version metadata.
 
-WebUI exposes the same actions under **Settings → About → Update nanobot**. Source
-installation is opt-in under **Advanced options**. The existing remote package-install
-permission also governs updates. Browser refreshes do not cancel an in-progress update.
-The control is only available when the host advertises `webui.self-update.v1`.
-Restart nanobot after a successful installation, then verify the running gateway's
+After a successful CLI installation, restart nanobot and verify the running gateway's
 version and behavior. Installation verification checks normal and isolated interpreter
 imports; it does not restart or verify the live process. An already-current install
 does not request a restart. An older stable release is never installed over a newer
@@ -98,11 +94,19 @@ This is an in-place update, not a transactional deployment. Once installation be
 a marker under `~/.nanobot/run/` records an unverified update for that Python environment.
 It is removed only after installation verification succeeds. After a failure or process
 termination, stop nanobot and retry the same update from that environment. There is no
-automatic rollback. Browser progress survives reconnection while the gateway runs;
-after a gateway crash, the marker reports an incomplete update, not the previous logs.
+automatic rollback. After a crash, the marker reports an incomplete update, not the previous logs.
 On Windows, if another nanobot process locks installation files, stop that process
 and retry with `python -m nanobot update` (add `--dev` for source).
 Containers must be rebuilt and redeployed; Desktop is updated through its host application.
+
+WebUI uses a separate, exact-plan flow under **Settings → About** when the host
+advertises `webui.update-flow.v1`. It stages a verified release, asks for shutdown
+and restart consent, and reconnects to the saved job after browser refreshes.
+Supported managed and uv installations retain their respective installer ownership;
+other installations show their owner's instructions. Source checkout updates remain
+CLI-only. See [Updating nanobot](updating.md) for installation eligibility, automatic
+service recovery and its limits. The existing remote package-install permission
+also governs this flow; checking a version never authorizes installation.
 
 Most day-to-day commands use the default config and workspace. Advanced or multi-instance runs usually pass both paths explicitly:
 

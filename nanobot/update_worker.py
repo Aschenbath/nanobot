@@ -17,6 +17,8 @@ import runpy
 import subprocess
 import sys
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from email.parser import BytesParser
 from enum import Enum
@@ -25,8 +27,9 @@ from typing import cast
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
-from nanobot.data_access import data_access
+from nanobot.data_access import DataLease, data_access
 from nanobot.installation_lock import (
+    FileLease,
     InstallationBusyError,
     file_access,
     installation_access,
@@ -334,6 +337,13 @@ class WorkerSpec:
         if self.uv is not None:
             self.uv.verify(self.baseline.environment, directory)
 
+    @contextmanager
+    def mutation_access(self) -> Generator[tuple[FileLease, DataLease]]:
+        """Hold this job's installation and data leases, in acquisition order."""
+        with (installation_access(updating=True, environment=self.baseline.environment) as installation,
+              data_access((source.path for source in self.backup_sources), updating=True, job_id=self.plan_id) as data):
+            yield installation, data
+
 
 class Phase(str, Enum):
     PREPARATION_REQUESTED = "preparation_requested"
@@ -377,6 +387,15 @@ class JobStatus:
 
     def save(self, directory: Path) -> None:
         write_record(directory / "status.json", asdict(self))
+
+    def advance(self, directory: Path, phase: Phase, message: str, *,
+                mutation_started: bool | None = None, attempt: int | None = None) -> JobStatus:
+        """Publish a phase without reconstructing the job's execution history."""
+        status = JobStatus(self.plan_id, phase, self.attempt if attempt is None else attempt,
+                           self.mutation_started if mutation_started is None else mutation_started,
+                           message, int(time.time()))
+        status.save(directory)
+        return status
 
 
 @dataclass(frozen=True)
@@ -445,15 +464,13 @@ def _prepare_handoff_child(directory: Path, confirmation_id: str | None = None) 
 def _handoff(directory: Path, spec: WorkerSpec, confirmation_id: str | None = None) -> None:
     status = JobStatus.read(directory)
     check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
-    JobStatus(spec.plan_id, Phase.CHECKING, status.attempt, False,
-              "Rechecking the exact release and installation before shutdown", int(time.time())).save(directory)
+    status.advance(directory, Phase.CHECKING, "Rechecking the exact release and installation before shutdown", mutation_started=False)
     subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                     "--prepare-handoff", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=300,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     approval = check_approval(directory, spec, handoff=True, confirmation_id=confirmation_id)
     current = inspect_job_environment(directory, spec)
-    with (installation_access(updating=True, environment=spec.baseline.environment),
-          data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
+    with spec.mutation_access():
         check_environment(spec, repairing=False, current=current)
         spec.verify_inputs(directory)
         # Stopping a process did not grant installation authority. Only successful
@@ -526,9 +543,7 @@ def _inspection_child(directory: Path) -> None:
 
 def _installer_child(directory: Path, confirmation_id: str | None = None) -> None:
     spec = WorkerSpec.read(directory)
-    installation = child_leases.enter_context(installation_access(updating=True, environment=spec.baseline.environment))
-    data = child_leases.enter_context(data_access(
-        (source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id))
+    installation, data = child_leases.enter_context(spec.mutation_access())
     status = JobStatus.read(directory)
     if status.phase in {Phase.INSTALLED, Phase.CANCELLED, Phase.RESTARTING,
                         Phase.ACTIVATING, Phase.FINALIZING, Phase.RESTART_FAILED, Phase.SUCCEEDED, Phase.RESTORED}:
@@ -550,8 +565,8 @@ def _installer_child(directory: Path, confirmation_id: str | None = None) -> Non
     pending.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     data.reserve()
     write_record(pending, {"schema_version": 2, "job_id": spec.plan_id, "version": spec.version})
-    JobStatus(spec.plan_id, Phase.INSTALLING, status.attempt + 1, True,
-              "Installing the verified package files", int(time.time())).save(directory)
+    status.advance(directory, Phase.INSTALLING, "Installing the verified package files",
+                   mutation_started=True, attempt=status.attempt + 1)
     if spec.uv is not None and uv_cache is not None:
         # Exact-wheel override is one operation, not a rewrite of the saved
         # requirement. Even --no-build would persist in the user's receipt.
@@ -610,9 +625,7 @@ def _verification_child(directory: Path, verification_id: str) -> None:
     if UUID(verification_id).hex != verification_id:
         raise ValueError("Invalid verification identity")
     spec = WorkerSpec.read(directory)
-    installation = child_leases.enter_context(installation_access(updating=True, environment=spec.baseline.environment))
-    data = child_leases.enter_context(data_access(
-        (source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id))
+    installation, data = child_leases.enter_context(spec.mutation_access())
     status = JobStatus.read(directory)
     if not status.mutation_started or status.phase not in {Phase.VERIFYING, Phase.INSTALLED}:
         raise ValueError("This job is not awaiting installed-package verification")
@@ -747,22 +760,19 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             if status.phase == Phase.INSTALLED:
                 # Recover a crash after saving the result but before removing
                 # the startup fence. Verification owns independent leases.
-                with (installation_access(updating=True, environment=spec.baseline.environment),
-                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id)):
+                with spec.mutation_access():
                     require_pending_owner(spec)
                     needs_verification = pending_update_path(spec.baseline.environment).exists()
                 if needs_verification:
                     _verify(spec, directory)
-                with (installation_access(updating=True, environment=spec.baseline.environment),
-                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+                with spec.mutation_access() as (_, data):
                     require_pending_owner(spec)
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
                     data.release_reservation()
                 return status
             check_approval(directory, spec, confirmation_id=confirmation_id)
             current = inspect_job_environment(directory, spec)
-            with (installation_access(updating=True, environment=spec.baseline.environment),
-                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+            with spec.mutation_access() as (_, data):
                 require_pending_owner(spec)
                 check_approval(directory, spec, confirmation_id=confirmation_id)
                 check_environment(spec, repairing=status.mutation_started, current=current)
@@ -771,8 +781,7 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                     from nanobot.update_fallback import preserve_program
 
                     preserve_program(directory, spec)
-                JobStatus(spec.plan_id, Phase.BACKING_UP, status.attempt, status.mutation_started,
-                          "Preserving the original scoped data backup", int(time.time())).save(directory)
+                status.advance(directory, Phase.BACKING_UP, "Preserving the original scoped data backup")
                 ensure_backup(directory, spec.backup_sources,
                               hashlib.sha256((directory / "request.json").read_bytes()).hexdigest(),
                               mutated=status.mutation_started)
@@ -787,19 +796,14 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             subprocess.run([spec.baseline.python, "-I", "-S", str(directory / "worker.pyz"),
                             "--install", str(directory), *([confirmation_id] if confirmation_id else [])], check=True, timeout=900,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-            with (installation_access(updating=True, environment=spec.baseline.environment),
-                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+            with spec.mutation_access():
                 status = JobStatus.read(directory)
-                JobStatus(spec.plan_id, Phase.VERIFYING, status.attempt, True,
-                          "Checking the installed package and dependencies", int(time.time())).save(directory)
+                status.advance(directory, Phase.VERIFYING, "Checking the installed package and dependencies", mutation_started=True)
             _verify(spec, directory)
-            with (installation_access(updating=True, environment=spec.baseline.environment),
-                  data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+            with spec.mutation_access() as (_, data):
                 require_pending_owner(spec)
-                status = JobStatus(spec.plan_id, Phase.RESTARTING if spec.restart_profiles else Phase.INSTALLED,
-                                   status.attempt, True,
-                                   "Files installed and checked; running gateway not yet verified", int(time.time()))
-                status.save(directory)
+                status = status.advance(directory, Phase.RESTARTING if spec.restart_profiles else Phase.INSTALLED,
+                                        "Files installed and checked; running gateway not yet verified", mutation_started=True)
                 if not spec.restart_profiles:
                     pending_update_path(spec.baseline.environment).unlink()
                     data.release_reservation()
@@ -810,9 +814,8 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
             # installation into a terminal failure or overwrite its journal.
             current = JobStatus.read(directory)
             if handoff and current.phase in {Phase.CHECKING, Phase.STOPPING} and not current.mutation_started:
-                JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, current.attempt, False,
-                          "Update handoff could not acquire exclusive access; no package files were changed",
-                          int(time.time())).save(directory)
+                current.advance(directory, Phase.HANDOFF_FAILED,
+                                "Update handoff could not acquire exclusive access; no package files were changed", mutation_started=False)
             raise
         except Exception as exc:
             status = JobStatus.read(directory)
@@ -833,12 +836,9 @@ def run_job(directory: Path, *, handoff: bool = False, confirmation_id: str | No
                     Phase.RESTARTING, Phase.ACTIVATING, Phase.RESTART_FAILED,
                 } else Phase.FAILED
             )
-            failed = JobStatus(spec.plan_id, phase, status.attempt, status.mutation_started,
-                               message[:1000], int(time.time()))
-            failed.save(directory)
+            status.advance(directory, phase, message[:1000])
             if not status.mutation_started and not handoff_failed:
-                with (installation_access(updating=True, environment=spec.baseline.environment),
-                      data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+                with spec.mutation_access() as (_, data):
                     require_pending_owner(spec)
                     pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
                     data.release_reservation()
@@ -889,17 +889,14 @@ def cancel_job(directory: Path) -> JobStatus:
     """Cancel only a stopped, unmodified job; never terminate an installer."""
     spec = WorkerSpec.read(directory)
     with file_access(installation_state_dir(spec.baseline.environment) / "worker.lock", exclusive=True):
-        with (installation_access(updating=True, environment=spec.baseline.environment),
-              data_access((source.path for source in spec.backup_sources), updating=True, job_id=spec.plan_id) as data):
+        with spec.mutation_access() as (_, data):
             status = JobStatus.read(directory)
             if status.mutation_started:
                 raise ValueError("Installation has begun; this job needs verification or repair, not cancellation")
             require_pending_owner(spec)
             pending_update_path(spec.baseline.environment).unlink(missing_ok=True)
             data.release_reservation()
-            status = JobStatus(spec.plan_id, Phase.CANCELLED, status.attempt, False,
-                               "Cancelled; installed files were not changed", int(time.time()))
-            status.save(directory)
+            status = status.advance(directory, Phase.CANCELLED, "Cancelled; installed files were not changed", mutation_started=False)
             (directory / "approval.json").unlink(missing_ok=True)
             return status
 

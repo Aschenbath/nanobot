@@ -245,7 +245,7 @@ WebSocket, `settings.nanobot.update.plan` accepts `channel` (the saved preferenc
 by default, or Stable if none was saved),
 `restart_running` (false by default), and optional explicit `extras`. It cannot accept
 a download URL, shell command, environment path or caller-supplied plan. A plain HTTP
-request cannot create a plan. This capability does not change `webui.self-update.v1`.
+request cannot create a plan. Review alone never authorizes installation.
 
 The response names the gateway, exact target, running/installed versions, owner and
 reviewed profiles. `restart_running=true` selects only known, running background

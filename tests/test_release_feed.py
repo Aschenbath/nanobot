@@ -198,6 +198,9 @@ async def test_stages_actual_wheel_and_reuses_only_verified_bytes(tmp_path):
     def handler(request):
         if request.url.host == "pypi.org":
             return httpx.Response(200, json=pypi(data=data))
+        if request.url.host == "files.pythonhosted.org":
+            return httpx.Response(302, headers={"location": "https://release-assets.githubusercontent.com/wheel"})
+        assert request.url.host == "release-assets.githubusercontent.com"
         return httpx.Response(200, content=data)
 
     async with feed(tmp_path, handler) as client:
@@ -209,6 +212,24 @@ async def test_stages_actual_wheel_and_reuses_only_verified_bytes(tmp_path):
         with pytest.raises(ReleaseFeedError, match="checksum"):
             await client.download(target, wheel.parent)
         assert wheel.read_bytes() != data  # No clobber to hide the corrupt file.
+
+
+@pytest.mark.asyncio
+async def test_download_redirect_does_not_inherit_metadata_host_allowlist(tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        if request.url.host == "pypi.org":
+            return httpx.Response(200, json=pypi())
+        return httpx.Response(302, headers={"location": "https://raw.githubusercontent.com/private-wheel"})
+
+    async with feed(tmp_path, handler) as client:
+        target = await client.latest("stable")
+        with pytest.raises(ValueError, match="HTTPS"):
+            await client.download(target, tmp_path / "staging")
+    assert not any("raw.githubusercontent.com" in url for url in requests)
+    assert list((tmp_path / "staging").iterdir()) == []
 
 
 @pytest.mark.asyncio

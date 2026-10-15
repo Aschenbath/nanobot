@@ -8,7 +8,6 @@ No phase automatically retries work. Clients do not own installer lifetimes.
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import time
 from contextlib import ExitStack
@@ -203,20 +202,15 @@ class UpdateJobService:
                 raise ValueError("Only an interrupted preparation or uncommitted handoff can be settled")
         return read_update_job(plan_id)
 
-    async def execute(self, plan_id: str) -> UpdateJobView:
-        """Confirm the saved stop/install/restart plan once, never retry by POST.
+    async def execute(self, plan_id: str, *, previous_confirmation_id: str | None = None) -> UpdateJobView:
+        """Confirm once, or explicitly retry the supplied previous confirmation.
+
+        Repeating either request reads the durable result; it cannot launch twice.
 
         This handoff does not count itself as pending runtime work: its detached
         owner must be able to stop the requesting gateway. All unrelated work
         still participates in the cooperative idle-admission check.
         """
-        return await self._execute(plan_id)
-
-    async def retry(self, plan_id: str, previous_confirmation_id: str) -> UpdateJobView:
-        """Explicitly replace one failed, pre-mutation handoff confirmation."""
-        return await self._execute(plan_id, previous_confirmation_id=previous_confirmation_id)
-
-    async def _execute(self, plan_id: str, *, previous_confirmation_id: str | None = None) -> UpdateJobView:
         if self._closing:
             raise RuntimeError("The update service is shutting down")
         job = read_update_job(plan_id)
@@ -229,10 +223,7 @@ class UpdateJobService:
             return job
         directory = installation_state_dir() / "jobs" / plan_id
         plan = UpdatePlan.model_validate(read_record(directory / "plan.json"))
-        running = {item.receipt.id for item in plan.profiles if item.state == "running"}
-        if (any(item.state == "unconfirmed" for item in plan.profiles)
-                or running != set(plan.stop_profiles) or running != set(plan.restart_profiles)
-                or not any(item.state == "running" and item.receipt.pid == os.getpid() for item in plan.profiles)):
+        if not plan.can_restart_inline:
             raise ValueError("Inline updates require reviewed shutdown and restart of this gateway and every running peer")
         loop = asyncio.get_running_loop()
 

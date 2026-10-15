@@ -8,7 +8,6 @@ No client route calls it, and it never launches an installer itself.
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 
 from nanobot.data_access import require_no_pending_data_update
@@ -40,8 +39,7 @@ async def _prepare(directory: Path) -> None:
             await feed.revalidate(plan.target)
         plan.validate_for(plan.installation)
         require_no_pending_data_update()
-        JobStatus(spec.plan_id, Phase.STOPPING, status.attempt, False,
-                  "Waiting for the reviewed idle gateways to exit normally", int(time.time())).save(directory)
+        status.advance(directory, Phase.STOPPING, "Waiting for the reviewed idle gateways to exit normally", mutation_started=False)
         await stop_reviewed_gateways(directory)
     except Exception:
         current = JobStatus.read(directory)
@@ -50,7 +48,7 @@ async def _prepare(directory: Path) -> None:
             if current.phase == Phase.CHECKING else
             "Gateway shutdown did not complete; review the saved shutdown state before retrying"
         )
-        JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, status.attempt, False, message, int(time.time())).save(directory)
+        status.advance(directory, Phase.HANDOFF_FAILED, message, mutation_started=False)
         raise
 
 
