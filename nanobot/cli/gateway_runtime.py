@@ -133,7 +133,11 @@ def _install_gateway_shutdown_handlers(
         print_status("\nShutting down... Press Ctrl+C again to force.")
         shutdown_event.set()
 
-    for signum in (signal.SIGINT, signal.SIGTERM):
+    shutdown_signals = [signal.SIGINT, signal.SIGTERM]
+    if sigbreak := getattr(signal, "SIGBREAK", None):
+        shutdown_signals.append(sigbreak)
+
+    for signum in shutdown_signals:
         try:
             loop.add_signal_handler(signum, request_shutdown, signum)
         except (NotImplementedError, RuntimeError, ValueError):
@@ -1008,7 +1012,7 @@ def _run_claimed_gateway(
                 if orphaned:
                     logger.info("Last local client disappeared; stopping on-demand gateway")
 
-            tasks = [
+            tasks.extend([
                 asyncio.create_task(
                     watch_config_file(
                         Path(config_path),
@@ -1031,7 +1035,7 @@ def _run_claimed_gateway(
                     _monitor_local_clients(),
                     name="nanobot-gateway-client-monitor",
                 ),
-            ]
+            ])
             if update_startup is not None:
                 async def activate(startup: "GatewayStartup") -> None:
                     await startup.wait_for_activation(health_identity)
