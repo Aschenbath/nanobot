@@ -18,11 +18,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
 from contextlib import nullcontext
 from email.parser import BytesParser
 from pathlib import Path
-from typing import ParamSpec, TypeVar
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 from zipfile import ZipFile, ZipInfo
@@ -40,7 +38,7 @@ from nanobot.installation_lock import (
 from nanobot.installation_receipt import RECEIPT_NAME
 from nanobot.release_feed import ReleaseFeed
 from nanobot.releases import Channel, ReleaseRecord, Sha256
-from nanobot.update_backup import BackupSource, profile_sources, unique_sources
+from nanobot.update_backup import BackupSource, unique_sources
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_process import PreparationProcess
 from nanobot.update_profiles import require_stopped_profiles, validate_profiles
@@ -59,9 +57,7 @@ from nanobot.update_worker import (
     write_record,
 )
 from nanobot.utils.atomic_file import atomic_write_lines
-
-_Args = ParamSpec("_Args")
-_Result = TypeVar("_Result")
+from nanobot.utils.cancellation import shield_and_drain
 
 
 class UpdateJobNotFoundError(FileNotFoundError):
@@ -158,27 +154,6 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         service_restored=status.phase == Phase.RESTORED,
         automatic_recovery=WorkerSpec.recovery_selected(directory),
     )
-
-
-async def settled_update_work(function: Callable[_Args, _Result], *args: _Args.args,
-                          **kwargs: _Args.kwargs) -> _Result:
-    """Retain the caller's preparation leases until native work actually exits."""
-    work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(work)
-    except asyncio.CancelledError:
-        # Repeated request/shutdown cancellations must not cancel the wrapper
-        # Future and release its leases while the underlying thread still runs.
-        while not work.done():
-            try:
-                await asyncio.shield(work)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if not work.cancelled():
-            work.exception()  # Retrieve any native failure; cancellation still wins.
-        raise
 
 
 class _Metadata(BaseModel):
@@ -404,7 +379,7 @@ async def prepare_job(plan: UpdatePlan, feed: ReleaseFeed) -> Path:
 
 async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, directory: Path,
                           process: PreparationProcess, *, native_uv: bool) -> Path:
-    baseline = await settled_update_work(inspect_environment, plan.installation.python, uv=native_uv, process=process)
+    baseline = await shield_and_drain(asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process))
     if (baseline.environment, baseline.python, baseline.app_version, baseline.receipt_sha) != (
         plan.installation.environment, plan.installation.python, plan.installation.installed_version,
         plan.installation.records.get("pyvenv.cfg"),
@@ -420,8 +395,8 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
     app_wheel = await feed.download(plan.target, root / "downloads")
     JobStatus(plan.id, Phase.PREPARING, 0, False,
               "Preparing dependencies without changing the installation", int(time.time())).save(directory)
-    records, uv = await settled_update_work(_prepare_transaction, plan, app_wheel, directory, process)
-    current = await settled_update_work(inspect_environment, plan.installation.python, uv=native_uv, process=process)
+    records, uv = await shield_and_drain(asyncio.to_thread(_prepare_transaction, plan, app_wheel, directory, process))
+    current = await shield_and_drain(asyncio.to_thread(inspect_environment, plan.installation.python, uv=native_uv, process=process))
     if current != baseline:
         raise ValueError("Installation changed while preparing the update")
     plan.validate_for(plan.installation)
@@ -434,8 +409,7 @@ async def _prepare_inputs(plan: UpdatePlan, feed: ReleaseFeed, root: Path, direc
         sources.append(BackupSource(str(Path(baseline.environment) / RECEIPT_NAME)))
     for profile in plan.profiles:
         receipt = profile.receipt
-        sources.extend(profile_sources(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
-                                       config=Path(receipt.config), workspace=Path(receipt.workspace)))
+        sources.extend(BackupSource.parse({"path": str(path)}) for path in receipt.data_paths)
         sources.append(BackupSource(str(root / "profiles" / f"{receipt.id}.json")))
     spec = WorkerSpec(plan.id, hashlib.sha256(plan_path.read_bytes()).hexdigest(), hashlib.sha256(archive.read_bytes()).hexdigest(),
                       baseline, plan.target.version, records, unique_sources(sources), tuple(plan.restart_profiles), uv,
@@ -495,7 +469,7 @@ async def start_job(directory: Path, feed: ReleaseFeed, *, repair: bool = False)
             raise ValueError("This interrupted job requires an explicit repair confirmation")
         if repair and not state.mutation_started:
             raise ValueError("Repair is only available after this job began replacing files")
-        current = await settled_update_work(inspect_job_environment, directory, spec)
+        current = await shield_and_drain(asyncio.to_thread(inspect_job_environment, directory, spec))
         with (installation_access(updating=not restarting, allow_incomplete=restarting,
                                   environment=spec.baseline.environment),
               nullcontext() if state.phase == Phase.FINALIZING else

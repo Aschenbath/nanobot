@@ -9,10 +9,10 @@ from zipfile import ZipFile
 import pytest
 
 from nanobot import update_backup
+from nanobot.data_access import profile_data_paths
 from nanobot.update_backup import (
     BackupSource,
     ensure_backup,
-    profile_sources,
     unique_sources,
     verify_backup,
 )
@@ -44,7 +44,8 @@ def scoped_data(tmp_path):
                  data / "cli-apps/venvs/application/binary"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("not part of this backup")
-    sources = unique_sources(list(profile_sources(home=home, data_dir=data, config=data / "custom.json", workspace=workspace)))
+    paths = profile_data_paths(home=home, data_dir=data, config=data / "custom.json", workspace=workspace)
+    sources = unique_sources([BackupSource(str(path)) for path in paths])
     return job, sources, files
 
 

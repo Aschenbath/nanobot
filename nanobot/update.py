@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
@@ -19,12 +18,16 @@ from importlib.metadata import MetadataPathFinder, PackageNotFoundError, distrib
 from pathlib import Path
 from typing import TypedDict
 
-from filelock import FileLock, Timeout
 from packaging.version import Version
 
 from nanobot import __version__
 from nanobot.bun import bun_environment, ensure_bun
-from nanobot.installation_lock import InstallationBusyError, installation_access
+from nanobot.installation_lock import (
+    InstallationBusyError,
+    installation_access,
+    installation_id,
+    pending_update_path,
+)
 
 _SOURCE_URL = "https://github.com/HKUDS/nanobot.git"
 
@@ -86,10 +89,6 @@ def latest_release() -> str:
         raise UpdateError(f"Could not check PyPI: {exc}") from exc
 
 
-def _installation_key() -> str:
-    return hashlib.sha256(os.fsencode(Path(sys.prefix).resolve())).hexdigest()[:16]
-
-
 def update_blocked_reason(*, dev: bool = False) -> str:
     """Do not replace files owned by another deployment or package manager."""
     if Path("/.dockerenv").exists() or os.environ.get("RENDER") == "true":
@@ -110,17 +109,13 @@ def update_blocked_reason(*, dev: bool = False) -> str:
     return ""
 
 
-def _journal_path() -> Path:
-    return Path.home() / ".nanobot" / "run" / f"update-{_installation_key()}.pending"
-
-
 def incomplete_update() -> bool:
     """A marker survives failure or process termination after mutation begins."""
-    return _journal_path().exists()
+    return pending_update_path().exists()
 
 
 def _mark_installing() -> None:
-    path = _journal_path()
+    path = pending_update_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as marker:
         marker.write("Installation may be incomplete. Stop nanobot and retry the update.\n")
@@ -157,7 +152,7 @@ def _prepare_source(
         raise UpdateError("Source updates require Git. Install Git and retry, or use a release update.")
     root = source_checkout()
     if root is None:
-        root = Path.home() / ".nanobot" / "src" / _installation_key()
+        root = Path.home() / ".nanobot" / "src" / installation_id()[:16]
         root.parent.mkdir(parents=True, exist_ok=True)
         if not root.exists():
             output("Downloading nanobot source…")
@@ -262,12 +257,10 @@ def update_installation(
     reason = update_blocked_reason(dev=dev)
     if reason:
         raise UpdateError(reason)
-    lock_dir = Path.home() / ".nanobot" / "run"
-    lock_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with installation_access(updating=True), FileLock(str(lock_dir / f"update-{_installation_key()}.lock"), timeout=0):
+        with installation_access(updating=True):
             if incomplete_update():
-                with _journal_path().open("rb") as marker:
+                with pending_update_path().open("rb") as marker:
                     legacy_marker = marker.read(31).startswith(b"Installation may be incomplete.")
                 if not legacy_marker:
                     raise UpdateError(
@@ -322,10 +315,8 @@ def update_installation(
                 source = "pypi"
             output("Verifying the installed version…")
             _verify_installation(expected, source)
-            _journal_path().unlink()
+            pending_update_path().unlink()
             return {"version": expected, "source": source, "requires_restart": True}
-    except Timeout as exc:
-        raise UpdateError("Another nanobot update is already running in this environment.") from exc
     except InstallationBusyError as exc:
         raise UpdateError(str(exc), needs_repair=incomplete_update()) from exc
     except Exception as exc:

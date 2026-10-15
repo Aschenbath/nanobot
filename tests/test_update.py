@@ -9,13 +9,12 @@ from unittest.mock import Mock
 
 import pytest
 import typer
-from filelock import FileLock
 from packaging.version import Version
 from typer.testing import CliRunner
 
 from nanobot import update
 from nanobot.cli.update import update as update_command
-from nanobot.installation_lock import installation_access
+from nanobot.installation_lock import installation_access, installation_id, pending_update_path
 from nanobot.optional_features import install_packages
 
 
@@ -56,7 +55,7 @@ def test_release_install_gets_a_managed_source_checkout(checkout, tmp_path, monk
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(update, "_SOURCE_URL", str(upstream))
     root = update._prepare_source(lambda _: None)
-    assert root == tmp_path / ".nanobot/src" / update._installation_key()
+    assert root == tmp_path / ".nanobot/src" / installation_id()[:16]
     assert git(root, "rev-parse", "HEAD") == git(upstream, "rev-parse", "HEAD")
     assert update._prepare_source(lambda _: None) == root
 
@@ -113,8 +112,9 @@ def test_release_update_does_not_force_reinstall_wheel(isolated_update, monkeypa
     isolated_update.assert_called_once_with(["nanobot-ai==0.3.5"], upgrade=True)
 
 
-def test_release_update_does_not_modify_a_live_runtime(isolated_update):
-    with installation_access():
+@pytest.mark.parametrize("updating", [False, True], ids=["live-runtime", "another-updater"])
+def test_release_update_does_not_modify_an_in_use_installation(isolated_update, updating):
+    with installation_access(updating=updating):
         with pytest.raises(update.UpdateError, match="installation is in use"):
             update.update_installation(output=lambda _: None)
     isolated_update.assert_not_called()
@@ -129,15 +129,6 @@ def test_update_verifies_in_fresh_interpreter(isolated_update, monkeypatch):
         update.update_installation(output=lambda _: None)
     assert checked.call_args_list[0].args[0][:3] == [sys.executable, "-I", "-c"]
     assert checked.call_args_list[1].args[0][:2] == [sys.executable, "-c"]
-
-
-def test_update_lock_excludes_other_processes(isolated_update, tmp_path):
-    lock = tmp_path / ".nanobot/run" / f"update-{update._installation_key()}.lock"
-    lock.parent.mkdir(parents=True)
-    with FileLock(str(lock)):
-        with pytest.raises(update.UpdateError, match="already running"):
-            update.update_installation()
-    isolated_update.assert_not_called()
 
 
 @pytest.mark.parametrize("has_uv", [False, True])
@@ -289,7 +280,7 @@ def test_failed_install_retains_marker_until_successful_retry(isolated_update, m
 
 
 def test_legacy_retry_cannot_replace_an_exact_worker_job(isolated_update):
-    marker = update._journal_path()
+    marker = pending_update_path()
     marker.parent.mkdir(parents=True)
     marker.write_text('{"schema_version":2,"job_id":"an-exact-job","version":"0.3.5"}')
     with pytest.raises(update.UpdateError, match="saved update job") as error:

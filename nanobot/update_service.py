@@ -37,13 +37,13 @@ from nanobot.update_jobs import (
     read_update_job,
     retry_handoff,
     settle_interrupted_preparation,
-    settled_update_work,
     start_handoff,
     validate_preparation,
 )
 from nanobot.update_plan import UpdatePlan, UpdatePlans
 from nanobot.update_worker import JobStatus, Phase, read_record
 from nanobot.utils.atomic_file import atomic_write_lines
+from nanobot.utils.cancellation import shield_and_drain
 
 
 class UpdateJobRequest(ReleaseRecord):
@@ -236,7 +236,7 @@ class UpdateJobService:
                 loop.call_soon_threadsafe(self._track_worker, process)
 
         try:
-            await settled_update_work(launch)
+            await shield_and_drain(asyncio.to_thread(launch))
         except (OSError, RuntimeError):
             # The launcher may have failed after persisting consent, or another
             # tab may already own the worker. Return durable facts, not a retry.

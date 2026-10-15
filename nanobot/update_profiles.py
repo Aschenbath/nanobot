@@ -95,6 +95,18 @@ class ProfileReceipt(BaseModel):
     def health_identity(self) -> GatewayHealthIdentity:
         return GatewayHealthIdentity(self.id, self.run_id, self.version)
 
+    @property
+    def runtime_paths(self) -> GatewayRuntimePaths:
+        state, log = Path(self.state_path), Path(self.log_path)
+        return GatewayRuntimePaths(run_dir=state.parent, logs_dir=log.parent, state_path=state, log_path=log)
+
+    @property
+    def data_paths(self) -> tuple[Path, ...]:
+        # Preserve individual store paths: leases and backups must reject links,
+        # not resolve them into additional read/write authority.
+        return profile_data_paths(home=Path(self.home), data_dir=Path(self.data_dir),
+                                  config=Path(self.config), workspace=Path(self.workspace))
+
 
 class ObservedProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -111,10 +123,7 @@ class _RuntimeClaim(BaseModel):
 
 def _observe(receipt: ProfileReceipt) -> Literal["running", "stopped", "unconfirmed"]:
     state_path = Path(receipt.state_path)
-    runtime = GatewayRuntime(paths=GatewayRuntimePaths(
-        run_dir=state_path.parent, logs_dir=Path(receipt.log_path).parent,
-        state_path=state_path, log_path=Path(receipt.log_path),
-    ))
+    runtime = GatewayRuntime(paths=receipt.runtime_paths)
     try:
         if state_path.is_symlink() or state_path.stat().st_size > 32 * 1024:
             return "unconfirmed"
@@ -188,11 +197,9 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
                              workspace=options.workspace, working_directory=str(Path.cwd().resolve()),
                              verbose=options.verbose, lifetime=status.lifetime),
     )
-    paths = profile_data_paths(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
-                               config=Path(receipt.config), workspace=Path(receipt.workspace))
     if grant is not None and grant.participant != receipt.id:
         raise ValueError("Startup grant belongs to a different gateway instance")
-    with data_access(paths, grant=grant):
+    with data_access(receipt.data_paths, grant=grant):
         with FileLock(str(directory / "profiles.lock"), timeout=5):
             _save(directory, receipt)
         try:
@@ -266,10 +273,7 @@ def verify_restarted_profile(previous: ProfileReceipt, *, version: str,
         raise ValueError("The updated gateway is not running with a verified process identity")
     current = observed.receipt
     validate_restart_identity(previous, current, version=version, job_id=job_id)
-    state_path, log_path = Path(current.state_path), Path(current.log_path)
-    runtime = GatewayRuntime(paths=GatewayRuntimePaths(
-        run_dir=state_path.parent, logs_dir=log_path.parent, state_path=state_path, log_path=log_path,
-    ))
+    runtime = GatewayRuntime(paths=current.runtime_paths)
     if not runtime.verify_ready(current.health_identity, maintenance=maintenance):
         raise ValueError("Gateway readiness did not confirm the updated instance, run and version")
     # Re-read the receipt as well: a new claim can precede its new receipt.

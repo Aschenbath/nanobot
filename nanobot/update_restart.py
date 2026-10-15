@@ -22,9 +22,8 @@ from nanobot.data_access import (
     DataStartupGrant,
     data_access,
     finish_data_handoff,
-    profile_data_paths,
 )
-from nanobot.gateway.runtime import GatewayHealthIdentity, GatewayRuntime, GatewayRuntimePaths
+from nanobot.gateway.runtime import GatewayHealthIdentity, GatewayRuntime
 from nanobot.installation_lock import pending_update_path
 from nanobot.update_plan import UpdatePlan
 from nanobot.update_profiles import (
@@ -139,9 +138,7 @@ def _start_gateway(directory: Path, previous: ProfileReceipt, grant: DataStartup
                                  "--gateway", str(directory), previous.id],
                                 cwd=launch.working_directory, text=False, **kwargs)
 
-    state, log = Path(previous.state_path), Path(previous.log_path)
-    runtime = GatewayRuntime(paths=GatewayRuntimePaths(run_dir=state.parent, logs_dir=log.parent,
-                                                       state_path=state, log_path=log),
+    runtime = GatewayRuntime(paths=previous.runtime_paths,
                              python_executable=previous.python, popen=spawn)
     result = runtime.start_background(launch.options(port=previous.port))
     if not result.ok:
@@ -214,9 +211,7 @@ def run_restarts(directory: Path) -> None:
         status.advance(directory, Phase.RESTARTING, "Starting the reviewed gateways with task intake closed", mutation_started=True)
         for previous in profiles:
             if observed[previous.id].state == "stopped":
-                grant = data.grant_startup(previous.id, profile_data_paths(
-                    home=Path(previous.home), data_dir=Path(previous.data_dir),
-                    config=Path(previous.config), workspace=Path(previous.workspace)))
+                grant = data.grant_startup(previous.id, previous.data_paths)
                 _start_gateway(directory, previous, grant)
 
         # A resumed activation can include already active runs; their durable

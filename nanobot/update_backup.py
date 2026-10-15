@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Literal, cast
 from zipfile import ZIP_STORED, ZipFile
 
-from nanobot.data_access import profile_data_paths
 from nanobot.utils.atomic_file import atomic_write_lines
 
 _MAX_ENTRIES = 100_000
@@ -41,14 +40,6 @@ class BackupSource:
         if not isinstance(path, str) or not Path(path).is_absolute() or len(path) > 4096 or "\0" in path:
             raise ValueError("Backup sources must be bounded absolute paths")
         return cls(path)
-
-
-def profile_sources(*, home: Path, data_dir: Path, config: Path, workspace: Path) -> tuple[BackupSource, ...]:
-    """Select known stores from the gateway's recorded paths, not config contents."""
-    paths = profile_data_paths(home=home, data_dir=data_dir, config=config, workspace=workspace)
-    # Do not resolve individual stores: a symlink must be refused, not expanded
-    # into an extra read root. The receipt already canonicalizes its base paths.
-    return tuple(BackupSource.parse({"path": str(path)}) for path in paths)
 
 
 def unique_sources(sources: list[BackupSource]) -> tuple[BackupSource, ...]:
