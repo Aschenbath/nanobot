@@ -595,6 +595,9 @@ async def test_exact_review_survives_router_recreation_without_reselection_or_in
     assert payload["execution_available"] is False
     assert (review["running_version"], review["target_version"], review["owner"]) == ("0.3.4", "0.3.5", "uv")
     assert review["extras"] == ["webui"] and review["validity"] == "current"
+    assert review["guide"]["method"] == "uv"
+    assert review["guide"]["host"] == review["host"]
+    assert review["guide"]["environment"] == fixture.snapshot.environment
     assert [(item["reviewed_state"], item["stop"], item["restart"]) for item in review["profiles"]] == [
         ("running", True, True), ("stopped", False, False),
     ]

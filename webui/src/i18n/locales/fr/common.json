@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Mettre à jour via {{method}}",
+      "methods": {
+        "managed": "l’installateur nanobot",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "le code source",
+        "container": "le déploiement du conteneur",
+        "system": "le gestionnaire système"
+      },
+      "host": "Passerelle : {{host}}",
+      "where": "Utilisez le terminal de cette machine avec le compte ayant effectué l’installation. Pour un serveur distant, utilisez SSH ou sa console, pas l’ordinateur du navigateur. Ces commandes sont à copier, jamais exécutées par cette page.",
+      "containerHost": "Ce nom et ce chemin appartiennent au conteneur, pas à son hôte. Utilisez le serveur ou la console qui gère le déploiement ; ne mettez pas à jour dans le conteneur actif.",
+      "beforeTitle": "Préparer et arrêter",
+      "before": "Terminez les tâches et sauvegardez configuration, conversations et espaces de travail. Arrêtez toutes les passerelles partageant cette installation avec leur lanceur ou gestionnaire de services. Conservez les chemins des profils et les paramètres de lancement.",
+      "installTitle": "Mettre à jour dans {{shell}}",
+      "inspectCommand": "Inspecter cette installation",
+      "updateCommand": "Commande de mise à jour",
+      "versionCommand": "Version installée",
+      "reasons": {
+        "restart": "Le paquet cible est déjà installé. Ne le réinstallez pas. Arrêtez l’ancienne passerelle, relancez avec le même lanceur et profil, puis vérifiez la version active.",
+        "registry": "Conservez le registre et les identifiants d’origine. Le gestionnaire conserve les extras et contraintes ; il peut choisir une autre version stable autorisée que celle annoncée. Vérifiez la sortie et ne forcez pas une mise à jour en échec.",
+        "preview": "Les Preview sont distribuées sur GitHub, pas nécessairement dans votre index. Choisissez le wheel adapté au Python et à la plateforme de la passerelle, vérifiez sa somme de contrôle, puis utilisez l’outil d’origine avec les mêmes extras. Une commande upgrade générique ne garantit pas cette Preview.",
+        "policy": "L’installation comporte un épinglage, un verrou, une source fixe, des contraintes ou des options inconnues. Inspectez-la et suivez son processus d’origine, en conservant extras et paquets injectés. Ne supprimez pas les restrictions.",
+        "extras": "Cet environnement pip ne mémorise pas les extras demandés. Inspectez le paquet, puis reprenez la commande pip d’origine avec --upgrade et la version souhaitée, en conservant extras et options d’index. Aucune commande devinée n’est fournie.",
+        "manager": "Le gestionnaire ou la disposition de son environnement n’a pas pu être confirmé. Retrouvez le chemin ci-dessus avec le compte et les réglages d’origine ; n’utilisez pas un autre pip ou nanobot du PATH.",
+        "source": "Inspectez ce dépôt, préservez vos modifications et confirmez la branche ou révision. Suivez ensuite le processus du dépôt pour actualiser code, dépendances et builds WebUI/TUI. Ne remplacez pas une installation éditable par un paquet PyPI.",
+        "container": "Dans le projet Compose ou la console d’origine, choisissez le tag ou digest de l’image, récupérez-la ou construisez-la, puis recréez uniquement le service nanobot avec ses volumes, secrets et ports existants. Sauvegardez les volumes ; ne les supprimez jamais.",
+        "system": "Utilisez le gestionnaire de paquets du système ou contactez l’administrateur. N’utilisez pas sudo pip et ne contournez pas la gestion du Python système.",
+        "review": "L’installation ou la vérification a changé. Fermez cette fenêtre et vérifiez à nouveau avant de copier une commande."
+      },
+      "verifyTitle": "Redémarrer et vérifier",
+      "verify": "Relancez avec le même lanceur et profil. La commande ne vérifie que les fichiers installés. Reconnectez-vous à cette passerelle, comparez sa version active à v{{version}} et vérifiez conversations et réglages.",
+      "check": "Vérifier la passerelle active",
+      "verified": "Confirmé : cette passerelle exécute v{{version}}.",
+      "observed": "La passerelle indique v{{version}}, pas v{{target}}. Vérifiez la sortie d’installation et redémarrez la même installation ; un paquet actualisé ne remplace pas un processus actif.",
+      "checkFailed": "Version active illisible. Reconnectez-vous à la même passerelle et réessayez ; la réussite n’est pas confirmée."
+    },
     "automaticRecovery": "Si la mise à jour échoue, nanobot tentera de rétablir le service avec le programme précédent si cela est sûr. Les discussions ne seront pas remplacées par une sauvegarde.",
     "restored": "Version précédente rétablie",
     "restoredDescription": "La mise à jour a échoué. La version v{{version}} fonctionne à nouveau. Vos paramètres et discussions n’ont pas été remplacés par une sauvegarde.",

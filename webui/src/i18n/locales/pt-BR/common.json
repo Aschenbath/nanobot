@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Atualizar via {{method}}",
+      "methods": {
+        "managed": "instalador do nanobot",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "código-fonte",
+        "container": "implantação do contêiner",
+        "system": "gerenciador do sistema"
+      },
+      "host": "Gateway: {{host}}",
+      "where": "Use o terminal desta máquina com a conta da instalação original. Para um gateway remoto, use SSH ou o console do servidor, não o computador do navegador. Os comandos são apenas copiados; esta página não os executa.",
+      "containerHost": "Este nome e caminho pertencem ao contêiner, não ao host de implantação. Use o servidor ou painel que o gerencia; não atualize dentro do contêiner em execução.",
+      "beforeTitle": "Preparar e parar",
+      "before": "Conclua as tarefas e faça backup das configurações, conversas e espaços de trabalho. Pare todos os gateways desta instalação pelo iniciador ou gerenciador de serviços original. Preserve os caminhos de perfil e parâmetros de início.",
+      "installTitle": "Atualizar no {{shell}}",
+      "inspectCommand": "Inspecionar esta instalação",
+      "updateCommand": "Comando de atualização",
+      "versionCommand": "Versão instalada",
+      "reasons": {
+        "restart": "O pacote de destino já está instalado. Não reinstale. Pare o gateway antigo, reinicie com o iniciador e perfil originais e confira a versão em execução.",
+        "registry": "Use o registro e as credenciais originais. O gerenciador preserva extras e restrições e pode selecionar outra versão estável permitida, diferente do aviso. Confira a saída e não force uma atualização com falha.",
+        "preview": "As Preview são distribuídas no GitHub, não necessariamente no seu índice. Selecione o wheel adequado ao Python e à plataforma do gateway, verifique o checksum e instale pelo gerenciador original com os mesmos extras. Um upgrade genérico não garante esta Preview.",
+        "policy": "Há versão fixada, arquivo de trava, origem fixa, restrição ou opções desconhecidas. Inspecione e siga o fluxo original, preservando extras e pacotes injetados. Não remova as restrições.",
+        "extras": "Este ambiente pip não registra os extras originais. Inspecione o pacote e reutilize o comando pip original com --upgrade e a versão desejada, preservando extras e opções do índice. Não fornecemos um comando adivinhado.",
+        "manager": "Não foi possível confirmar o gerenciador ou a estrutura do ambiente. Use a conta e as configurações originais para acessar o caminho acima; não use outro pip ou nanobot do PATH.",
+        "source": "Inspecione o repositório, preserve alterações locais e confirme a branch ou revisão. Siga o fluxo do repositório para atualizar código, dependências e builds WebUI/TUI. Não substitua uma instalação editável por PyPI.",
+        "container": "No projeto Compose ou painel original, escolha a tag ou digest, baixe ou construa a imagem e recrie apenas o serviço nanobot com os mesmos volumes, segredos e portas. Faça backup dos volumes; nunca os exclua.",
+        "system": "Use o gerenciador de pacotes do sistema ou contate o administrador. Não use sudo pip nem contorne o gerenciamento do Python do sistema.",
+        "review": "A instalação ou revisão mudou. Feche e verifique novamente antes de copiar um comando."
+      },
+      "verifyTitle": "Reiniciar e verificar",
+      "verify": "Inicie com o mesmo iniciador e perfil. O comando só verifica arquivos instalados. Reconecte ao mesmo gateway, compare a versão em execução com v{{version}} e confira as conversas e configurações.",
+      "check": "Verificar gateway em execução",
+      "verified": "Confirmado: este gateway executa v{{version}}.",
+      "observed": "O gateway informa v{{version}}, não v{{target}}. Confira a saída e reinicie a mesma instalação; atualizar arquivos não atualiza o processo em execução.",
+      "checkFailed": "Não foi possível ler a versão em execução. Reconecte ao mesmo gateway e tente novamente; o sucesso não foi confirmado."
+    },
     "automaticRecovery": "Se a atualização falhar, o nanobot tentará restaurar o serviço com o programa anterior, quando for seguro. Os dados das conversas não serão revertidos.",
     "restored": "Versão anterior restaurada",
     "restoredDescription": "A atualização não foi concluída. A v{{version}} está funcionando novamente. Suas configurações e conversas não foram revertidas.",

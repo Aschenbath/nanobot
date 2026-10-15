@@ -740,6 +740,7 @@ export interface ReleaseStatus {
   state: "available" | "current" | "ahead" | "waiting_stable" | "withdrawn" | "unavailable" | "publishing" | "unsupported";
 }
 export interface VersionCheckResult {
+  installation_method?: UpdateMethod | null;
   releaseStatus?: ReleaseStatus;
   can_change_channel?: boolean;
   updateAvailable: {
@@ -779,6 +780,17 @@ export async function fetchWorkspaces(
   );
 }
 
+export type UpdateMethod = "managed" | "uv" | "pipx" | "pip" | "source" | "container" | "system";
+export interface UpdateGuide {
+  method: UpdateMethod;
+  host: string;
+  environment: string;
+  shell: "sh" | "powershell";
+  inspect_command: string | null;
+  update_command: string | null;
+  verify_command: string | null;
+  reason: "registry" | "preview" | "policy" | "extras" | "manager" | "source" | "container" | "system" | "review" | "restart";
+}
 export interface UpdateReview {
   id: string;
   installation_id: string;
@@ -790,6 +802,7 @@ export interface UpdateReview {
   validity: "current" | "expired" | "installation_changed" | "profiles_changed" | "channel_changed";
   execution_blocked_reason: string | null;
   automatic_recovery?: boolean;
+  guide?: UpdateGuide | null;
   profiles: { id: string; workspace: string; reviewed_state: string; stop: boolean; restart: boolean }[];
 }
 export interface UpdateReviewResponse {

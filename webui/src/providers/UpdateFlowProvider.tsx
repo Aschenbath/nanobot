@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { UpdateGuide } from "@/components/UpdateGuide";
 import { ApiError, createUpdateReview, readUpdateReview, readUpdateJob, prepareUpdate, executeUpdate, settleUpdate,
   type UpdateReviewResponse, type UpdateJob } from "@/lib/api";
 import type { NanobotClient } from "@/lib/nanobot-client";
@@ -43,6 +44,7 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   const generation = useRef(0);
   const approved = useRef<string | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const inFlight = useRef(false);
 
   // Credentials/host changes revoke this client's unconsumed consent. Restoring
@@ -255,10 +257,12 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   const busy = checkingStatus || submitting || restoringReview || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
   const title = restored ? "restored" : done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
   const blocked = !reviewAgain && !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
+  const guide = blocked && !busy && !error && !pendingId && review && ["upgrade", "restart"].includes(review.plan.action)
+    && review.plan.validity === "current" ? review.plan.guide : null;
   const description = delayed ? t(automaticRecovery ? "updates.automaticRecovery" : "updates.delayed") : error || (restored ? t("updates.restoredDescription", { version: job?.previous_version }) : done ? t("updates.doneDescription", { version: job?.target_version })
     : offline || awaitingRestart ? t("updates.reconnectingDescription") : reviewing ? t("updates.reviewing")
     : reviewAgain ? t("updates.reviewAgainDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : needsRecovery ? "updates.recoveryBeforeInstall" : "updates.preparationFailed")
-    : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
+    : busy ? t("updates.workingDescription") : guide?.reason === "restart" ? t("updates.guide.reasons.restart") : blocked ? t(`updates.blocked.${blocked}`)
     : review ? t("updates.confirmDescription", { version: review.plan.target_version, host: review.plan.host }) : t("updates.reviewing"));
   const startAgain = !pendingId || (failed && !needsRecovery && !job?.execution_confirmation_id);
   const primary = () => {
@@ -272,15 +276,20 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
     } else void confirm();
   };
   const close = () => { setOpen(false); if (done) { remember(null); setPendingId(null); window.location.reload(); } };
+  const ownerInstructions = <a className="mt-3 block rounded-control text-sm text-muted-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href="https://github.com/HKUDS/nanobot/blob/main/docs/updating.md#installation-owners"
+    target="_blank" rel="noreferrer">{t("updates.ownerGuide")}</a>;
 
   return <UpdateFlowContext.Provider value={{ open: enabled ? show : undefined, pending: enabled && !!pendingId }}>
     {children}
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogContent className="max-h-[calc(100dvh-2rem)] max-w-[384px] gap-0 overflow-y-auto rounded-panel p-6 motion-reduce:animate-none"
+      <AlertDialogContent className={`max-h-[calc(100dvh-2rem)] ${guide ? "flex max-w-lg flex-col overflow-hidden" : "max-w-[384px] overflow-y-auto"} gap-0 rounded-panel p-6 motion-reduce:animate-none`}
+        onOpenAutoFocus={(event) => { event.preventDefault(); heading.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); if (trigger.current?.isConnected) trigger.current.focus(); }}>
         <div aria-live="polite" aria-atomic="true">
           <img src="/brand/nanobot_mark.svg" alt="" draggable={false} className="mb-4 h-11 w-11 select-none" />
-          <AlertDialogTitle className="text-lg font-semibold leading-7 tracking-tight">{t(checkingStatus ? "settings.about.checking" : `updates.${title}`)}</AlertDialogTitle>
+          <AlertDialogTitle ref={heading} tabIndex={-1} className="text-lg font-semibold leading-7 tracking-tight outline-none">{guide
+            ? guide.reason === "restart" ? t("updates.guide.verifyTitle") : t("updates.guide.entry", { method: t(`updates.guide.methods.${guide.method}`) })
+            : t(checkingStatus ? "settings.about.checking" : `updates.${title}`)}</AlertDialogTitle>
           <AlertDialogDescription className="mt-2 text-sm leading-6">{description}</AlertDialogDescription>
           {review?.plan.automatic_recovery && !pendingId && !busy && !blocked && !error &&
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("updates.automaticRecovery")}</p>}
@@ -296,9 +305,11 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
             onFocus={event => event.currentTarget.select()}
             className="resize-none font-mono text-xs leading-5" />
         </div>}
-        {blocked && <a className="mt-3 rounded-control text-sm text-blue-600 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-400" href="https://github.com/HKUDS/nanobot/blob/main/docs/updating.md#installation-owners"
-          target="_blank" rel="noreferrer">{t("updates.ownerGuide")}</a>}
-        <div className={`mt-6 grid ${done || blocked ? "grid-cols-1" : "grid-cols-2"} gap-2.5`}>
+        {guide && review ? <div className="min-h-0 overflow-y-auto overscroll-contain">
+          <UpdateGuide key={`${token}:${review.plan.id}`} guide={guide} token={token} targetVersion={review.plan.target_version} />
+          {ownerInstructions}
+        </div> : blocked ? ownerInstructions : null}
+        <div className={`mt-6 grid shrink-0 ${done || blocked ? "grid-cols-1" : "grid-cols-2"} gap-2.5`}>
           {!done && !blocked && <Button variant="secondary" onClick={close}>
             {t(done || failed || error || blocked ? "updates.close" : busy ? "updates.hide" : "updates.cancel")}
           </Button>}

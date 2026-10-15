@@ -33,11 +33,13 @@ from nanobot.optional_features import OptionalFeatureError, with_channel_runtime
 from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.security.workspace_access import workspace_sandbox_status
 from nanobot.update_channel import UpdateChannelRequest
+from nanobot.update_guidance import installation_method
 from nanobot.update_jobs import UpdateJobNotFoundError, read_update_job
 from nanobot.update_plan import (
     UpdatePlan,
     UpdatePlanNotFoundError,
     UpdatePlanRequest,
+    inspect_update_installation,
     preview_release_update,
     read_release_plan,
     review_plan,
@@ -1227,8 +1229,13 @@ class SystemSettingsHandler:
             self.logger.warning("version check failed ({})", type(exc).__name__)
             return SettingsRouteResult.failure(500, "version check failed")
         if query_first(request.query, "channel_status") == "1":
+            try:
+                method = installation_method(await asyncio.to_thread(inspect_update_installation))
+            except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+                method = None  # Unknown owner must not imply one-click eligibility.
             return SettingsRouteResult.success({
                 **update_info, "can_change_channel": self.allow_feature_package_install(request),
+                "installation_method": method,
             })
         # An older client cannot interpret waiting/withdrawn/unavailable states.
         # Report a failure rather than converting them to its green "up to date".

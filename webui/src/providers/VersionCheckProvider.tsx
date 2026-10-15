@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from "react";
 
-import { checkVersion, changeUpdateChannel, type ReleaseStatus, type UpdateChannel, type WebUIMutationTransport } from "@/lib/api";
+import { checkVersion, changeUpdateChannel, type ReleaseStatus, type UpdateChannel, type UpdateMethod, type WebUIMutationTransport } from "@/lib/api";
 
 export type VersionResult =
   | { type: "up-to-date" }
@@ -10,6 +10,7 @@ export type VersionResult =
   | null;
 
 interface VersionCheckState {
+  installationMethod: UpdateMethod | null;
   result: VersionResult;
   checking: boolean;
   dismissedVersion: string | null;
@@ -29,7 +30,7 @@ const VersionCheckContext = createContext<VersionCheckState | null>(null);
 // Changing credentials must not remount the application or discard chat drafts.
 function createVersionCheck(token: string, channels: boolean, client?: WebUIMutationTransport) {
   let snapshot: Omit<VersionCheckState, "check" | "dismiss" | "changeChannel"> = {
-    result: null, checking: false, dismissedVersion: null,
+    result: null, checking: false, dismissedVersion: null, installationMethod: null,
     releaseStatus: null, canChangeChannel: false, changingChannel: false, channelError: "", channelSaved: false,
   };
   let pending: Promise<void> | null = null;
@@ -46,6 +47,8 @@ function createVersionCheck(token: string, channels: boolean, client?: WebUIMuta
       try {
         const response = await checkVersion(token, "", channels);
         if (channels && !response.releaseStatus) throw new Error("The gateway did not return its update channel. Check again.");
+        const method = response.installation_method;
+        update({ installationMethod: method && ["managed", "uv", "pipx", "pip", "source", "container", "system"].includes(method) ? method : null });
         if (channels && response.releaseStatus) update({ releaseStatus: response.releaseStatus, canChangeChannel: response.can_change_channel === true });
         update({ result: response.updateAvailable
           ? { type: "update", ...response.updateAvailable }

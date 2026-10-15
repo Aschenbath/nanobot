@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import type { NanobotClient } from "@/lib/nanobot-client";
 import type { ConnectionStatus } from "@/lib/types";
 import { UpdateFlowProvider, useUpdateFlow } from "@/providers/UpdateFlowProvider";
@@ -11,8 +12,9 @@ import { settingsPayload } from "@/tests/settings-test-utils";
 
 vi.mock("@/lib/api", async (original) => ({
   ...await original<typeof api>(), createUpdateReview: vi.fn(), readUpdateReview: vi.fn(),
-  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(), settleUpdate: vi.fn(), checkVersion: vi.fn(),
+  readUpdateJob: vi.fn(), prepareUpdate: vi.fn(), executeUpdate: vi.fn(), settleUpdate: vi.fn(), checkVersion: vi.fn(), fetchSettings: vi.fn(),
 }));
+vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: vi.fn() }));
 const id = "71c91a73-842e-42e9-aeb4-61a5bfe51135";
 let connectionStatus: ConnectionStatus = "open";
 const client = { get status() { return connectionStatus; } } as NanobotClient;
@@ -20,6 +22,15 @@ const review: api.UpdateReviewResponse = {
   plan: { id, installation_id: "installed-a", host: "test Mac", running_version: "0.3.5", target_version: "0.3.6",
     action: "upgrade", validity: "current", execution_blocked_reason: null, profiles: [] },
   installation_allowed: true, execution_available: true,
+};
+const externalReview: api.UpdateReviewResponse = {
+  ...review, execution_available: false,
+  plan: { ...review.plan, execution_blocked_reason: "installation_owner", guide: {
+    method: "pipx", host: "remote-server", environment: "/server/pipx/venvs/nanobot-ai-work", shell: "sh", reason: "registry",
+    inspect_command: "env PIPX_HOME=/server/pipx pipx list",
+    update_command: "env PIPX_HOME=/server/pipx pipx upgrade nanobot-ai-work",
+    verify_command: "/server/pipx/venvs/nanobot-ai-work/bin/python -I -m nanobot --version",
+  } },
 };
 const job = (phase: api.UpdateJobPhase, confirmation: string | null = null): api.UpdateJob => ({
   id, installation_id: "installed-a", target_version: "0.3.6", running_version: "0.3.5",
@@ -45,6 +56,76 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.useRealTimers(); });
 
 describe("Real update consent and recovery", () => {
+  it("offers installation-bound instructions and copy feedback, without installation consent", async () => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue(externalReview);
+    vi.mocked(copyTextToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    await screen.findByRole("heading", { name: "Update via pipx" });
+    expect(screen.getByText("Gateway: remote-server")).toBeVisible();
+    expect(screen.getByText(/connect by SSH or its server console/)).toBeVisible();
+    expect(screen.getByLabelText("Update command")).toHaveValue(externalReview.plan.guide!.update_command);
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await screen.findByText("Could not copy. Select and copy the command above.");
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await screen.findByRole("button", { name: "Copied" });
+    expect(copyTextToClipboard).toHaveBeenLastCalledWith(externalReview.plan.guide!.update_command);
+    fireEvent.click(screen.getByRole("button", { name: "Inspect this installation" }));
+    expect(screen.getByRole("button", { name: "Inspect this installation" })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Inspect this installation" }));
+    expect(screen.getByRole("button", { name: "Inspect this installation" })).toHaveAttribute("aria-expanded", "false");
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("verifies the running gateway, reports mismatch and offline errors, never infers success from package installation", async () => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue(externalReview);
+    vi.mocked(api.fetchSettings).mockResolvedValueOnce({ ...settingsPayload(), version: { current: "0.3.5" } })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ ...settingsPayload(), version: { current: "0.3.6" } });
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    const check = await screen.findByRole("button", { name: "Check running gateway" });
+    fireEvent.click(check);
+    await screen.findByText(/reports v0.3.5, not the notice’s v0.3.6/);
+    fireEvent.click(check);
+    await screen.findByText(/Could not read the running version/);
+    fireEvent.click(check);
+    await screen.findByText("Confirmed: this gateway is running v0.3.6.");
+    expect(api.fetchSettings).toHaveBeenLastCalledWith("gateway-a");
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("discards an old gateway's late verification on a credential switch", async () => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue(externalReview);
+    let resolve!: (value: Awaited<ReturnType<typeof api.fetchSettings>>) => void;
+    vi.mocked(api.fetchSettings).mockImplementation(() => new Promise(done => { resolve = done; }));
+    const mounted = render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    fireEvent.click(await screen.findByRole("button", { name: "Check running gateway" }));
+    mounted.rerender(view("gateway-b"));
+    await act(async () => { resolve({ ...settingsPayload(), version: { current: "0.3.6" } }); });
+    expect(screen.queryByText(/Confirmed: this gateway/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Gateway: remote-server")).not.toBeInTheDocument();
+  });
+  it("retains the safe fallback for an older host without optional guidance", async () => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue({ ...review, execution_available: false,
+      plan: { ...review.plan, execution_blocked_reason: "installation_owner" } });
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    await screen.findByRole("link", { name: "Update instructions for your installation" });
+    expect(screen.queryByRole("button", { name: "Update & restart" })).not.toBeInTheDocument();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("guides an already installed target through restart without offering another installation", async () => {
+    vi.mocked(api.createUpdateReview).mockResolvedValue({ ...externalReview,
+      plan: { ...externalReview.plan, action: "restart", execution_blocked_reason: "not_upgrade",
+        guide: { ...externalReview.plan.guide!, reason: "restart", update_command: null, inspect_command: null } } });
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    await screen.findByRole("heading", { name: "Restart and verify" });
+    expect(screen.getByRole("button", { name: "Check running gateway" })).toBeVisible();
+    expect(screen.queryByLabelText("Update command")).not.toBeInTheDocument();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+  });
   it("does not send a managed-install user to the terminal during a long reconnect", async () => {
     vi.useFakeTimers();
     connectionStatus = "closed";

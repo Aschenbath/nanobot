@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Perbarui melalui {{method}}",
+      "methods": {
+        "managed": "penginstal nanobot",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "kode sumber",
+        "container": "deployment container",
+        "system": "pengelola paket sistem"
+      },
+      "host": "Gateway: {{host}}",
+      "where": "Gunakan terminal di mesin ini dengan akun instalasi awal. Untuk gateway jarak jauh, gunakan SSH atau konsol server, bukan komputer browser. Perintah hanya disalin; halaman ini tidak menjalankannya.",
+      "containerHost": "Nama dan jalur ini milik bagian dalam container, bukan host deployment. Gunakan server atau panel yang mengelolanya; jangan memperbarui di dalam container yang sedang berjalan.",
+      "beforeTitle": "Siapkan dan hentikan",
+      "before": "Selesaikan tugas dan cadangkan konfigurasi, percakapan, serta data workspace. Hentikan semua gateway yang memakai instalasi ini melalui peluncur atau pengelola layanan awal. Pertahankan jalur profil dan pengaturan peluncuran.",
+      "installTitle": "Perbarui di {{shell}}",
+      "inspectCommand": "Periksa instalasi ini",
+      "updateCommand": "Perintah pembaruan",
+      "versionCommand": "Versi terpasang",
+      "reasons": {
+        "restart": "Paket tujuan sudah terpasang. Jangan instal ulang. Hentikan gateway lama, mulai dengan peluncur dan profil awal, lalu periksa versi yang berjalan.",
+        "registry": "Gunakan sumber paket dan kredensial awal. Pengelola mempertahankan extras dan batasan versi sehingga dapat memilih versi stabil lain dari pemberitahuan. Periksa hasilnya; jangan paksa pembaruan yang gagal.",
+        "preview": "Preview didistribusikan di GitHub dan mungkin tidak tersedia di indeks paket. Pilih wheel yang sesuai dengan Python dan platform gateway, verifikasi checksum lalu instal dengan pengelola awal dan extras yang sama. Perintah upgrade umum tidak menjamin Preview ini.",
+        "policy": "Ada versi yang dipatok, berkas lock, sumber tetap, batasan, atau opsi tak dikenal. Periksa lalu ikuti alur awal dengan mempertahankan extras dan paket yang diinjeksi. Jangan hapus batasannya.",
+        "extras": "Lingkungan pip ini tidak mencatat extras awal. Periksa paket lalu gunakan kembali perintah pip awal dengan --upgrade dan versi tujuan, serta pertahankan extras dan opsi indeks. Tidak ada perintah instalasi hasil tebakan.",
+        "manager": "Program pengelola atau struktur lingkungan tidak dapat dikonfirmasi. Gunakan akun dan pengaturan awal untuk menargetkan jalur di atas; jangan memakai pip atau nanobot lain dari PATH.",
+        "source": "Periksa repositori, pertahankan perubahan lokal dan pastikan branch atau revisi tujuan. Ikuti alur repositori untuk memperbarui kode, dependensi, dan build WebUI/TUI. Jangan ganti instalasi editable dengan paket PyPI.",
+        "container": "Di proyek Compose atau panel awal, pilih tag/digest, tarik atau build image lalu buat ulang hanya layanan nanobot dengan mount, rahasia, dan port yang sama. Cadangkan volume data; jangan pernah menghapusnya.",
+        "system": "Gunakan pengelola paket OS atau hubungi administrator server. Jangan gunakan sudo pip atau lewati pembatasan Python yang dikelola sistem.",
+        "review": "Instalasi atau hasil pemeriksaan telah berubah. Tutup dan periksa lagi sebelum menyalin perintah."
+      },
+      "verifyTitle": "Mulai ulang dan verifikasi",
+      "verify": "Jalankan dengan peluncur dan profil yang sama. Perintah hanya memeriksa berkas terpasang. Sambungkan kembali ke gateway yang sama, bandingkan versi aktif dengan v{{version}}, dan pastikan percakapan serta pengaturan tetap ada.",
+      "check": "Periksa gateway yang berjalan",
+      "verified": "Terkonfirmasi: gateway ini menjalankan v{{version}}.",
+      "observed": "Gateway melaporkan v{{version}}, bukan v{{target}}. Periksa keluaran instalasi dan mulai ulang lingkungan yang sama; pembaruan paket saja tidak memperbarui proses aktif.",
+      "checkFailed": "Versi aktif tidak dapat dibaca. Sambungkan kembali ke gateway yang sama lalu coba lagi; keberhasilan belum dikonfirmasi."
+    },
     "automaticRecovery": "Jika pembaruan gagal, nanobot akan mencoba memulihkan layanan dengan program sebelumnya jika aman. Data chat tidak akan dikembalikan ke versi lama.",
     "restored": "Versi sebelumnya dipulihkan",
     "restoredDescription": "Pembaruan belum selesai. v{{version}} berjalan kembali. Konfigurasi dan chat Anda tidak dikembalikan ke data lama.",

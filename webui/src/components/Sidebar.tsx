@@ -36,6 +36,7 @@ import type {
   SidebarViewState,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import type { UpdateMethod } from "@/lib/api";
 import { sidebarShortcutAria, sidebarShortcutLabel } from "@/lib/sidebar-shortcuts";
 
 interface SidebarProps {
@@ -67,7 +68,7 @@ interface SidebarProps {
   onNewChatInProject: (projectPath: string, projectName: string) => void;
   onOpenSettings: () => void;
   onOpenUpdates?: () => void;
-  availableUpdate?: { version: string; onDismiss: () => void; onRequestUpdate?: () => void };
+  availableUpdate?: { version: string; onDismiss: () => void; onRequestUpdate?: () => void; installationMethod?: UpdateMethod | null };
   onOpenApps: () => void;
   onOpenSkills: () => void;
   onOpenAutomations: () => void;
@@ -317,7 +318,7 @@ export function Sidebar(props: SidebarProps) {
       {props.onOpenUpdates && props.availableUpdate && (
         <UpdateNotice version={props.availableUpdate.version} collapsed={collapsed}
           onOpen={props.onOpenUpdates} onDismiss={props.availableUpdate.onDismiss}
-          onRequestUpdate={props.availableUpdate.onRequestUpdate} />
+          onRequestUpdate={props.availableUpdate.onRequestUpdate} installationMethod={props.availableUpdate.installationMethod} />
       )}
       <div
         className={cn(

@@ -161,7 +161,7 @@ export function AboutSettings({ settings, onRequestUpdate: requestUpdate }: { se
 
 function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPendingUpdate }: VersionInfoProps) {
   const { checking, result, check, dismiss, dismissedVersion, releaseStatus, canChangeChannel,
-    changingChannel, channelError, channelSaved, changeChannel } = useVersionCheck();
+    changingChannel, channelError, channelSaved, changeChannel, installationMethod } = useVersionCheck();
   const [manualFeedback, setManualFeedback] = useState(false);
   const pending = checking || manualFeedback;
   const checkManually = async () => {
@@ -176,6 +176,7 @@ function VersionCheckRow({ currentVersion, currentCommit, onRequestUpdate, hasPe
   return <VersionCheckRowView currentVersion={currentVersion} currentCommit={currentCommit}
     checking={pending} result={result} onCheck={() => void checkManually()}
     onRequestUpdate={onRequestUpdate} hasPendingUpdate={hasPendingUpdate}
+    installationMethod={installationMethod}
     releaseStatus={releaseStatus} canChangeChannel={canChangeChannel} changingChannel={changingChannel}
     channelError={channelError} channelSaved={channelSaved} onChangeChannel={changeChannel}
     onDismiss={dismiss} dismissedVersion={dismissedVersion} />;

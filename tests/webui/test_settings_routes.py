@@ -830,6 +830,28 @@ async def test_channel_status_is_explicit_and_old_clients_never_report_false_suc
     assert response.headers["Cache-Control"] == "no-store"
 
 
+async def test_version_check_owner_is_additive_read_only_and_failure_is_not_a_release_failure(monkeypatch):
+    from nanobot.webui import settings_system
+
+    result = {"updateAvailable": None, "releaseStatus": {"state": "current"}}
+    monkeypatch.setattr("nanobot.webui.settings_routes.check_for_update", lambda: result)
+    inspect_owner = MagicMock(return_value=SimpleNamespace(owner="pipx", records={}))
+    monkeypatch.setattr(settings_system, "inspect_update_installation", inspect_owner)
+    request = SimpleNamespace(path="/api/settings/version-check", headers=Headers())
+    router = _router()
+    legacy = await router.dispatch(None, request, "/api/settings/version-check")
+    assert json.loads(legacy.body) == {"updateAvailable": None}
+    inspect_owner.assert_not_called()
+    request.path += "?channel_status=1"
+    modern = await router.dispatch(None, request, "/api/settings/version-check")
+    assert json.loads(modern.body)["installation_method"] == "pipx"
+    inspect_owner.side_effect = ValueError("private receipt secret")
+    unavailable = await router.dispatch(None, request, "/api/settings/version-check")
+    body = json.loads(unavailable.body)
+    assert body["installation_method"] is None and body["releaseStatus"] == result["releaseStatus"]
+    assert "secret" not in unavailable.body.decode()
+
+
 async def test_runtime_config_route_authentication_validation_and_restart(tmp_path):
     from nanobot.config.loader import load_config
 

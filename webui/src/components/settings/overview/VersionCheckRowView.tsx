@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SettingsGroup, SettingsRow } from "@/components/settings/shared/SettingsControls";
 import { ToggleButton } from "@/components/ui/toggle-button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import type { ReleaseStatus, UpdateChannel } from "@/lib/api";
+import type { ReleaseStatus, UpdateChannel, UpdateMethod } from "@/lib/api";
 import type { VersionResult } from "@/providers/VersionCheckProvider";
 
 export type VersionInfoProps = {
@@ -14,12 +14,13 @@ export type VersionInfoProps = {
   currentCommit?: string | null;
   onRequestUpdate?: () => void;
   hasPendingUpdate?: boolean;
+  installationMethod?: UpdateMethod | null;
 };
 export type VersionCheckState = VersionResult;
 
 export function VersionCheckRowView({
   currentVersion, currentCommit, checking, result, onCheck,
-  onRequestUpdate, hasPendingUpdate, onDismiss, dismissedVersion,
+  onRequestUpdate, hasPendingUpdate, onDismiss, dismissedVersion, installationMethod,
   releaseStatus, canChangeChannel, changingChannel, channelError, channelSaved, onChangeChannel,
 }: VersionInfoProps & {
   checking: boolean;
@@ -120,7 +121,10 @@ export function VersionCheckRowView({
             </div>
             {!onRequestUpdate && <p className="mt-2 text-[13px] leading-5 text-muted-foreground">{t("settings.about.updateInstructions")}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-              {onRequestUpdate ? <Button size="sm" variant="accent" onClick={onRequestUpdate}>{t("settings.about.updateNow")}</Button> :
+              {onRequestUpdate ? <Button size="sm" variant="accent" className="h-auto min-h-9 whitespace-normal text-start" onClick={onRequestUpdate}>
+                {installationMethod && installationMethod !== "managed"
+                  ? t("updates.guide.entry", { method: t(`updates.guide.methods.${installationMethod}`) })
+                  : t("settings.about.updateNow")}</Button> :
                 <Button size="sm" variant="outline" asChild><a href="https://github.com/HKUDS/nanobot#-install"
                   target="_blank" rel="noopener noreferrer">{t("settings.about.installationGuide")}<ExternalLink className="ms-1.5 h-3 w-3" aria-hidden /></a></Button>}
               {result.releaseUrl || result.pypiUrl ? (

@@ -75,6 +75,30 @@ installation.
 
 ## Installation owners
 
+For installations that cannot update inline, the update entry names the detected
+owner (for example, **Update via pipx**). It opens instructions **inside the same
+dialog**, not just an external documentation link. The guide identifies the gateway
+host and environment; remote users must use that server's terminal and original
+installation account. Container names/paths are explicitly distinguished from the
+deployment host. It does not execute commands or grant installation permission.
+
+The guide walks through stopping affected gateways and backing up their data,
+updating through the original owner, then restarting with the same profile. Copyable
+commands bind the manager root or exact Python environment; pipx environment suffixes
+are retained. Registry-manager upgrades preserve their recorded constraints and may
+choose a different permitted stable version from the notice. No generic upgrade is
+offered for a GitHub-only Preview, fixed source, pin/lock, unknown extras or an
+unconfirmed manager layout. Instead the guide explains what to inspect and preserve.
+Source and container deployments get their own steps, never a guessed branch, image,
+service name or destructive volume command. Documentation remains a secondary link.
+
+**Check running gateway** reads the authenticated gateway's current settings, not
+the installed package metadata or the newest release number. A mismatch and an
+unreachable gateway have explicit feedback. After a restart, reconnect to the same
+gateway (and reopen the guide if needed), verify the version in **About**, and check
+that your configuration and chats remain present. None of these manual steps claim
+the automatic backup/recovery guarantees of the official managed updater.
+
 | Installation | Update route | Restart and recovery owner |
 | --- | --- | --- |
 | Fresh official installer | WebUI **Update & restart**, for a compatible prebuilt release | Detached nanobot worker; standalone recovery below |

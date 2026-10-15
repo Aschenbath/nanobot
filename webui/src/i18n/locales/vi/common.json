@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Cập nhật qua {{method}}",
+      "methods": {
+        "managed": "trình cài đặt nanobot",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "mã nguồn",
+        "container": "triển khai container",
+        "system": "trình quản lý gói hệ thống"
+      },
+      "host": "Gateway: {{host}}",
+      "where": "Dùng terminal trên máy này với tài khoản đã cài đặt ban đầu. Với gateway từ xa, dùng SSH hoặc bảng điều khiển máy chủ, không phải máy đang mở trình duyệt. Lệnh chỉ để sao chép, trang này không thực thi.",
+      "containerHost": "Đây là tên và đường dẫn bên trong container, không phải máy triển khai. Dùng máy chủ hoặc bảng quản trị container; không cập nhật bên trong container đang chạy.",
+      "beforeTitle": "Chuẩn bị và dừng dịch vụ",
+      "before": "Hoàn tất tác vụ, sao lưu cấu hình, hội thoại và dữ liệu workspace. Dừng mọi gateway dùng chung bản cài đặt qua trình khởi chạy hoặc quản lý dịch vụ ban đầu. Giữ đường dẫn hồ sơ và tham số khởi chạy.",
+      "installTitle": "Cập nhật trong {{shell}}",
+      "inspectCommand": "Kiểm tra bản cài đặt",
+      "updateCommand": "Lệnh cập nhật",
+      "versionCommand": "Phiên bản đã cài",
+      "reasons": {
+        "restart": "Gói đích đã được cài. Không cài lại. Dừng gateway cũ, khởi động bằng trình khởi chạy và hồ sơ ban đầu, rồi kiểm tra phiên bản đang chạy.",
+        "registry": "Dùng nguồn gói và thông tin xác thực ban đầu. Trình quản lý giữ extras và giới hạn phiên bản, nên có thể chọn bản ổn định khác với thông báo. Kiểm tra đầu ra; không ép cập nhật khi lỗi.",
+        "preview": "Preview được phát hành trên GitHub, có thể chưa có trên nguồn gói. Chọn wheel phù hợp Python và nền tảng của gateway, kiểm tra checksum rồi cài bằng công cụ ban đầu và cùng extras. Lệnh upgrade chung không đảm bảo cài đúng Preview này.",
+        "policy": "Có ghim phiên bản, tệp khóa, nguồn cố định, giới hạn hoặc tùy chọn chưa nhận diện. Kiểm tra và theo quy trình ban đầu, giữ extras và gói được thêm vào. Không tự bỏ giới hạn.",
+        "extras": "Môi trường pip này không ghi lại extras ban đầu. Kiểm tra gói rồi dùng lại lệnh pip gốc với --upgrade và phiên bản mong muốn, giữ extras và tùy chọn nguồn. Không cung cấp lệnh cài đặt phỏng đoán.",
+        "manager": "Không xác nhận được chương trình quản lý hoặc cấu trúc môi trường. Dùng tài khoản và thiết lập ban đầu để trỏ tới đường dẫn trên; không dùng pip hay nanobot khác trong PATH.",
+        "source": "Kiểm tra kho mã, giữ thay đổi cục bộ và xác nhận nhánh hoặc phiên bản. Theo quy trình của kho để cập nhật mã, phụ thuộc và build WebUI/TUI. Không thay bản cài editable bằng gói PyPI.",
+        "container": "Trong dự án Compose hoặc bảng quản trị gốc, chọn tag/digest, tải hoặc build ảnh rồi chỉ tạo lại dịch vụ nanobot với mount, bí mật và cổng cũ. Sao lưu volume dữ liệu; tuyệt đối không xóa chúng.",
+        "system": "Dùng trình quản lý gói của hệ điều hành hoặc liên hệ quản trị viên. Không dùng sudo pip hay vượt qua giới hạn Python do hệ thống quản lý.",
+        "review": "Bản cài đặt hoặc kết quả kiểm tra đã thay đổi. Đóng và kiểm tra lại trước khi sao chép lệnh."
+      },
+      "verifyTitle": "Khởi động lại và xác minh",
+      "verify": "Dùng cùng trình khởi chạy và hồ sơ. Lệnh chỉ kiểm tra tệp đã cài. Kết nối lại đúng gateway, so sánh phiên bản đang chạy với v{{version}} và kiểm tra hội thoại, cấu hình còn nguyên.",
+      "check": "Kiểm tra gateway đang chạy",
+      "verified": "Đã xác nhận: gateway đang chạy v{{version}}.",
+      "observed": "Gateway báo v{{version}}, không phải v{{target}}. Kiểm tra đầu ra cài đặt và khởi động lại cùng môi trường; cập nhật gói không thay đổi tiến trình đang chạy.",
+      "checkFailed": "Không đọc được phiên bản đang chạy. Kết nối lại đúng gateway và thử lại; chưa xác nhận cập nhật thành công."
+    },
     "automaticRecovery": "Nếu cập nhật thất bại, nanobot sẽ thử khôi phục dịch vụ bằng chương trình trước đó khi an toàn. Dữ liệu trò chuyện sẽ không bị hoàn nguyên.",
     "restored": "Đã khôi phục phiên bản trước",
     "restoredDescription": "Cập nhật chưa hoàn tất. v{{version}} đã chạy lại. Cấu hình và cuộc trò chuyện không bị hoàn nguyên về dữ liệu cũ.",

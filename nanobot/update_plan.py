@@ -29,6 +29,7 @@ from nanobot.installation_receipt import RECEIPT_NAME, managed_extras
 from nanobot.release_feed import ReleaseFeed, ReleaseTarget
 from nanobot.releases import Channel, ReleaseRecord, Sha256
 from nanobot.update_channel import read_update_channel, validate_channel_revision
+from nanobot.update_guidance import UpdateGuide, update_guide
 from nanobot.update_manager import ManagerPolicy, read_manager_policy
 from nanobot.update_process import inspect_python_environment
 from nanobot.update_profiles import (
@@ -364,6 +365,7 @@ class UpdatePlanReview(ReleaseRecord):
     profiles: list[ProfileReview]
     execution_blocked_reason: str | None = None
     automatic_recovery: bool = False
+    guide: UpdateGuide | None = None
 
 
 def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: int | None = None,
@@ -386,6 +388,7 @@ def review_plan(plan: UpdatePlan, installation: InstallationSnapshot, *, now: in
         validity=validity, artifact_size=plan.target.artifact.size, extras=plan.extras,
         owner_restriction=plan.owner_restriction, execution_blocked_reason=inline_update_blocked_reason(plan, validity),
         automatic_recovery=bool(plan.restart_profiles) and RECEIPT_NAME in plan.installation.records,
+        guide=update_guide(installation, plan.target.version, extras=plan.extras, current=validity == "current"),
         profiles=[ProfileReview(
             id=item.receipt.id, workspace=item.receipt.workspace, reviewed_state=item.state,
             stop=item.receipt.id in plan.stop_profiles, restart=item.receipt.id in plan.restart_profiles,
@@ -411,7 +414,7 @@ def inline_update_blocked_reason(plan: UpdatePlan, validity: str = "current") ->
     return None
 
 
-def _inspect_with_lease() -> InstallationSnapshot:
+def inspect_update_installation() -> InstallationSnapshot:
     # Keep the complete snapshot (including owner receipt parsing) protected
     # after request cancellation. The native child also holds its own lease,
     # so loss of this process cannot leave site/import/exit cleanup unprotected.
@@ -423,7 +426,7 @@ async def preview_release_update(channel: Channel | None = None, *, restart_runn
                                  extras: list[str] | None = None) -> UpdatePlan:
     """Build a read-only installation plan for CLI and future gateway handoff."""
     with installation_access():
-        installation = await asyncio.to_thread(_inspect_with_lease)
+        installation = await asyncio.to_thread(inspect_update_installation)
         directory = installation_state_dir(installation.environment)
         selection = read_update_channel(installation.environment)
         async with ReleaseFeed(directory / "releases") as feed:
@@ -433,7 +436,7 @@ async def preview_release_update(channel: Channel | None = None, *, restart_runn
             )
         # External package managers do not participate in our lease. Discovery
         # can be slow: do not return a freshly valid review of a replaced install.
-        plan.validate_for(await asyncio.to_thread(_inspect_with_lease))
+        plan.validate_for(await asyncio.to_thread(inspect_update_installation))
         return plan
 
 
@@ -441,7 +444,7 @@ async def read_release_plan(plan_id: str) -> UpdatePlanReview:
     """Recover the exact review after refresh; do not query a newer release."""
     UpdatePlan.canonical_id(plan_id)
     with installation_access():
-        installation = await asyncio.to_thread(_inspect_with_lease)
+        installation = await asyncio.to_thread(inspect_update_installation)
         plan = UpdatePlans(installation_state_dir(installation.environment) / "plans").load(plan_id)
         return review_plan(plan, installation, profiles=inspect_profiles(installation.environment))
 

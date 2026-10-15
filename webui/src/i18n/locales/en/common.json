@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Update via {{method}}",
+      "methods": {
+        "managed": "nanobot installer",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "source checkout",
+        "container": "container deployment",
+        "system": "system package manager"
+      },
+      "host": "Gateway: {{host}}",
+      "where": "Use a terminal on this computer, signed in as the original installation user. For a remote gateway, connect by SSH or its server console—not your browser’s computer. Commands only copy; this page does not run them.",
+      "containerHost": "This is the container’s name and internal path, not the deployment host. Use the server or hosting dashboard that manages this container; do not update inside the running container.",
+      "beforeTitle": "Prepare and stop",
+      "before": "Finish tasks and back up configuration, chats and workspace data. Stop all gateways using this installation through their original launcher or service manager. Keep their profile paths and launch settings.",
+      "installTitle": "Update in {{shell}}",
+      "inspectCommand": "Inspect this installation",
+      "updateCommand": "Update command",
+      "versionCommand": "Installed version",
+      "reasons": {
+        "restart": "The target package is already installed. Do not install it again. Stop the old gateway and restart with the original launcher and profile, then check its running version.",
+        "registry": "Use the original registry and credentials. Manager upgrades keep recorded extras and constraints and may select a different allowed stable version than the notice. Check the command output; do not force a failed update.",
+        "preview": "Preview packages are distributed on GitHub, not necessarily your package index. Select this release’s wheel for the gateway’s Python/platform, verify its checksum, then install it through the original owner with the same extras. A generic upgrade command cannot guarantee this Preview.",
+        "policy": "The receipt has a pin, lock, fixed source, version constraint or unrecognized options. Inspect it below and update through that original workflow, preserving extras and injected packages. Do not remove restrictions just to update.",
+        "extras": "This pip environment does not record the extras originally requested. Inspect the package below, then reuse the original pip requirement with --upgrade and the intended version, keeping its extras and index options. No guessed install command is provided.",
+        "manager": "The package-manager executable or its environment layout could not be confirmed. Use the original installation account and manager settings to target the path above; do not use another pip or nanobot from PATH.",
+        "source": "Inspect this checkout first. Preserve local changes and confirm the intended branch/ref, then update it and rebuild dependencies, WebUI and TUI using the repository workflow. Do not replace an editable checkout with a PyPI package.",
+        "container": "Choose the intended image tag/digest in the existing Compose project or hosting dashboard, pull/build it and recreate only the nanobot service with its existing mounts, secrets and ports. Back up data volumes; never remove them to update.",
+        "system": "Use the operating system’s package manager or ask this server’s administrator. Do not use sudo pip or override an externally managed Python environment.",
+        "review": "The installation or update review is no longer current. Close this dialog and check again before copying an update command."
+      },
+      "verifyTitle": "Restart and verify",
+      "verify": "Start using the same launcher and profile. The terminal command checks installed files only. Reconnect to this same gateway, check its running version against v{{version}}, and confirm your chats and settings are still present.",
+      "check": "Check running gateway",
+      "verified": "Confirmed: this gateway is running v{{version}}.",
+      "observed": "This gateway reports v{{version}}, not the notice’s v{{target}}. Check the installer output and restart the same installation; an installed package alone does not update a running process.",
+      "checkFailed": "Could not read the running version. Reconnect to this same gateway and try again; no update success has been confirmed."
+    },
     "automaticRecovery": "If the update fails, nanobot will try to restore service, using the previous program when safe. Your chat data will not be rolled back.",
     "restored": "Previous version restored",
     "restoredDescription": "The update did not finish. v{{version}} is running again. Your configuration and chats were not rolled back.",

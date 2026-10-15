@@ -14,6 +14,20 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 const client = new NanobotClient({ url: "ws://localhost:8765" });
 const available = (version = "0.3.6") => ({ updateAvailable: { currentVersion: "0.3.5", latestVersion: version } });
 
+it.each([
+  ["uv", "Update via uv"], ["pipx", "Update via pipx"], ["pip", "Update via pip"],
+  ["source", "Update via source checkout"], ["container", "Update via container deployment"],
+  ["managed", "Update"], ["future-owner", "Update"],
+])("labels the update entry with the detected owner (%s)", async (method, label) => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ...available(), installation_method: method })));
+  const request = vi.fn();
+  render(<ClientProvider token="test" client={client}><AboutSettings settings={settingsPayload()} onRequestUpdate={request} /></ClientProvider>);
+  fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  const entry = await screen.findByRole("button", { name: label });
+  fireEvent.click(entry);
+  expect(request).toHaveBeenCalledOnce();
+});
+
 function Surface() {
   const update = useVersionCheck();
   const [about, setAbout] = useState(false);

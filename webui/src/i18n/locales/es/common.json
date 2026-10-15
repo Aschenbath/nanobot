@@ -1,5 +1,44 @@
 {
   "updates": {
+    "guide": {
+      "entry": "Actualizar mediante {{method}}",
+      "methods": {
+        "managed": "el instalador de nanobot",
+        "uv": "uv",
+        "pipx": "pipx",
+        "pip": "pip",
+        "source": "el código fuente",
+        "container": "el despliegue del contenedor",
+        "system": "el gestor del sistema"
+      },
+      "host": "Gateway: {{host}}",
+      "where": "Usa un terminal de este equipo con la cuenta que hizo la instalación. Para un gateway remoto, usa SSH o su consola, no el equipo del navegador. Los comandos solo se copian; esta página no los ejecuta.",
+      "containerHost": "Este nombre y ruta pertenecen al contenedor, no al host de despliegue. Usa el servidor o panel que lo administra; no actualices dentro del contenedor en ejecución.",
+      "beforeTitle": "Preparar y detener",
+      "before": "Termina las tareas y respalda configuración, chats y espacios de trabajo. Detén todos los gateways de esta instalación con su lanzador o gestor de servicios original. Conserva las rutas de perfil y los parámetros de inicio.",
+      "installTitle": "Actualizar en {{shell}}",
+      "inspectCommand": "Inspeccionar esta instalación",
+      "updateCommand": "Comando de actualización",
+      "versionCommand": "Versión instalada",
+      "reasons": {
+        "restart": "El paquete objetivo ya está instalado. No lo reinstales. Detén el gateway antiguo, inicia con el lanzador y perfil originales y comprueba la versión activa.",
+        "registry": "Mantén el registro y las credenciales originales. El gestor conserva extras y restricciones, por lo que puede elegir otra versión estable permitida distinta del aviso. Revisa la salida; no fuerces una actualización fallida.",
+        "preview": "Las Preview se distribuyen en GitHub, no necesariamente en tu índice. Elige el wheel de esta versión para el Python y la plataforma del gateway, verifica su checksum e instálalo con el gestor y extras originales. Un upgrade genérico no garantiza esta Preview.",
+        "policy": "Hay una versión fijada, archivo de bloqueo, origen fijo, restricción u opciones desconocidas. Inspecciona y sigue el proceso original, conservando extras y paquetes inyectados. No elimines las restricciones.",
+        "extras": "Este entorno pip no registra los extras originales. Inspecciona el paquete y reutiliza el comando pip original con --upgrade y la versión deseada, manteniendo extras y opciones del índice. No se ofrece un comando supuesto.",
+        "manager": "No se pudo confirmar el gestor o la estructura del entorno. Usa la cuenta y configuración originales para apuntar a la ruta indicada; no uses otro pip o nanobot del PATH.",
+        "source": "Inspecciona el repositorio, conserva los cambios locales y confirma la rama o revisión. Sigue el flujo del repositorio para actualizar código, dependencias y builds WebUI/TUI. No sustituyas una instalación editable por PyPI.",
+        "container": "En el proyecto Compose o panel original, elige la etiqueta o digest, descarga o construye la imagen y recrea solo el servicio nanobot con sus montajes, secretos y puertos existentes. Respalda los volúmenes; nunca los elimines.",
+        "system": "Usa el gestor de paquetes del sistema o contacta al administrador. No uses sudo pip ni eludas la gestión del Python del sistema.",
+        "review": "La instalación o revisión cambió. Cierra y vuelve a comprobar antes de copiar un comando."
+      },
+      "verifyTitle": "Reiniciar y verificar",
+      "verify": "Inicia con el mismo lanzador y perfil. El comando solo comprueba archivos instalados. Reconecta al mismo gateway, compara su versión activa con v{{version}} y verifica que sigan tus chats y ajustes.",
+      "check": "Comprobar gateway en ejecución",
+      "verified": "Confirmado: este gateway ejecuta v{{version}}.",
+      "observed": "El gateway informa v{{version}}, no v{{target}}. Revisa la salida y reinicia la misma instalación; actualizar archivos no actualiza un proceso en ejecución.",
+      "checkFailed": "No se pudo leer la versión activa. Reconecta al mismo gateway e inténtalo de nuevo; no se ha confirmado el éxito."
+    },
     "automaticRecovery": "Si la actualización falla, nanobot intentará recuperar el servicio con el programa anterior cuando sea seguro. Los datos de los chats no se revertirán.",
     "restored": "Versión anterior restaurada",
     "restoredDescription": "La actualización no se completó. v{{version}} vuelve a funcionar. No se han restaurado copias anteriores de tu configuración ni de tus chats.",

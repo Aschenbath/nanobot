@@ -6,26 +6,30 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import type { UpdateMethod } from "@/lib/api";
 
-export function UpdateNotice({ version, collapsed = false, onOpen, onDismiss, onRequestUpdate }: {
+export function UpdateNotice({ version, collapsed = false, onOpen, onDismiss, onRequestUpdate, installationMethod }: {
   version: string;
   collapsed?: boolean;
   onOpen: () => void;
   onDismiss: () => void;
   /** Opens the host's update confirmation, never installs from the entry itself. */
   onRequestUpdate?: () => void;
+  installationMethod?: UpdateMethod | null;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const titleId = useId();
-  const label = t("settings.about.updateAvailable", { version });
+  const methodLabel = installationMethod && installationMethod !== "managed"
+    ? t("updates.guide.entry", { method: t(`updates.guide.methods.${installationMethod}`) }) : null;
+  const label = [t("settings.about.updateAvailable", { version }), methodLabel].filter(Boolean).join(" · ");
   const button = <Button type="button" variant="ghost" aria-label={label} onClick={onRequestUpdate}
     className={cn(
       "touch-target h-8 min-w-0 gap-2 rounded-control text-blue-600 shadow-none hover:bg-blue-500/[0.08] data-[state=open]:bg-blue-500/[0.08] focus-visible:ring-blue-500 dark:text-blue-400 dark:hover:bg-blue-400/10 dark:data-[state=open]:bg-blue-400/10",
       collapsed ? "w-8 p-0" : "w-full justify-start px-2 text-[13px] font-medium",
     )}>
     <Download className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-    {!collapsed && <span className="truncate">{t("settings.about.updateNotice")}</span>}
+    {!collapsed && <span className="truncate">{methodLabel ?? t("settings.about.updateNotice")}</span>}
   </Button>;
 
   return <div className={cn("flex shrink-0 items-center", collapsed ? "w-14 justify-center pb-1" : "px-2.5")}>
