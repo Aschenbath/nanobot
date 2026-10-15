@@ -1962,8 +1962,11 @@ async def test_admission_probe_keeps_its_leases_after_caller_loss(installation, 
             f"if '--inspect' in sys.argv: {action}\n"
         )
         hook.write_text(f"import builtins; builtins.exec({script!r}, {{}})\n")
+        caller_pid = tmp_path / "caller-pid"
         caller = (
-            "import asyncio\nfrom pathlib import Path\n"
+            "import os\nfrom pathlib import Path\n"
+            f"Path({str(caller_pid)!r}).write_text(str(os.getpid()))\n"
+            "import asyncio\n"
             "from nanobot.update_jobs import start_job\n"
             "class Feed:\n"
             "    async def revalidate(self, target): pass\n"
@@ -1971,12 +1974,21 @@ async def test_admission_probe_keeps_its_leases_after_caller_loss(installation, 
         )
         process = subprocess.Popen([sys.executable, "-c", caller], cwd=Path(__file__).parents[1],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def kill_caller():
+            if process.poll() is None:
+                # Windows venv python.exe is a redirector. Kill the actual
+                # caller, not its launcher or the separately leased probe.
+                if caller_pid.exists():
+                    os.kill(int(caller_pid.read_text()), signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
+                else:
+                    process.kill()
         try:
             async with asyncio.timeout(15):
                 while not ready.exists():
                     assert process.poll() is None
                     await asyncio.sleep(0.01)
-            process.kill()
+            assert int(caller_pid.read_text()) != int(ready.read_text())
+            kill_caller()
             await asyncio.to_thread(process.wait, 10)
             assert GatewayRuntime().process_is_running(int(ready.read_text()))
             with pytest.raises(InstallationBusyError):
@@ -1992,8 +2004,7 @@ async def test_admission_probe_keeps_its_leases_after_caller_loss(installation, 
             assert not pending_update_path(plan.installation.environment).exists()
         finally:
             release.touch()
-            if process.poll() is None:
-                process.kill()
+            kill_caller()
             await asyncio.to_thread(process.wait, 10)
             async with asyncio.timeout(20):
                 while True:
