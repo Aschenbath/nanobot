@@ -202,7 +202,7 @@ async def test_all_selected_runs_hold_admission_through_committed_shutdown(proto
 
 
 @pytest.mark.parametrize("reason", ["busy", "cancel", "timeout"])
-async def test_precommit_failure_releases_every_hold_without_shutdown(protocol, reason):
+async def test_precommit_failure_releases_every_hold_without_shutdown(protocol, reason, expire_stop_deadline):
     directory, plan, gates, stops = protocol
     outer = [ExitStack(), ExitStack()]
     holds = ExitStack()
@@ -213,7 +213,7 @@ async def test_precommit_failure_releases_every_hold_without_shutdown(protocol, 
     if reason == "busy":
         watchers.append(asyncio.create_task(watch_gateway_stop(plan.profiles[1].receipt,
                         lambda: gates[1].pause_if_idle(lambda: False), stops[1], outer[1])))
-    operation = asyncio.create_task(stop_reviewed_gateways(directory, timeout=0.5 if reason == "timeout" else 2))
+    operation = asyncio.create_task(stop_reviewed_gateways(directory))
     try:
         if reason == "cancel":
             await wait_until(lambda: gates[0].paused)
@@ -221,8 +221,14 @@ async def test_precommit_failure_releases_every_hold_without_shutdown(protocol, 
             with pytest.raises(asyncio.CancelledError):
                 await operation
         else:
-            with pytest.raises(ValueError if reason == "busy" else TimeoutError):
-                await operation
+            if reason == "timeout":
+                # Expire only after a participant actually holds admission, so
+                # this proves release rather than racing slow filesystem I/O.
+                await wait_until(lambda: gates[0].paused)
+                expire_stop_deadline()
+            with pytest.raises(ValueError if reason == "busy" else TimeoutError,
+                               match="busy or refused" if reason == "busy" else "did not prepare"):
+                await asyncio.wait_for(operation, timeout=30)
         await wait_until(lambda: not any(gate.paused for gate in gates))
         assert not any(stop.is_set() for stop in stops)
         assert read_record(installation_state_dir() / "stop.json")["phase"] == "abort"
@@ -232,7 +238,7 @@ async def test_precommit_failure_releases_every_hold_without_shutdown(protocol, 
         if reason != "busy":
             watchers.append(asyncio.create_task(watch_gateway_stop(plan.profiles[1].receipt,
                             lambda: gates[1].pause_if_idle(lambda: False), stops[1], outer[1])))
-        await stop_reviewed_gateways(directory, timeout=2)
+        await asyncio.wait_for(stop_reviewed_gateways(directory), timeout=30)
         assert all(stop.is_set() for stop in stops), "A refused attempt prevented a later explicit retry"
     finally:
         operation.cancel()
@@ -334,11 +340,11 @@ async def test_written_commit_is_not_aborted_if_acknowledging_the_write_fails(pr
 
 
 @pytest.fixture
-def expire_exit_deadline(monkeypatch):
+def expire_stop_deadline(monkeypatch):
     from nanobot import update_stop
 
-    # Let real mailbox preparation finish regardless of filesystem speed. Only
-    # expire the process-exit wait after the test observes a still-running PID.
+    # Drive protocol deadlines from an observed state, not filesystem speed.
+    # Tests retain real-time watchdogs to catch stalled coordination.
     now = 100.0
     monkeypatch.setattr(update_stop, "time", SimpleNamespace(monotonic=lambda: now))
 
@@ -349,7 +355,7 @@ def expire_exit_deadline(monkeypatch):
     return expire
 
 
-async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkeypatch, expire_exit_deadline):
+async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkeypatch, expire_stop_deadline):
     from nanobot import update_stop
 
     directory, plan, gates, stops = protocol
@@ -358,7 +364,7 @@ async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkey
                                                      stop, stack))
                 for item, gate, stop, stack in zip(plan.profiles, gates, stops, outer)]
     def still_running(_runtime, _pid):
-        expire_exit_deadline()
+        expire_stop_deadline()
         return True
 
     monkeypatch.setattr(update_stop.GatewayRuntime, "process_is_running", still_running)
@@ -379,7 +385,7 @@ async def test_stop_acknowledgement_does_not_prove_process_exit(protocol, monkey
             stack.close()
 
 
-async def test_inactive_unselected_profile_must_also_finish_its_process_exit(protocol, monkeypatch, expire_exit_deadline):
+async def test_inactive_unselected_profile_must_also_finish_its_process_exit(protocol, monkeypatch, expire_stop_deadline):
     from nanobot import update_stop
 
     _, original, gates, stops = protocol
@@ -394,7 +400,7 @@ async def test_inactive_unselected_profile_must_also_finish_its_process_exit(pro
     monkeypatch.setattr(update_stop, "require_stopped_profiles", require_stopped)
     def still_running(_runtime, pid):
         if pid == second.receipt.pid:
-            expire_exit_deadline()
+            expire_stop_deadline()
             return True
         return False
 
