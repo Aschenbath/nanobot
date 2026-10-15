@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "Bản cập nhật đã dừng trước khi cài đặt. Chưa có tệp gói nào bị thay đổi. Khôi phục bản cập nhật đã lưu để tiếp tục.",
     "channel": {
       "settings": "Cài đặt cập nhật",
       "receivePreview": "Nhận bản cập nhật xem trước",

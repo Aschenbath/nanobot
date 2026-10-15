@@ -205,11 +205,27 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
     try {
       const response = await prepareUpdate(client, id);
       if (generation.current === current) { setJob(response.job); setPendingId(id); }
-    } catch {
+    } catch (reason) {
       if (generation.current === current) {
-        // Recover the request outcome without sending a second mutation.
         approved.current = null;
-        setPendingId(id);
+        // A completed rejection (for example, a channel change in another tab)
+        // plus a missing journal permits a new review, never automatic retry.
+        // A timeout/lost response or an unreadable/existing job is still unknown.
+        if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500) {
+          try {
+            const response = await readUpdateJob(token, id);
+            if (generation.current === current) setJob(response.job);
+          } catch (readError) {
+            if (generation.current !== current) return;
+            if (readError instanceof ApiError && readError.status === 404) {
+              remember(null);
+              setReview(null);
+              setError(t("updates.reviewAgainDescription"));
+              return;
+            }
+          }
+        }
+        if (generation.current === current) setPendingId(id);
       }
     } finally {
       if (generation.current === current) { setSubmitting(false); inFlight.current = false; }
@@ -220,18 +236,22 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
   const done = job?.recorded_phase === "succeeded" && job.running_version === job.target_version;
   const awaitingRestart = phase === "succeeded" && !done;
   const failed = !!phase && terminal.has(phase) && phase !== "succeeded";
+  // Backup can fail after shutdown/admission but before any package mutation.
+  // That saved job still needs the standalone recovery path, not another update.
+  const needsRecovery = failed && (job?.mutation_started || phase === "failed");
   const reviewAgain = canSettleHandoff && job && !job.mutation_started && (phase === "handoff_failed"
     || phase === "cancelled" || (phase === "ready" && review && review.plan.validity !== "current"));
-  const reviewing = submitting && (!review || !!reviewAgain);
-  const busy = checkingStatus || submitting || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
+  const restoringReview = !!pendingId && phase === "ready" && !job?.execution_confirmation_id && !review && !error;
+  const reviewing = (submitting && (!review || !!reviewAgain)) || restoringReview;
+  const busy = checkingStatus || submitting || restoringReview || (!!pendingId && !error && !failed && !done && (phase !== "ready" || !!job?.execution_confirmation_id));
   const title = done ? "done" : offline || awaitingRestart ? "reconnecting" : reviewing ? "reviewingTitle" : busy ? phase === "preparation_requested" || phase === "preparing" ? "preparing" : phase === "installing" ? "installing" : "working" : failed ? "failed" : "confirm";
   const blocked = !reviewAgain && !job?.execution_confirmation_id && review && (!review.installation_allowed ? "permission" : review.plan.execution_blocked_reason);
   const description = delayed ? t("updates.delayed") : error || (done ? t("updates.doneDescription", { version: job?.target_version })
     : offline || awaitingRestart ? t("updates.reconnectingDescription") : reviewing ? t("updates.reviewing")
-    : reviewAgain ? t("updates.reviewAgainDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : "updates.preparationFailed")
+    : reviewAgain ? t("updates.reviewAgainDescription") : failed ? t(job?.mutation_started ? "updates.repairRequired" : needsRecovery ? "updates.recoveryBeforeInstall" : "updates.preparationFailed")
     : busy ? t("updates.workingDescription") : blocked ? t(`updates.blocked.${blocked}`)
     : review ? t("updates.confirmDescription", { version: review.plan.target_version, host: review.plan.host }) : t("updates.reviewing"));
-  const startAgain = !pendingId || (failed && !job?.mutation_started && !job?.execution_confirmation_id);
+  const startAgain = !pendingId || (failed && !needsRecovery && !job?.execution_confirmation_id);
   const primary = () => {
     if (checkingStatus) return;
     if (done) close();
@@ -258,7 +278,7 @@ export function UpdateFlowProvider({ client, token, enabled, canSettleHandoff = 
           {review && !busy && !blocked && !done && review.plan.profiles.filter(p => p.restart).length > 1 &&
             <p className="mt-2 text-xs text-muted-foreground">{t("updates.sharedInstallation", { count: review.plan.profiles.filter(p => p.restart).length })}</p>}
         </div>
-        {pendingId && recovery && (delayed || (failed && job?.mutation_started)) && <div className="mt-4 space-y-2 border-t pt-4">
+        {pendingId && recovery && (delayed || needsRecovery) && <div className="mt-4 space-y-2 border-t pt-4">
           <p className="text-sm font-medium">{t("updates.recoveryTitle")}</p>
           <p className="text-xs leading-5 text-muted-foreground">{t("updates.recoveryDescription")}</p>
           <Textarea aria-label={t("updates.recoveryTitle")} readOnly value={recovery} rows={4}

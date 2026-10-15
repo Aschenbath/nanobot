@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "La actualización se detuvo antes de instalar. No se modificaron archivos del paquete. Recupera la actualización guardada para continuar.",
     "channel": {
       "settings": "Ajustes de actualización",
       "receivePreview": "Recibir versiones preliminares",

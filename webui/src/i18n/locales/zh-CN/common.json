@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "更新在安装前停止，尚未修改安装文件。请恢复原更新以继续。",
     "channel": {
       "settings": "更新设置",
       "receivePreview": "接收预览更新",

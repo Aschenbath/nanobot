@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "설치 전에 업데이트가 중단되었습니다. 패키지 파일은 변경되지 않았습니다. 저장된 업데이트를 복구하여 계속하세요.",
     "channel": {
       "settings": "업데이트 설정",
       "receivePreview": "미리 보기 업데이트 받기",

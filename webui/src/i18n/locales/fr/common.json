@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "La mise à jour s’est arrêtée avant l’installation. Aucun fichier du paquet n’a été modifié. Reprenez la mise à jour enregistrée pour continuer.",
     "channel": {
       "settings": "Réglages des mises à jour",
       "receivePreview": "Recevoir les préversions",

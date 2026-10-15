@@ -139,6 +139,63 @@ describe("Real update consent and recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Update & restart" }));
     await waitFor(() => expect(api.executeUpdate).toHaveBeenCalledOnce());
   });
+  it("waits for the restored review before enabling confirmation", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    let resolveReview!: (value: api.UpdateReviewResponse) => void;
+    vi.mocked(api.readUpdateReview).mockImplementation(() => new Promise(resolve => { resolveReview = resolve; }));
+    render(view());
+    await waitFor(() => expect(api.readUpdateReview).toHaveBeenCalledWith("gateway-a", id));
+    expect(screen.queryByRole("button", { name: "Update & restart" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Please wait" })).toBeDisabled();
+    expect(screen.getByText("Checking the update…")).toBeVisible();
+    await act(async () => resolveReview(review));
+    expect(screen.getByRole("button", { name: "Update & restart" })).toBeEnabled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("allows a fresh review after a rejected stale preparation has no saved job", async () => {
+    // Another tab changed the channel after this plan was reviewed. The gateway
+    // rejects preparation before creating a job; a 404 alone is not that proof.
+    vi.mocked(api.prepareUpdate).mockRejectedValue(new api.ApiError(409, "Preparation refused"));
+    vi.mocked(api.readUpdateJob).mockRejectedValue(new api.ApiError(404, "No saved update"));
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    fireEvent.click(await screen.findByRole("button", { name: "Update & restart" }));
+    await screen.findByText(/No package files were changed. Review the update again/);
+    expect(sessionStorage.getItem("nanobot.pending-update.v1")).toBeNull();
+    const nextId = "81c91a73-842e-42e9-aeb4-61a5bfe51135";
+    vi.mocked(api.createUpdateReview).mockResolvedValue({ ...review, plan: { ...review.plan, id: nextId } });
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(api.createUpdateReview).toHaveBeenCalledTimes(2);
+    expect(api.prepareUpdate).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("retains an unknown preparation outcome even if the job is not visible yet", async () => {
+    vi.mocked(api.prepareUpdate).mockRejectedValue(new api.ApiError(504, "Request timed out"));
+    vi.mocked(api.readUpdateJob).mockRejectedValue(new api.ApiError(404, "No saved update"));
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    fireEvent.click(await screen.findByRole("button", { name: "Update & restart" }));
+    await screen.findByText(/Could not read the saved update/);
+    expect(sessionStorage.getItem("nanobot.pending-update.v1")).toBe(id);
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(api.readUpdateJob).toHaveBeenCalledTimes(2));
+    expect(api.createUpdateReview).toHaveBeenCalledOnce();
+    expect(api.prepareUpdate).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
+  it("preserves a durable job after a preparation error instead of granting new consent", async () => {
+    vi.mocked(api.prepareUpdate).mockRejectedValue(new api.ApiError(409, "Read the saved state"));
+    render(view());
+    fireEvent.click(screen.getByText("Update entry"));
+    fireEvent.click(await screen.findByRole("button", { name: "Update & restart" }));
+    await waitFor(() => expect(api.readUpdateJob).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "Update & restart" });
+    expect(sessionStorage.getItem("nanobot.pending-update.v1")).toBe(id);
+    expect(api.createUpdateReview).toHaveBeenCalledOnce();
+    expect(api.prepareUpdate).toHaveBeenCalledOnce();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
+  });
   it("never creates or executes a second job after a lost execution response", async () => {
     vi.mocked(api.executeUpdate).mockRejectedValue(new Error("connection closed"));
     vi.mocked(api.readUpdateJob).mockResolvedValueOnce({ job: job("ready") }).mockResolvedValue({ job: job("ready", "confirmed") });
@@ -318,5 +375,21 @@ describe("Real update consent and recovery", () => {
     expect(await screen.findByText("Update complete")).toBeVisible();
     expect(api.executeUpdate).not.toHaveBeenCalled();
     expect(JSON.parse(sessionStorage.getItem("nanobot.pending-update-recovery.v1") || "{}").command).toBe(command);
+  });
+  it("shows recovery after an admitted job fails during backup before package mutation", async () => {
+    sessionStorage.setItem("nanobot.pending-update.v1", id);
+    const command = `python3 -I -S /private/update/recover.py ${id} --repair`;
+    vi.mocked(api.readUpdateJob).mockResolvedValue({ job: {
+      ...job("failed", "confirmed"), recovery_command: command,
+    } });
+    render(view());
+    expect(await screen.findByDisplayValue(command)).toBeVisible();
+    expect(screen.getByText(/The update stopped before installation. No package files were changed/)).toBeVisible();
+    expect(screen.getAllByText(/Run this command in a terminal/)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(api.readUpdateJob).toHaveBeenCalledTimes(2));
+    expect(api.createUpdateReview).not.toHaveBeenCalled();
+    expect(api.prepareUpdate).not.toHaveBeenCalled();
+    expect(api.executeUpdate).not.toHaveBeenCalled();
   });
 });

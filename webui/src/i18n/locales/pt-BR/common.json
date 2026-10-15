@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "A atualização parou antes da instalação. Nenhum arquivo do pacote foi alterado. Recupere a atualização salva para continuar.",
     "channel": {
       "settings": "Configurações de atualização",
       "receivePreview": "Receber versões prévias",

@@ -1381,7 +1381,8 @@ async def test_prepared_worker_has_no_execution_authority(installation, tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="Symlink creation requires separate Windows privileges")
-async def test_real_worker_refuses_installation_when_scoped_backup_fails(installation, tmp_path):
+@pytest.mark.parametrize("standalone", [False, True])
+async def test_real_worker_refuses_installation_when_scoped_backup_fails(installation, tmp_path, standalone):
     plan, _, _, _, transport = installation
     async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
         directory = await prepare_job(plan, feed)
@@ -1398,7 +1399,16 @@ async def test_real_worker_refuses_installation_when_scoped_backup_fails(install
         assert not pending_update_path(plan.installation.environment).exists()
         assert not (directory / "backup").exists()
         link.unlink()
-        await wait_worker(await start_job(directory, feed))
+        if standalone:
+            approval = read_record(directory / "approval.json")
+            approval.update(created_at=int(time.time()) - 1800, expires_at=int(time.time()) - 900)
+            write_record(directory / "approval.json", approval)
+            result = await asyncio.to_thread(subprocess.run, [
+                sys._base_executable, "-I", "-S", str(directory.parents[2] / "recover.py"), plan.id, "--repair", "--yes",
+            ], capture_output=True, text=True, timeout=40)
+            assert result.returncode == 0, result.stdout + result.stderr
+        else:
+            await wait_worker(await start_job(directory, feed))
     assert JobStatus.read(directory).phase == Phase.INSTALLED
 
 

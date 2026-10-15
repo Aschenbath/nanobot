@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "The update stopped before installation. No package files were changed. Recover the saved update to continue.",
     "channel": {
       "settings": "Update settings",
       "receivePreview": "Receive preview updates",

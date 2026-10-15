@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "Pembaruan berhenti sebelum instalasi. Tidak ada berkas paket yang diubah. Pulihkan pembaruan tersimpan untuk melanjutkan.",
     "channel": {
       "settings": "Pengaturan pembaruan",
       "receivePreview": "Terima pembaruan pratinjau",

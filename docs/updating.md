@@ -99,11 +99,17 @@ started. Active work prevents the shutdown handoff. Remote clients need the exis
 package-install permission, and native Desktop clients use their distributor's updater.
 
 Refreshing restores saved progress, **not installation consent**. Prepared files can
-be confirmed again; a lost execution response is resolved by reading the same job,
+be confirmed again after their exact review has loaded. If preparation is explicitly
+rejected (for example, another tab changed the channel) and a subsequent read confirms
+that no job exists, the page offers a fresh review and requires confirmation again.
+A timeout or lost response does not establish rejection, and a missing journal alone
+does not authorize a second update. A lost execution response is resolved by reading the same job,
 not creating or executing a second update. A recorded pre-mutation handoff failure
 can be explicitly retried using its existing confirmation. If the gateway remains
 offline, the page cannot prove the worker's status: retain the job and backup and use
-the standalone recovery command below. Automatic data rollback is never attempted.
+the standalone recovery command below. This recovery path also applies when backup
+fails after shutdown, before any package files change. Automatic data rollback is
+never attempted.
 
 ## Standalone recovery
 

@@ -1,5 +1,6 @@
 {
   "updates": {
+    "recoveryBeforeInstall": "インストール前に更新が停止しました。パッケージのファイルは変更されていません。保存済みの更新を復旧して続行してください。",
     "channel": {
       "settings": "更新設定",
       "receivePreview": "プレビュー更新を受け取る",
