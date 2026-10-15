@@ -1440,6 +1440,28 @@ async def test_broken_release_keeps_recovery_record_and_never_overwrites_an_exte
     assert inspect_environment(plan.installation.python).app_version == "0.3.6"
 
 
+def test_program_copy_flushes_writable_handle_and_preserves_read_only_mode(tmp_path, monkeypatch):
+    from nanobot.update_fallback import _copy_program_file
+
+    source, destination = tmp_path / "license.txt", tmp_path / "copied-license.txt"
+    source.write_bytes(b"Installed package license\n")
+    source.chmod(0o444)
+    fsync = os.fsync
+    flushed = []
+    def sync_writable(descriptor):
+        # POSIX accepts fsync on read-only handles, but Windows rejects it.
+        # A zero-byte write verifies the cross-platform handle requirement.
+        os.write(descriptor, b"")
+        fsync(descriptor)
+        flushed.append(descriptor)
+    monkeypatch.setattr(os, "fsync", sync_writable)
+    assert _copy_program_file(str(source), str(destination)) == str(destination)
+    assert len(flushed) == 1
+    assert destination.read_bytes() == source.read_bytes()
+    assert destination.stat().st_mode == source.stat().st_mode
+    assert destination.stat().st_mtime_ns == source.stat().st_mtime_ns
+
+
 @pytest.mark.parametrize("installation", [True], indirect=True)
 @pytest.mark.parametrize("interrupted", [None, "rename", "journal", "metadata"])
 async def test_program_restore_after_real_broken_install_preserves_user_data(installation, tmp_path, monkeypatch, interrupted):

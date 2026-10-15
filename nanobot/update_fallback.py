@@ -116,6 +116,16 @@ def _paths(spec: WorkerSpec) -> tuple[Path, Path, Path]:
             environment.with_name(f".nanobot-failed-{spec.plan_id}"))
 
 
+def _copy_program_file(source: str, destination: str) -> str:
+    shutil.copyfile(source, destination)
+    # Windows fsync requires a writable handle. Open it before copystat restores
+    # a package file's read-only flag; keep that handle through metadata sync.
+    with Path(destination).open("rb+") as stream:
+        shutil.copystat(source, destination)
+        os.fsync(stream.fileno())
+    return destination
+
+
 def preserve_program(directory: Path, spec: WorkerSpec) -> None:
     from nanobot.update_worker import read_record, write_record
 
@@ -139,15 +149,10 @@ def preserve_program(directory: Path, spec: WorkerSpec) -> None:
     if shutil.disk_usage(environment.parent).free < size + 32 * 1024**2:
         raise ValueError("Not enough space to preserve the original program; no packages were changed")
     before = _tree_digest(environment)
-    shutil.copytree(environment, original, symlinks=True)
+    shutil.copytree(environment, original, symlinks=True, copy_function=_copy_program_file)
     original.chmod(0o700)
-    # Flush copied regular files before publishing the restoration receipt.
-    for root, _, files in os.walk(original, followlinks=False):
-        for name in files:
-            path = Path(root) / name
-            if not path.is_symlink():
-                with path.open("rb") as stream:
-                    os.fsync(stream.fileno())
+    # File copies are durable; flush directory entries before the receipt.
+    for root, _, _ in os.walk(original, topdown=False, followlinks=False):
         _sync_directory(Path(root))
     if _tree_digest(original) != before or _tree_digest(environment) != before:
         raise ValueError("The program changed during its snapshot; no packages were changed")
