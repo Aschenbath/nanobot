@@ -156,7 +156,7 @@ def read_update_job(plan_id: str) -> UpdateJobView:
         recovery_command=_recovery_command(plan_id),
         recovery_active=recovery_active,
         service_restored=status.phase == Phase.RESTORED,
-        automatic_recovery=bool(plan.restart_profiles) and "nanobot-install.json" in plan.installation.records,
+        automatic_recovery=WorkerSpec.recovery_selected(directory),
     )
 
 

@@ -256,6 +256,17 @@ class WorkerSpec:
     uv: UVPreparation | None = None
     automatic_recovery: bool = False
 
+    @staticmethod
+    def recovery_selected(directory: Path) -> bool:
+        """Read the frozen selection for status, without probing damaged inputs."""
+        try:
+            data = read_record(directory / "request.json", max_bytes=_MAX_REQUEST_BYTES)
+        except FileNotFoundError:
+            return False  # Preparation has not committed a worker request.
+        if data.get("plan_id") != directory.name:
+            raise ValueError("Update job identity mismatch")
+        return data.get("automatic_recovery") is True
+
     @classmethod
     def read(cls, directory: Path) -> WorkerSpec:
         data = read_record(directory / "request.json", max_bytes=_MAX_REQUEST_BYTES)

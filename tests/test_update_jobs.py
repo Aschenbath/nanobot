@@ -1462,6 +1462,32 @@ def test_program_copy_flushes_writable_handle_and_preserves_read_only_mode(tmp_p
     assert destination.stat().st_mtime_ns == source.stat().st_mtime_ns
 
 
+@pytest.mark.parametrize("installation", ["handoff"], indirect=True)
+async def test_job_recovery_capability_comes_from_its_saved_worker(installation, tmp_path, monkeypatch):
+    from nanobot.update_jobs import read_update_job
+
+    plan, _, _, _, transport = installation
+    receipt = Path(plan.installation.environment) / "nanobot-install.json"
+    write_record(receipt, {"schema_version": 1, "owner": "nanobot-installer",
+                           "environment": plan.installation.environment, "extras": []})
+    snapshot = plan.installation.model_copy(update={
+        "records": {**plan.installation.records, "nanobot-install.json": hashlib.sha256(receipt.read_bytes()).hexdigest()},
+    })
+    plan = plan.model_copy(update={"installation": snapshot})
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    monkeypatch.setattr(sys, "prefix", plan.installation.environment)
+    assert read_update_job(plan.id).automatic_recovery is True
+    # Schema 4 jobs prepared by older releases did not opt into supervision.
+    # An eligible installation does not change those frozen jobs' capabilities.
+    request = read_record(directory / "request.json")
+    request.pop("automatic_recovery")
+    write_record(directory / "request.json", request)
+    assert read_update_job(plan.id).automatic_recovery is False
+    (directory / "worker.pyz").unlink()
+    assert read_update_job(plan.id).automatic_recovery is False, "Status must remain readable after damage"
+
+
 @pytest.mark.parametrize("installation", [True], indirect=True)
 @pytest.mark.parametrize("interrupted", [None, "rename", "journal", "metadata"])
 async def test_program_restore_after_real_broken_install_preserves_user_data(installation, tmp_path, monkeypatch, interrupted):
