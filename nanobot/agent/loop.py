@@ -1429,15 +1429,15 @@ class AgentLoop:
                     logger.warning("Error consuming inbound message: {}, continuing...", e)
                     continue
 
-                try:
-                    with self.bus.admission.activity():
+                with self.bus.admission.activity():
+                    try:
                         await self._dispatch_inbound(msg)
-                except (SessionOperationQueueFullError, SessionConflictError) as exc:
-                    key = self._effective_session_key(msg)
-                    logger.warning("Session input rejected for {}: {}", key, exc)
-                    if msg.is_user_input:
-                        delivery = self.turn_delivery_factory.unrouted(msg, key)
-                        await delivery.fail(publish_completion=key not in self._pending_queues)
+                    except (SessionOperationQueueFullError, SessionConflictError) as exc:
+                        key = self._effective_session_key(msg)
+                        logger.warning("Session input rejected for {}: {}", key, exc)
+                        if msg.is_user_input:
+                            delivery = self.turn_delivery_factory.unrouted(msg, key)
+                            await delivery.fail(publish_completion=key not in self._pending_queues)
         finally:
             await self.aclose()
 

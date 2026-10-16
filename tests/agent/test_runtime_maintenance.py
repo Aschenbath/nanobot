@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +17,7 @@ from nanobot.cron.service import CronService
 from nanobot.cron.types import CronSchedule
 from nanobot.providers.base import LLMResponse
 from nanobot.runtime_admission import RuntimeBusyError, RuntimeMaintenanceError
+from nanobot.session.sqlite_store import SessionConflictError
 from nanobot.triggers.local_runner import run_local_trigger_queue
 from nanobot.triggers.local_store import LocalTriggerStore
 from nanobot.utils.llm_runtime import LLMRuntime
@@ -179,6 +181,35 @@ async def test_dequeue_and_inline_dispatch_have_no_false_idle_gap(agent, monkeyp
             await settle(agent)
         with agent.maintenance():
             assert agent.bus.admission.paused
+    finally:
+        release.set()
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
+async def test_rejected_input_keeps_failure_delivery_owned(agent, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def reject(msg):
+        raise SessionConflictError("session changed before admission")
+
+    async def fail(**kwargs):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(agent, "_dispatch_inbound", reject)
+    monkeypatch.setattr(agent.turn_delivery_factory, "unrouted",
+                        lambda *args: SimpleNamespace(fail=fail))
+    await agent.bus.publish_inbound(message())
+    consumer = asyncio.create_task(agent.run())
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+        assert agent.bus.inbound_size == 0
+        assert not agent._active_tasks
+        with pytest.raises(RuntimeBusyError):
+            with agent.maintenance():
+                pytest.fail("failure notification was interrupted by maintenance")
     finally:
         release.set()
         consumer.cancel()
