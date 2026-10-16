@@ -15,6 +15,7 @@ import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -60,6 +61,8 @@ class IndexHandler(SimpleHTTPRequestHandler):
 
 @pytest.fixture
 def uv_installation(tmp_path, monkeypatch):
+    # Private synthetic package-manager fixtures, not release-signature proof.
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock())
     from nanobot import update_process
 
     manager_version = subprocess.check_output([shutil.which("uv"), "--version"], text=True, timeout=10)

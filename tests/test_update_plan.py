@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -81,7 +82,8 @@ def test_plan_id_cannot_escape_private_directory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_prepare_and_revalidate_cross_the_same_feed_interface_without_installer(tmp_path):
+async def test_prepare_and_revalidate_cross_the_same_feed_interface_without_installer(tmp_path, monkeypatch):
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock())
     requests = []
 
     def handler(request):

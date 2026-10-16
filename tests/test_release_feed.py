@@ -3,6 +3,7 @@
 import hashlib
 import io
 import zipfile
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -18,6 +19,13 @@ from nanobot.releases import (
 )
 
 PLATFORM = "macosx_13_0_arm64"
+
+
+@pytest.fixture(autouse=True)
+def checksum_only_fixtures(monkeypatch):
+    # These synthetic packages exercise selection/download integrity, not
+    # publication authority. The real approval boundary is tested separately.
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock())
 
 
 def wheel_bytes(version):

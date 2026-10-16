@@ -10,6 +10,18 @@ installation method. That first upgrade does not convert pip, pipx, uv or Docker
 into an installer-managed installation; the owner table below still applies.
 Stable users do not opt into previews merely by checking for updates.
 
+Automatic updates require an official signed release approval as well as a package
+checksum, for both Stable and Preview. Missing or invalid proof, or an unavailable
+trust service, refuses the update before package mutation. Keep using the current
+version and retry later; report persistent failures and the version to a maintainer.
+Do not disable verification or install a replacement file from an error message.
+
+This proof identifies the publication workflow that approved the bytes; it does
+not certify that all application and dependency code is free of malicious behavior.
+First installs and owner-managed pip/pipx/source/container updates retain their own
+distribution trust boundaries. Automatic recovery addresses upgrade faults, not
+malware execution or reversal of data theft. See the [release approval contract](releasing.md#release-approval-proof).
+
 In **Settings → About**, **Receive preview updates** is visible below the update
 check; there is no section to expand first. It is off by default. Turn it on to
 try new features early, with a higher risk of bugs. There is

@@ -181,9 +181,64 @@ cannot serve Preview subscribers a final release through this catalogue.
 
 ## Publish, with maintainer approval
 
+### Release approval proof
+
+Automatic installation requires `release-manifest.json.sigstore.json` beside the
+manifest on the exact GitHub release, for **both Stable and Preview**. The client
+verifies Sigstore's production certificate chain and transparency proof. It accepts
+only the manual `release-approve.yml` workflow on `HKUDS/nanobot`'s `main` branch.
+The signed manifest must match the selected version, wheel size and digest.
+Preview also retains the catalogue's commit/manifest binding. This gate runs
+before download and again before gateway shutdown. There is no unsigned fallback.
+
+Before enabling signing, an administrator must protect `main` and the
+`release-approval` environment: require independent review, prevent self-review,
+restrict deployment branches to `main`, and restrict bypass and modifications to
+the workflow and signing requirements. Only then set the repository variable
+`NANOBOT_RELEASE_SIGNING_ENABLED=true`. Without this variable the workflow is
+disabled. This PR does not create those settings or activate signing. No long-lived
+signing key or Apple Developer ID is required.
+
+After candidate tests and dependency review, obtain the version, manifest SHA-256,
+source SHA and candidate SHA from retained acceptance evidence, **not** from
+whatever the public download currently says. Upload the proposed manifest through
+the normal separately authorized release handoff. Manually run **Approve Exact
+Release** from `main` with those four values and obtain the environment review.
+The job checks the exact manifest and signs it with hash-locked signing tools.
+It does not install candidate code and cannot write releases, PyPI or the catalogue.
+Attach the resulting proof to the release as a separate authorized publication
+step. Verify it from the public endpoint before advancing either channel. Preserve
+the proof with the candidate evidence; its workflow artifact expires after three days.
+
+Regenerate the signing lock only in a reviewed dependency update:
+
+```bash
+uv pip compile .github/release-signing-requirements.in --python-version 3.11 \
+  --python-platform x86_64-manylinux_2_17 --generate-hashes --no-header \
+  --output-file .github/release-signing-requirements.txt
+```
+
+Review the resolved changes; generating hashes is not malware review. This is an
+intentional publication prerequisite, not a data migration or recovery protocol
+change. Unsigned historical releases remain discoverable but cannot be automatically
+installed by this verifier. Existing installations keep running. Before first
+release, prove that a supported real old updater can install the signed candidate
+and that the candidate can install the next signed version. Private packaged
+recovery fixtures substitute publication authority and are not signature evidence.
+
+The proof authenticates **release approval**, not reproducible-build provenance or
+the absence of malicious code. A compromised authorized workflow/reviewer, malicious
+source that passes review, and compromised runtime dependencies remain trust risks.
+The signing-tool lock does **not** lock users' runtime dependency graphs. Runtime
+resolution retains the installation owner's supported policy. A reviewed runtime
+dependency inventory, public signed upgrade continuity and verified repository
+protection settings remain security-release gates. Do not advertise comprehensive
+supply-chain protection before these are complete. The first installer and its
+checksum source also require a trusted distribution channel.
+
 1. Confirm all pre-tag gates above are complete. Create and push exactly `vX.Y.Z`; do not move or reuse a published version tag.
 2. Create the matching GitHub Release. A draft may be used while assembling its attachments. Pushing the tag alone does not run `Publish Terminal UI` or upload anything to PyPI.
-3. Attach the complete verified set: five platform wheels, sdist, five TUI archives, their `.sha256` files and `release-manifest.json`, after confirming the tag's packaged sources match the manifest. Verify the uploaded bytes match their preflight hashes; never upload a naked executable.
+3. Attach the complete verified set: five platform wheels, sdist, five TUI archives, their `.sha256` files and `release-manifest.json`, after confirming the tag's packaged sources match the manifest. Complete the release approval proof handoff above before offering automatic updates. Verify the uploaded bytes match their preflight hashes; never upload a naked executable.
 4. If instead rebuilding the native archives through **Publish Terminal UI**, use `tag=vX.Y.Z` and confirm the already completed compliance review. Wait for all five targets and repeat artifact checks on those new outputs. Assemble and recheck the platform wheels and manifest using those exact archives before uploading the remaining files. Do not combine new archives with old embedded wheel bytes or hashes. If this would replace an already-public asset, allocate a new version instead.
 5. Make the GitHub Release and the complete artifact set publicly available. Verify every public file against the accepted manifest, including the native archives for fallback/source-built installations. Supported platform-wheel installs do not need archive downloads to start the TUI.
 6. Upload only the checked `nanobot_ai-X.Y.Z.tar.gz` and the five final platform wheels to PyPI. Do not upload the intermediate universal wheel or stale files from a shared `dist/` directory. This repository has no automatic PyPI publication workflow.

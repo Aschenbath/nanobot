@@ -50,7 +50,11 @@ def test_baseline_instrumentation_does_not_modify_the_target(tmp_path):
 
 
 @pytest.mark.parametrize("version,channel", [("0.3.6", "stable"), ("0.3.6.dev42", "preview")])
-def test_local_feed_uses_the_real_resolver_and_exact_target_hash(tmp_path, version, channel):
+def test_local_feed_uses_the_real_resolver_and_exact_target_hash(tmp_path, monkeypatch, version, channel):
+    from unittest.mock import AsyncMock
+
+    # The packaged lifecycle fixture is deliberately not a public signed release.
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock())
     from packaging.tags import Tag
 
     candidate = wheel(tmp_path, version)

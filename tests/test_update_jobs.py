@@ -14,6 +14,7 @@ import time
 import venv
 from dataclasses import replace
 from pathlib import Path, PureWindowsPath
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -181,6 +182,9 @@ def wheel(directory, name, version, *, requires=(), platform="any", broken=False
 
 @pytest.fixture
 def installation(tmp_path, monkeypatch, request):
+    # Synthetic local packages are not signed public releases. Approval refusal
+    # is covered through the real feed in test_release_trust.py.
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock())
     state_home = tmp_path / "private home"
     state_home.mkdir()
     monkeypatch.setenv("HOME", str(state_home))
@@ -1744,6 +1748,21 @@ async def test_failed_download_retains_private_exact_job_for_retry(installation,
     assert inspect_environment(plan.installation.python).app_version == "0.3.4"
 
 
+async def test_release_approval_refusal_preserves_original_installation(installation, tmp_path, monkeypatch):
+    plan, _, _, _, transport = installation
+    before = inspect_environment(plan.installation.python)
+    monkeypatch.setattr(ReleaseFeed, "_authorize", AsyncMock(side_effect=ValueError("Unapproved release")))
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        with pytest.raises(ValueError, match="Unapproved release"):
+            await prepare_job(plan, feed)
+    directory = installation_state_dir(plan.installation.environment) / "jobs" / plan.id
+    assert not (directory / "request.json").exists()
+    # The current-version recovery launcher may already be staged, but no
+    # verified request may authorize it to mutate the installation.
+    assert not (directory / "wheels").exists()
+    assert inspect_environment(plan.installation.python) == before
+
+
 def _preparer_script(plan: UpdatePlan, candidate: Path, cache: Path, hook: str) -> str:
     source = Path(__file__).resolve().parents[1]
     return f"""
@@ -1755,6 +1774,10 @@ from nanobot import update_jobs, update_worker
 from nanobot.release_feed import ReleaseFeed
 from nanobot.update_plan import UpdatePlan
 from nanobot.releases import release_filenames
+async def private_fixture_approval(self, target):
+    # Unsigned lifecycle fixture; public publication authority is tested separately.
+    pass
+ReleaseFeed._authorize = private_fixture_approval
 plan = UpdatePlan.model_validate_json({plan.model_dump_json()!r})
 {hook}
 def response(request):

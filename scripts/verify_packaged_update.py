@@ -68,7 +68,9 @@ def fixture_wheel(source: Path, output: Path, version: str, *, feed: Path | None
     files[metadata] = replace_once(files[metadata], f"Version: {previous}\n".encode(), f"Version: {version}\n".encode())
     if feed is not None:
         # This existing injectable transport runs in both planner and preflight
-        # processes. It cannot reach external hosts or bypass artifact checks.
+        # processes. It cannot reach external hosts. These private packages are
+        # not approved public releases: signature admission is exercised by the
+        # separate trust tests, not this installation/recovery fixture.
         files["nanobot/_acceptance_feed.py"] = f'''import json
 from pathlib import Path
 import httpx
@@ -84,6 +86,10 @@ def transport():
         files["nanobot/release_feed.py"] = replace_once(
             files["nanobot/release_feed.py"], b"transport=transport or PinnedDNSAsyncTransport(),",
             b'transport=transport or __import__("nanobot._acceptance_feed", fromlist=["transport"]).transport(),')
+        if b"await self._authorize(target)" in files["nanobot/release_feed.py"]:
+            files["nanobot/release_feed.py"] = replace_once(
+                files["nanobot/release_feed.py"], b"await self._authorize(target)",
+                b"pass  # Private unsigned acceptance fixture, never a distributable wheel.")
         # Windows source archives can contain CRLF. Normalize only the private
         # instrumentation copy; the final target's bytes remain untouched.
         worker = files["nanobot/update_worker.py"].replace(b"\r\n", b"\n")
@@ -574,6 +580,7 @@ def run(args) -> dict:
     return {"platform": platform.system(), "machine": platform.machine(), "python": platform.python_version(),
             "target_sha256": original_hash, "candidate_commit": args.commit, "version": version,
             "release_transport": "local fixture; no public-download proof", "interactive_ui_e2e": False,
+            "release_approval": "private unsigned fixture; not signature acceptance",
             "scenarios": results}
 
 

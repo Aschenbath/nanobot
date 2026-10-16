@@ -6,6 +6,7 @@ Neither source can provide commands, another repository, or arbitrary download h
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import platform
 import re
@@ -26,10 +27,13 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from nanobot.release_trust import verify_release_approval
 from nanobot.releases import (
+    RELEASE_DOWNLOAD,
     Channel,
     ReleaseArtifact,
     ReleaseCatalogue,
+    ReleaseManifest,
     ReleasePointer,
     ReleaseRecord,
     release_filenames,
@@ -304,6 +308,31 @@ class ReleaseFeed:
             current = await self._from_pointer(target.pointer, catalogue.generation)
         if (current.artifact, current.url) != (target.artifact, target.url):
             raise ReleaseFeedError("The approved release artifact has changed")
+        await self._authorize(target)
+
+    async def _authorize(self, target: ReleaseTarget) -> None:
+        """A matching index checksum is not permission to execute new code.
+
+        Apply equally to PyPI/stable and GitHub/Preview, including revalidation
+        before handoff. Discovery remains possible for older unsigned releases,
+        but they cannot enter an automatic installation transaction.
+        """
+        base = f"{RELEASE_DOWNLOAD}/v{target.version}/release-manifest.json"
+        payload, _ = await self._read(base, limit=64 * 1024)
+        signature, _ = await self._read(base + ".sigstore.json", limit=256 * 1024)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(verify_release_approval, payload or b"", signature or b""), timeout=30,
+            )
+        except TimeoutError as exc:
+            # The verifier thread can only read/refresh public trust metadata;
+            # it has no installation capability even if its IO finishes later.
+            raise ReleaseFeedError("Release approval verification timed out; keep the current version and retry") from exc
+        manifest = ReleaseManifest.model_validate_json(payload or b"")
+        if manifest.version != target.version or target.artifact not in manifest.artifacts:
+            raise ReleaseFeedError("Release approval does not match the selected package")
+        if target.pointer is not None:
+            target.pointer.verify_manifest(payload or b"")
 
     async def download(self, target: ReleaseTarget, directory: Path) -> Path:
         """Stage one verified wheel. No execution, install, or extraction occurs."""
