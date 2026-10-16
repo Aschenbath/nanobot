@@ -209,6 +209,29 @@ install_with_pipx() {
   tool_dir="$(pipx environment --value PIPX_LOCAL_VENVS)" || fail "Could not locate the pipx environments directory"
   [ -n "$tool_dir" ] || fail "pipx returned an empty environments directory"
   if [ -f "$tool_dir/$package/pipx_metadata.json" ]; then
+    # Bootstrap must not import the installed application or expose private options.
+    "$python_bin" -I - "$tool_dir/$package/pipx_metadata.json" "$expected_version" <<'PY' || fail "Review the original pipx installation settings; no installation was attempted."
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    path = Path(sys.argv[1])
+    if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+        raise ValueError
+    record = json.loads(path.read_text(encoding="utf-8"))
+    main = record["main_package"]
+    name = r"(?i)nanobot[-_.]ai(?:\[[a-z0-9_., -]+\])?"
+    spec = main["package_or_url"]
+    # An explicit wheel may replace an earlier wheel source, but not discard
+    # registry constraints, lock workflows or recorded installer options.
+    allowed = re.fullmatch(name, spec) or (sys.argv[2] and re.fullmatch(name + r"\s*@\s*\S+\.whl", spec))
+    if record["pipx_metadata_version"] not in {"0.5", "0.12"} or not allowed or main.get("pip_args") or main.get("lock_file"):
+        raise ValueError
+except (OSError, ValueError, KeyError, TypeError):
+    raise SystemExit("Cannot safely reuse pipx installation settings; inspect the original requirement and options.") from None
+PY
     if [ -n "$expected_version" ]; then
       pipx install --skip-maintenance --upgrade "$install_target" || fail "pipx could not upgrade nanobot. Resolve the error above and retry; no other installation was attempted."
     else
@@ -556,7 +579,7 @@ if [ "$dry_run" = "1" ]; then
     info "Dry run: would install with uv tool install, or use uv tool upgrade for an existing installation."
     info "Dry run: would start nanobot from its persistent uv tool environment."
   elif [ "$install_method" = "pipx" ]; then
-    info "Dry run: would install with pipx install, or use pipx upgrade for an existing installation."
+    info "Dry run: would review pipx installation settings before upgrading an existing environment."
     info "Dry run: would start nanobot from its persistent pipx environment."
   else
     venv_dir="${NANOBOT_VENV:-$HOME/.nanobot/venv}"

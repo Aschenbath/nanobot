@@ -75,6 +75,16 @@ def test_older_pipx_receipt_keeps_extras_and_pin_without_metadata_migration(tmp_
     assert "pinned" in policy.restriction("0.3.5")
 
 
+@pytest.mark.parametrize("main", [
+    {"package_or_url": "nanobot-ai>=0.3.4,<0.4"},
+    {"package_or_url": "nanobot-ai", "pip_args": ["--index-url", "https://user:fixture-secret@example.invalid/simple"]},
+])
+def test_pipx_generic_upgrade_cannot_discard_original_install_policy(tmp_path, main):
+    policy = read(tmp_path, "pipx", pipx_record(**main))
+    assert "generic pipx upgrade" in policy.restriction("0.3.5")
+    assert "fixture-secret" not in policy.model_dump_json()
+
+
 def test_changed_receipt_is_rejected_between_probe_and_read(tmp_path):
     path = tmp_path / "pipx_metadata.json"
     raw = json.dumps(pipx_record()).encode()

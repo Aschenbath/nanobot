@@ -40,6 +40,7 @@ class ManagerPolicy(ReleaseRecord):
     pinned: bool = False
     locked: bool = False
     injected_packages: list[str] = Field(default_factory=list, max_length=500)
+    custom_pip_args: bool = False
 
     @field_validator("version_constraint")
     @classmethod
@@ -62,6 +63,8 @@ class ManagerPolicy(ReleaseRecord):
             return "The package is pinned by its installation owner. Review that pin before updating."
         if self.locked:
             return "The environment uses an owner-managed lock file. Update through that lock workflow."
+        if self.manager == "pipx" and (self.version_constraint or self.custom_pip_args):
+            return "This pipx installation has constraints or installer options. Review them with its owner; a generic pipx upgrade can discard those settings."
         if self.manager == "uv" and self.source == "artifact":
             return "This uv tool is bound to a wheel URL. Change its source through the installation owner's workflow."
         if self.source in {"source", "unrecognized"} or self.extras is None:
@@ -156,6 +159,7 @@ def read_manager_policy(environment: Path, manager: Literal["uv", "pipx"], expec
             if requested is not None else None,
             version_constraint=str(requested.specifier) if requested is not None else "",
             pinned=pipx.main_package.pinned, locked=pipx.main_package.lock_file is not None,
+            custom_pip_args=bool(pipx.main_package.pip_args),
             injected_packages=sorted({canonicalize_name(name, validate=True) for name in pipx.injected_packages}),
         )
     except (OSError, ValueError, TypeError):

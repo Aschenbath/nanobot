@@ -266,18 +266,11 @@ def ready(root: Path, version: str):
     raise RuntimeError("The actual installed gateway did not become ready")
 
 
-def prepare(root: Path) -> None:
-    from packaging.version import Version
-
+def seed(root: Path) -> None:
     import nanobot
     from nanobot.config.loader import load_config, save_config, set_config_path
     from nanobot.config.paths import get_webui_dir
-    from nanobot.installation_lock import installation_state_dir
-    from nanobot.release_feed import ReleaseFeed
-    from nanobot.update_jobs import prepare_job, start_handoff
-    from nanobot.update_plan import UpdatePlans, inspect_installation
 
-    case = read(root / "case.json")
     assert Path(nanobot.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
     config_path = root / "account/.nanobot/config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,8 +315,28 @@ def prepare(root: Path) -> None:
         (webui_dir / f"websocket_{chat_id}.jsonl").write_text(
             "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events), encoding="utf-8")
     gateway(root, "--background")
+
+
+def snapshot(root: Path) -> None:
+    from nanobot.config.loader import set_config_path
+    from nanobot.config.paths import get_webui_dir
+
+    case = read(root / "case.json")
+    config_path = root / "account/.nanobot/config.json"
+    set_config_path(config_path)
+    if importlib.util.find_spec("nanobot.session.location") is not None:
+        from nanobot.session.location import SessionLocation
+        location = SessionLocation(root / "workspace")
+    else:
+        from nanobot.session.manager import JsonlSessionStore
+        location = JsonlSessionStore(root / "workspace")
+    sessions, webui_dir = location.sessions_dir, get_webui_dir()
+    key = "websocket:legacy-acceptance"
+    legacy = sessions / (location.storage_key(key) + ".jsonl")
+    canonical_only = sessions / (location.storage_key("websocket:canonical-only") + ".jsonl")
     receipt = ready(root, case["baseline_version"])
-    chat_id = asyncio.run(chat(root))
+    chat_id = (read(root / "before.json")["chat_id"] if (root / "before.json").exists()
+               else asyncio.run(chat(root)))
     before = history(root, "websocket:" + chat_id)
     legacy_before = history(root, key)
     display_before = history(root, "websocket:display-only")
@@ -342,12 +355,29 @@ def prepare(root: Path) -> None:
                                 "canonical": (canonical_records(sessions / "sessions.sqlite3")
                                               if (sessions / "sessions.sqlite3").exists() else None)})
 
+
+def prepare(root: Path) -> None:
+    from packaging.version import Version
+
+    from nanobot.installation_lock import installation_state_dir
+    from nanobot.release_feed import ReleaseFeed
+    from nanobot.update_channel import UpdateChannelRequest, read_update_channel
+    from nanobot.update_jobs import prepare_job, start_handoff
+    from nanobot.update_plan import preview_release_update
+    from nanobot.update_service import UpdateJobService
+
+    if not (root / "before.json").exists():
+        seed(root)
+    snapshot(root)
+    case = read(root / "case.json")
+
     async def plan_update():
         state = installation_state_dir()
+        channel = "preview" if Version(case["target_version"]).is_prerelease else "stable"
+        UpdateJobService().change_channel(UpdateChannelRequest(channel=channel, revision=read_update_channel().revision))
+        plan = await preview_release_update(restart_running=True)
+        assert plan.stop_profiles and plan.restart_profiles
         async with ReleaseFeed(state / "feed") as feed:
-            plan = await UpdatePlans(state / "plans").prepare(inspect_installation(),
-                "preview" if Version(case["target_version"]).is_prerelease else "stable", feed, restart_running=True)
-            assert plan.stop_profiles and plan.restart_profiles
             return await prepare_job(plan, feed)
     directory = asyncio.run(plan_update())
     # Capture the production launch, then let the outer, stdlib-only controller
@@ -378,6 +408,25 @@ def verify(root: Path) -> dict:
     if not restored:
         assert COMMIT == case["commit"]
         assert digest(Path(case["target_wheel"])) == case["target_sha256"]
+    sqlite_expected = verify_data(root, expected)
+    if case["scenario"] in {"worker-exit", "metadata-loss"}:
+        assert (directory / "fault-fired").exists()
+    if case["scenario"] == "restore-interruption":
+        assert (directory / "restore-fault-fired").exists()
+    return {**case, "phase": status.phase.value, "running_version": receipt.version,
+            "restarted": True, "config_and_legacy_bytes_preserved": True,
+            "authenticated_history_preserved": True, "sqlite_records_preserved": True if sqlite_expected else None,
+            "continued_write_and_second_start": True}
+
+
+def verify_data(root: Path, expected: str) -> bool:
+    """Public reads and subsequent writes, shared by inline and owner-driven updates."""
+    from nanobot.config.loader import set_config_path
+
+    set_config_path(root / "account/.nanobot/config.json")
+    before = read(root / "before.json")
+    receipt = ready(root, expected)
+    assert receipt.run_id != before["run_id"], "Update did not restart the gateway"
     assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
     key = "websocket:" + before["chat_id"]
     assert history(root, key) == before["history"]
@@ -385,7 +434,7 @@ def verify(root: Path) -> dict:
     assert history(root, "websocket:display-only") == before["display_only"]
     assert canonical_context(root) == before["canonical_only"], (canonical_context(root), before["canonical_only"])
     database = Path(before["database"])
-    sqlite_expected = not restored or before["canonical"] is not None
+    sqlite_expected = importlib.util.find_spec("nanobot.session.location") is not None
     canonical = canonical_records(database) if sqlite_expected else None
     if before["canonical"] is not None:
         assert canonical == before["canonical"]
@@ -411,14 +460,7 @@ def verify(root: Path) -> dict:
     if sqlite_expected:
         assert canonical_records(database) == canonical
     assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
-    if case["scenario"] in {"worker-exit", "metadata-loss"}:
-        assert (directory / "fault-fired").exists()
-    if case["scenario"] == "restore-interruption":
-        assert (directory / "restore-fault-fired").exists()
-    return {**case, "phase": status.phase.value, "running_version": receipt.version,
-            "restarted": True, "config_and_legacy_bytes_preserved": True,
-            "authenticated_history_preserved": True, "sqlite_records_preserved": True if sqlite_expected else None,
-            "continued_write_and_second_start": True}
+    return sqlite_expected
 
 
 def run(args) -> dict:

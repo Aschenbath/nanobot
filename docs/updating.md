@@ -85,8 +85,11 @@ deployment host. It does not execute commands or grant installation permission.
 The guide walks through stopping affected gateways and backing up their data,
 updating through the original owner, then restarting with the same profile. Copyable
 commands bind the manager root or exact Python environment; pipx environment suffixes
-are retained. Registry-manager upgrades preserve their recorded constraints and may
-choose a different permitted stable version from the notice. No generic upgrade is
+are retained. uv upgrades preserve their recorded constraints and may choose a
+different permitted stable version from the notice. A generic `pipx upgrade` can
+discard the original version constraint and pip options (including index settings).
+The guide only offers it for unconstrained registry installs without recorded pip
+options; other pipx installs require review of their original settings. No generic upgrade is
 offered for a GitHub-only Preview, fixed source, pin/lock, unknown extras or an
 unconfirmed manager layout. Instead the guide explains what to inspect and preserve.
 Source and container deployments get their own steps, never a guessed branch, image,
@@ -103,7 +106,7 @@ the automatic backup/recovery guarantees of the official managed updater.
 | --- | --- | --- |
 | Fresh official installer | WebUI **Update & restart**, for a compatible prebuilt release | Detached nanobot worker; standalone recovery below |
 | Existing uv registry tool | Inline only for the verified uv/platform combination above; otherwise `uv tool upgrade nanobot-ai` | Same uv environment and its original gateway launcher |
-| pipx | `pipx upgrade nanobot-ai`; retain pins, suffixes and injected packages | pipx and the original launcher |
+| pipx | `pipx upgrade` for an unconstrained registry install without recorded pip options; otherwise inspect and preserve the original policy first. Retain suffixes and injected packages. | pipx and the original launcher |
 | Ordinary pip venv | Stop its gateways, back up data, then run that venv's Python with `-m pip install --upgrade 'nanobot-ai[<your existing extras>]'` (omit brackets for the base package) | That exact venv; the UI does not infer optional extras |
 | Source checkout | Review/pull the selected ref, update its environment and build WebUI/TUI using the contribution instructions | Checkout owner; preserve local changes |
 | Docker / Compose | Pull/build the chosen image and recreate the service, retaining the existing data volumes | Container/deployment owner; never pip-install into the running container |

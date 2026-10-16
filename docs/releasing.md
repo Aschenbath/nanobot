@@ -264,6 +264,16 @@ applicable, not reported as a SQLite pass. Versions without this updater use the
 original install owner's bootstrap upgrade, not an invented in-app upgrade.
 Record that acceptance separately.
 
+For installation-owner acceptance, run consecutive updates in the same disposable
+account and keep its existing conversations. Exercise the applicable official
+installer, uv tool, pipx, ordinary pip venv and source routes, not a different manager
+that happens to succeed. Check recorded constraints/options before and after, use
+the guidance's actual command where offered, verify the restarted gateway, append a
+message and repeat an ordinary start. A policy refusal must leave the original
+installation unchanged; an owner-reviewed custom update is separate evidence, not
+an automatic-recovery claim. Container replacement must retain its data volumes and
+needs a real container engine; a mocked container marker is not that acceptance.
+
 Keep the private evidence directory until the reports are reviewed. It can contain
 retained program generations and disposable backup data; it is not a release upload
 set. Native execution on Linux x64, Windows x64 and macOS arm64 does not establish
@@ -281,8 +291,12 @@ not `pipx run`, a disposable tool execution or whichever `nanobot` is on PATH. A
 existing recognized uv/pipx/installer-managed environment takes priority over a newly
 available manager. Multiple recognized installations require an explicit manual
 choice. An active ordinary venv remains an explicit target; an activated uv/pipx
-environment must be updated through its manager instead of pip. Existing manager
-constraints remain in force, so a pinned installation can stay at its pinned version.
+environment must be updated through its manager instead of pip. uv keeps its existing
+constraints, so a pinned installation can stay at its pinned version. Generic pipx
+upgrades can drop version constraints and pip options. The installer refuses pipx
+records with those settings, a lock workflow or an unconfirmed source; the owner must
+review and preserve them. An explicit wheel handoff may replace a previous wheel
+source, but does not override registry constraints or custom pip options.
 
 A failed selected manager no longer falls through to another installation, including
 on first install. Fix the reported error and retry, or deliberately choose the manual

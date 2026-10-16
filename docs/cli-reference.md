@@ -64,11 +64,14 @@ nanobot update --dev         # Update source, prepare TUI dependencies, and buil
 `--update-dev` is an alias for `--dev`. In-place updates support virtual environments
 not owned by a tool manager. They leave already-satisfying dependencies installed.
 Missing pip is handled through the existing uv/ensurepip fallback.
-For uv tool or pipx installations, use `uv tool upgrade nanobot-ai` or
-`pipx upgrade nanobot-ai` in the gateway's account. These managers preserve the
-installation's constraints and extra packages. A pinned uv tool version requires an
-explicit `uv tool install` with the new version constraint; do not overwrite its
-environment with pip. System Python installations use their original installer.
+For uv tool installations, use `uv tool upgrade nanobot-ai` in the gateway's account;
+uv preserves the recorded constraints and extra packages. For pipx, inspect the
+original requirement and installer options first: a generic `pipx upgrade nanobot-ai`
+can discard version constraints and pip options. Use it only for an unconstrained
+registry install without recorded pip options; otherwise follow the owner's original
+workflow. Do not overwrite a manager-owned environment with pip. A pinned uv tool
+version requires an explicit `uv tool install` with the new version constraint.
+System Python installations use their original installer.
 
 Back up configuration, workspace files, and chat history before updating. The updater
 does not replace this data, but a new runtime may migrate it. Stop active tasks and

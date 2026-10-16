@@ -197,6 +197,31 @@ def test_rerunning_installer_preserves_uv_version_constraint(sandbox):
     assert "==0.0.1" in receipt.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("exact", [False, True], ids=["registry", "exact-wheel"])
+@pytest.mark.parametrize("custom", ["constraint", "pip-options"])
+def test_installer_never_discards_pipx_install_policy(sandbox, exact, custom):
+    pipx = _expose(sandbox, "pipx")
+    _wheel(sandbox["wheels"], "0.0.1")
+    requirement = "nanobot-ai>=0.0.1,<0.1" if custom == "constraint" else "nanobot-ai"
+    options = ["--pip-args=--no-deps"] if custom == "pip-options" else []
+    _run([pipx, "install", "--python", BASE_PYTHON, *options, requirement], sandbox)
+    prefix = sandbox["root"] / "pipx/venvs/nanobot-ai"
+    receipt = prefix / "pipx_metadata.json"
+    original = receipt.read_bytes()
+    if exact:
+        _, artifact = _preview_manifest(sandbox)
+        arguments = _wheel_arguments(sandbox, artifact)
+    else:
+        _wheel(sandbox["wheels"], "0.0.2")
+        arguments = []
+    result = _installer(sandbox, *arguments, check=False)
+    assert result.returncode != 0
+    assert "pipx installation settings" in result.stdout + result.stderr
+    assert receipt.read_bytes() == original
+    assert _verify_owner(sandbox, "pipx", prefix)["version"] == "0.0.1"
+    assert not (sandbox["root"] / "managed").exists()
+
+
 def test_fresh_default_records_dedicated_environment_even_with_uv_available(sandbox):
     _expose(sandbox, "uv")
     _wheel(sandbox["wheels"], "0.0.1", installer_receipt=True)

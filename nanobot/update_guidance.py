@@ -56,8 +56,8 @@ def update_guide(installation: InstallationSnapshot, target_version: str, *,
                  extras: list[str] | None, current: bool = True) -> UpdateGuide:
     """Only offer commands whose owner and environment have been identified.
 
-    A registry upgrade intentionally retains the manager's recorded constraints,
-    extras and index settings. It does not promise installation of our feed's
+    uv retains recorded constraints and settings. Generic pipx upgrades are only
+    offered without recorded constraints or pip options. Neither promises our feed's
     exact target; the UI explains this and requires checking the running version.
     """
     method = installation_method(installation)

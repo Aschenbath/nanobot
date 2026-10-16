@@ -45,6 +45,14 @@ def test_restricted_manager_has_inspection_but_no_update(tmp_path, monkeypatch, 
     assert guide.reason == "policy" and guide.inspect_command and guide.update_command is None
 
 
+@pytest.mark.parametrize("policy", [{"version_constraint": ">=0.3.4,<0.4"}, {"custom_pip_args": True}])
+def test_pipx_in_range_target_still_requires_preserving_owner_options(tmp_path, monkeypatch, policy):
+    monkeypatch.setattr(update_guidance.shutil, "which", lambda name: name)
+    guide = update_guide(installation(tmp_path, "pipx", **policy), "0.3.7", extras=[])
+    assert guide.reason == "policy" and guide.update_command is None
+    assert guide.inspect_command and guide.verify_command
+
+
 @pytest.mark.parametrize("owner", ["uv", "pipx"])
 def test_preview_fixed_source_and_missing_manager_never_guess_upgrade(tmp_path, monkeypatch, owner):
     monkeypatch.setattr(update_guidance.shutil, "which", lambda name: name)

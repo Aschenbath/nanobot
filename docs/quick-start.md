@@ -256,9 +256,14 @@ curl -fsSL https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.
 
 # Or one of these
 uv tool upgrade nanobot-ai
+# Only for an unconstrained registry install without recorded pip options:
 pipx upgrade nanobot-ai
 python -m pip install -U nanobot-ai
 ```
+
+For a customized pipx installation, review its original requirement and options before
+updating. A generic upgrade can discard them; the installer refuses to do so. See the
+[installation-specific update guide](./updating.md#installation-owners).
 
 For a source checkout:
 

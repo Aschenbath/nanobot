@@ -97,7 +97,7 @@ def update_blocked_reason(*, dev: bool = False) -> str:
     if (prefix / "uv-receipt.toml").exists():
         return "Use `uv tool upgrade nanobot-ai` in the gateway's account to preserve its uv tool settings."
     if (prefix / "pipx_metadata.json").exists():
-        return "Use `pipx upgrade nanobot-ai` in the gateway's account to preserve its pipx settings."
+        return "Update through pipx in the gateway's account. Review its original constraints and installer options before upgrading; a generic pipx upgrade can discard them."
     if sys.prefix == sys.base_prefix:
         return "Use the installer or package manager that owns this Python installation. In-app updates require a virtual environment."
     if not dev and source_checkout() is not None:
