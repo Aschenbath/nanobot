@@ -1,7 +1,7 @@
 """A replacement installer program retains its own installation and store leases."""
 
 import os
-import select
+import selectors
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +28,9 @@ with installation_access(updating=True, environment=sys.argv[2]) as installation
 
 
 def ready(process):
-    assert select.select([process.stdout], [], [], 10)[0], "Installer did not become ready"
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        assert selector.select(timeout=10), "Installer did not become ready"
     assert process.stdout.readline().strip() == str(process.pid)
 
 
@@ -69,7 +71,14 @@ def test_exec_retains_both_leases_until_installer_exits(tmp_path, monkeypatch, c
         pass  # Actual installer exit, including a crash, releases all OS leases.
 
 
-def test_failed_exec_does_not_leak_leases_to_later_children(tmp_path, monkeypatch):
+@pytest.mark.parametrize("high_stdout_fd", [False, True])
+def test_failed_exec_does_not_leak_leases_to_later_children(tmp_path, monkeypatch, high_stdout_fd):
+    if high_stdout_fd:
+        import fcntl
+        import resource
+
+        if resource.getrlimit(resource.RLIMIT_NOFILE)[0] <= 1024:
+            pytest.skip("Process limit cannot reproduce a stdout FD outside select()'s range")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     environment, store = tmp_path / "installation", tmp_path / "sessions"
     process = None
@@ -85,6 +94,11 @@ def test_failed_exec_does_not_leak_leases_to_later_children(tmp_path, monkeypatc
                 [sys.executable, "-I", "-c", _PROGRAM], close_fds=False,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
+            if high_stdout_fd:
+                # Full-suite CI can allocate pipes above select()'s FD_SETSIZE.
+                descriptor = fcntl.fcntl(process.stdout.fileno(), fcntl.F_DUPFD_CLOEXEC, 1024)
+                process.stdout.close()
+                process.stdout = os.fdopen(descriptor)
             ready(process)
         assert process.poll() is None
         with installation_access(updating=True, environment=environment), data_access([store], updating=True):
