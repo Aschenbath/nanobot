@@ -257,8 +257,12 @@ transaction but do not prove compatibility with historical release code. For a
 release handoff, also pass `--baseline-wheel <previously-accepted-wheel>` and repeat
 with the supported stable baseline and an older Preview, including a skipped
 Preview. The baseline's feed transport is instrumented; the healthy target remains
-unchanged. Versions without this updater use the original install owner's bootstrap
-upgrade, not an invented in-app upgrade. Record that acceptance separately.
+unchanged. A retained pre-SQLite updater package also exercises JSONL-to-SQLite
+migration: check canonical message bodies as well as the separate display history.
+When a fault restores that historical JSONL runtime, SQLite checks are marked not
+applicable, not reported as a SQLite pass. Versions without this updater use the
+original install owner's bootstrap upgrade, not an invented in-app upgrade.
+Record that acceptance separately.
 
 Keep the private evidence directory until the reports are reviewed. It can contain
 retained program generations and disposable backup data; it is not a release upload
