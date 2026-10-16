@@ -1614,6 +1614,31 @@ async def test_service_restore_refuses_an_activated_candidate(installation, tmp_
     assert not (directory / "restoration.json").exists()
 
 
+async def test_supervisor_finishes_refused_stop_without_waiting_for_live_gateway(installation, tmp_path, monkeypatch):
+    from nanobot import update_fallback
+
+    plan, _, _, _, transport = installation
+    async with ReleaseFeed(tmp_path / "feed", transport=transport) as feed:
+        directory = await prepare_job(plan, feed)
+    spec = replace(WorkerSpec.read(directory), automatic_recovery=True,
+                   restart_profiles=(plan.profiles[0].receipt.id,))
+    monkeypatch.setattr(WorkerSpec, "read", classmethod(lambda cls, directory: spec))
+    def refused(command, **kwargs):
+        JobStatus(spec.plan_id, Phase.HANDOFF_FAILED, 0, False, "Gateway is busy", int(time.time())).save(directory)
+        write_record(installation_state_dir(spec.baseline.environment) / "stop.json",
+                     {"plan_id": spec.plan_id, "phase": "abort"})
+        return subprocess.CompletedProcess(command, 1)
+    monkeypatch.setattr(update_fallback.subprocess, "run", refused)
+    def must_not_recover(*args, **kwargs):
+        raise AssertionError("A refused stop must not wait for or restore the still-running gateway")
+    monkeypatch.setattr(update_fallback, "restore_service", must_not_recover)
+    with installation_access(environment=spec.baseline.environment):
+        monkeypatch.setattr(update_fallback.time, "sleep", must_not_recover)
+        update_fallback.supervise(directory, ["--handoff", str(directory)])
+    assert JobStatus.read(directory).phase == Phase.HANDOFF_FAILED
+    assert not (directory / "approval.json").exists()
+
+
 @pytest.mark.parametrize("installation", ["restart"], indirect=True)
 async def test_service_restore_completes_reservation_after_interrupted_journal(installation, tmp_path, monkeypatch):
     from nanobot import update_worker

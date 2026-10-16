@@ -1,0 +1,536 @@
+"""Run native packaged upgrade/recovery journeys in a disposable account.
+
+The healthy target is the exact supplied wheel, not a patched application. The
+default baseline is explicitly a version-only fixture with a local feed transport
+and bounded fault injection. It does not stand for an older published release.
+Use --baseline-wheel to exercise an actual earlier updater-enabled package too.
+No public feed, user installation, model, credentials or OS service is used.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import csv
+import hashlib
+import io
+import json
+import os
+import platform
+import secrets
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import quote
+from zipfile import ZIP_DEFLATED, ZipFile
+
+SCENARIOS = ("upgrade", "skipped-preview", "import-failure", "restart-failure",
+             "backup-failure", "worker-exit", "metadata-loss", "restore-interruption")
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def read(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write(path: Path, value) -> None:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def replace_once(source: bytes, old: bytes, new: bytes) -> bytes:
+    if source.count(old) != 1:
+        raise ValueError("The fault-injection seam changed; review the acceptance fixture")
+    return source.replace(old, new, 1)
+
+
+def fixture_wheel(source: Path, output: Path, version: str, *, feed: Path | None = None,
+                  scenario: str = "upgrade") -> Path:
+    """Private instrumentation only; never overwrite or relabel the supplied target."""
+    from packaging.utils import parse_wheel_filename
+
+    _, previous, _, _ = parse_wheel_filename(source.name)
+    prefix, replacement = f"nanobot_ai-{previous}.dist-info/", f"nanobot_ai-{version}.dist-info/"
+    with ZipFile(source) as archive:
+        entries = [(item, archive.read(item)) for item in archive.infolist() if not item.filename.endswith("/RECORD")]
+    files = {item.filename.replace(prefix, replacement): data for item, data in entries}
+    metadata = replacement + "METADATA"
+    files[metadata] = replace_once(files[metadata], f"Version: {previous}\n".encode(), f"Version: {version}\n".encode())
+    if feed is not None:
+        # This existing injectable transport runs in both planner and preflight
+        # processes. It cannot reach external hosts or bypass artifact checks.
+        files["nanobot/_acceptance_feed.py"] = f'''import json
+from pathlib import Path
+import httpx
+def transport():
+    def respond(request):
+        record = json.loads(Path({str(feed)!r}).read_text(encoding="utf-8"))
+        if request.method != "GET" or str(request.url) not in record:
+            raise ValueError("Unexpected acceptance feed request: " + str(request.url))
+        item = record[str(request.url)]
+        return httpx.Response(200, content=Path(item["file"]).read_bytes() if "file" in item else json.dumps(item["json"]).encode())
+    return httpx.MockTransport(respond)
+'''.encode()
+        files["nanobot/release_feed.py"] = replace_once(
+            files["nanobot/release_feed.py"], b"transport=transport or PinnedDNSAsyncTransport(),",
+            b'transport=transport or __import__("nanobot._acceptance_feed", fromlist=["transport"]).transport(),')
+        worker = files["nanobot/update_worker.py"]
+        if scenario == "worker-exit":
+            needle = b'            env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}\n'
+            worker = replace_once(worker, needle, b'''            if not (directory / 'fault-fired').exists():
+                (directory / 'fault-fired').write_text('worker exit')
+                os._exit(91)
+''' + needle)
+        elif scenario == "metadata-loss":
+            needle = b"\n            _verify(spec, directory)\n"
+            worker = replace_once(worker, needle, b'''
+            if not (directory / 'fault-fired').exists():
+                (directory / 'fault-fired').write_text('metadata loss')
+                next(Path(spec.baseline.environment).rglob('nanobot_ai-' + spec.version + '.dist-info/METADATA')).unlink()
+                os._exit(92)
+''' + needle)
+        elif scenario == "backup-failure":
+            needle = b"                ensure_backup(directory, spec.backup_sources,\n"
+            worker = replace_once(worker, needle, b"                raise OSError('Injected backup write failure')\n" + needle)
+        files["nanobot/update_worker.py"] = worker
+        if scenario == "restore-interruption":
+            needle = b"    os.rename(original, environment)\n"
+            files["nanobot/update_fallback.py"] = replace_once(files["nanobot/update_fallback.py"], needle, b'''    if not (directory / 'restore-fault-fired').exists():
+        (directory / 'restore-fault-fired').write_text('interrupted between renames')
+        raise OSError('Injected rename interruption')
+''' + needle)
+    elif scenario in {"import-failure", "restore-interruption"}:
+        files["nanobot/__init__.py"] = b"raise RuntimeError('Injected candidate import failure')\n"
+    elif scenario == "restart-failure":
+        files["nanobot/update_restart.py"] = b"raise RuntimeError('Injected candidate startup failure')\n"
+    record = replacement + "RECORD"
+    rows = io.StringIO()
+    writer = csv.writer(rows, lineterminator="\n")
+    for name, content in files.items():
+        writer.writerow((name, "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode(), len(content)))
+    writer.writerow((record, "", ""))
+    files[record] = rows.getvalue().encode()
+    output.mkdir(parents=True, exist_ok=True)
+    result = output / source.name.replace(f"-{previous}-", f"-{version}-", 1)
+    info = {item.filename.replace(prefix, replacement): item for item, _ in entries}
+    with ZipFile(result, "x", compression=ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            if name in info:
+                item = info[name]
+                item.filename = name  # Retain native executable permissions.
+                archive.writestr(item, content)
+            else:
+                archive.writestr(name, content)
+    return result
+
+
+def feed_records(wheel: Path, commit: str) -> dict:
+    from packaging.utils import parse_wheel_filename
+    from packaging.version import Version
+
+    from nanobot.release_feed import CATALOGUE_URL
+    from nanobot.releases import (
+        ReleaseArtifact,
+        ReleaseCatalogue,
+        ReleaseManifest,
+        ReleasePointer,
+        release_filenames,
+    )
+
+    version = str(parse_wheel_filename(wheel.name)[1])
+    artifacts = [ReleaseArtifact(filename=name, size=wheel.stat().st_size if name == wheel.name else 1,
+                                sha256=digest(wheel) if name == wheel.name else "a" * 64)
+                 for name in sorted(release_filenames(version))]
+    if not Version(version).is_prerelease:
+        base = "https://files.pythonhosted.org/packages/"
+        metadata = {"info": {"name": "nanobot-ai", "version": version, "requires_python": ">=3.11"},
+                    "urls": [{"filename": item.filename, "size": item.size, "url": base + item.filename,
+                              "digests": {"sha256": item.sha256}, "yanked": False}
+                             for item in artifacts if item.filename.endswith((".whl", ".tar.gz"))]}
+        return {base + wheel.name: {"file": str(wheel)},
+                "https://pypi.org/pypi/nanobot-ai/json": {"json": metadata},
+                f"https://pypi.org/pypi/nanobot-ai/{version}/json": {"json": metadata}}
+    manifest = ReleaseManifest(version=version, source_commit=commit, candidate_commit=commit,
+                               requires_python=">=3.11", artifacts=artifacts)
+    data = manifest.model_dump(mode="json")
+    pointer = ReleasePointer(version=version, candidate_commit=commit,
+                             manifest_sha256=hashlib.sha256(json.dumps(data).encode()).hexdigest())
+    catalogue = ReleaseCatalogue(generation=1, preview=pointer)
+    base = f"https://github.com/HKUDS/nanobot/releases/download/v{version}/"
+    return {CATALOGUE_URL: {"json": catalogue.model_dump(mode="json")},
+            base + "release-manifest.json": {"json": data}, base + wheel.name: {"file": str(wheel)}}
+
+
+def free_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def gateway(root: Path, *arguments: str) -> None:
+    subprocess.run([sys.executable, "-I", "-m", "nanobot", "gateway", *arguments,
+                    "--config", str(root / "account/.nanobot/config.json")], check=True, timeout=60)
+
+
+def request(root: Path, path: str):
+    import httpx
+
+    config = read(root / "account/.nanobot/config.json")
+    web = config["channels"]["websocket"]
+    base = f'http://127.0.0.1:{web["port"]}'
+    with httpx.Client(timeout=10, trust_env=False) as client:
+        bootstrap = client.get(base + "/webui/bootstrap", headers={"X-Nanobot-Auth": web["tokenIssueSecret"]})
+        bootstrap.raise_for_status()
+        if path == "/webui/bootstrap":
+            return bootstrap.json()
+        headers = ({"X-Nanobot-Auth": web["tokenIssueSecret"]} if path == "/webui/terminal"
+                   else {"Authorization": "Bearer " + bootstrap.json()["api_token"]})
+        response = client.get(base + path, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+def history(root: Path, key: str):
+    rows = request(root, "/api/sessions")["sessions"]
+    assert key in {row["key"] for row in rows}, rows
+    response = request(root, "/api/sessions/" + quote(key, safe="") + "/webui-thread")
+    # Revision/ETag and gateway identity must change after restart. Compare the
+    # persisted transcript, not that intentionally volatile response envelope.
+    return {name: response[name] for name in ("events", "completed_turn_ids")}
+
+
+def canonical_records(path: Path) -> dict:
+    """Compare logical records, not SQLite's transient WAL/checkpoint layout."""
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        return {table: [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
+                for table in ("sessions", "messages", "checkpoints", "pending_inputs")}
+
+
+def canonical_context(root: Path) -> dict:
+    context = request(root, "/api/sessions/websocket%3Acanonical-only/context")
+    # Tokenizer availability can alter estimates; stored message content is
+    # checked separately against every canonical SQLite record.
+    return {key: value for key, value in context.items() if not key.startswith("estimated_")}
+
+
+async def chat(root: Path, chat_id: str | None = None) -> str:
+    import websockets
+
+    bootstrap = request(root, "/webui/bootstrap")
+    async def receive(ws, event):
+        async with asyncio.timeout(30):
+            while True:
+                value = json.loads(await ws.recv())
+                if value.get("event") == event:
+                    return value
+    async with websockets.connect(bootstrap["ws_url"] + "?token=" + bootstrap["token"] + "&client_id=package-acceptance") as ws:
+        await receive(ws, "ready")
+        await ws.send(json.dumps({"type": "attach", "chat_id": chat_id} if chat_id else {"type": "new_chat"}))
+        attached = await receive(ws, "attached")
+        chat_id = attached["chat_id"]
+        await ws.send(json.dumps({"type": "message", "chat_id": chat_id, "content": "/model", "webui": True,
+                                  "turn_id": "acceptance-" + secrets.token_hex(8)}))
+        answer = await receive(ws, "message")
+        assert "acceptance-no-model" in answer["text"], answer
+        await receive(ws, "turn_end")
+    return chat_id
+
+
+def ready(root: Path, version: str):
+    from nanobot.gateway.runtime import GatewayRuntime
+    from nanobot.update_profiles import inspect_profiles
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        profiles = inspect_profiles(str(Path(sys.prefix).resolve()))
+        if len(profiles) == 1:
+            receipt = profiles[0].receipt
+            if GatewayRuntime().verify_ready(receipt.health_identity, maintenance=False):
+                assert receipt.version == version, (receipt.version, version)
+                assert request(root, "/webui/terminal")["webui"]["version"] == version
+                return receipt
+        time.sleep(0.2)
+    raise RuntimeError("The actual installed gateway did not become ready")
+
+
+def prepare(root: Path) -> None:
+    from packaging.version import Version
+
+    import nanobot
+    from nanobot.config.loader import load_config, save_config, set_config_path
+    from nanobot.config.paths import get_webui_dir
+    from nanobot.installation_lock import installation_state_dir
+    from nanobot.release_feed import ReleaseFeed
+    from nanobot.session.location import SessionLocation
+    from nanobot.update_jobs import prepare_job, start_handoff
+    from nanobot.update_plan import UpdatePlans, inspect_installation
+
+    case = read(root / "case.json")
+    assert Path(nanobot.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+    config_path = root / "account/.nanobot/config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    set_config_path(config_path)
+    config = load_config(config_path)
+    config.agents.defaults.workspace = str(root / "workspace")
+    config.agents.defaults.provider = "custom"
+    config.agents.defaults.model = "acceptance-no-model"
+    config.agents.defaults.dream.enabled = False
+    config.agents.defaults.session_ttl_minutes = 0
+    config.providers.custom.api_key = "fixture-not-a-secret"
+    config.providers.custom.api_base = "http://127.0.0.1:1/v1"
+    config.gateway.host, config.gateway.port = "127.0.0.1", free_port()
+    config.gateway.heartbeat.enabled = False
+    config.channels.websocket = {"enabled": True, "host": "127.0.0.1", "port": free_port(),
+                                 "tokenIssueSecret": secrets.token_urlsafe(32), "websocketRequiresToken": True}
+    save_config(config, config_path)
+    # Real historical canonical files are imported by the installed SQLite owner,
+    # not generated by a new-store round trip. Existing source bytes stay readable.
+    sessions = SessionLocation(root / "workspace").sessions_dir
+    key = "websocket:legacy-acceptance"
+    legacy = sessions / "websocket_legacy-acceptance.jsonl"
+    legacy.write_text(json.dumps({"_type": "metadata", "key": key, "metadata": {"title": "升级前的聊天"},
+                                 "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00"}) + "\n" +
+                      json.dumps({"role": "user", "content": "配置和聊天不能丢失"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    legacy_sha = digest(legacy)
+    canonical_only = sessions / "websocket_canonical-only.jsonl"
+    canonical_only.write_bytes(legacy.read_bytes().replace(key.encode(), b"websocket:canonical-only"))
+    webui_dir = get_webui_dir()
+    webui_dir.mkdir(parents=True, exist_ok=True)
+    for chat_id in ("legacy-acceptance", "display-only"):
+        events = [{"event": "user", "chat_id": chat_id, "text": "配置和聊天不能丢失"},
+                  {"event": "message", "chat_id": chat_id, "text": "独立验收数据"},
+                  {"event": "turn_end", "chat_id": chat_id}]
+        (webui_dir / f"websocket_{chat_id}.jsonl").write_text(
+            "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events), encoding="utf-8")
+    gateway(root, "--background")
+    receipt = ready(root, case["baseline_version"])
+    chat_id = asyncio.run(chat(root))
+    before = history(root, "websocket:" + chat_id)
+    legacy_before = history(root, key)
+    display_before = history(root, "websocket:display-only")
+    context_before = canonical_context(root)
+    assert context_before["total_messages"] == 1
+    assert "配置和聊天不能丢失" in json.dumps(legacy_before, ensure_ascii=False)
+    # Immutable files plus public logical records: SQLite/WAL checkpoint bytes
+    # may legitimately change across a clean shutdown without changing a record.
+    preserved = {str(path): digest(path) for path in (legacy, canonical_only,
+                 webui_dir / "websocket_legacy-acceptance.jsonl", webui_dir / "websocket_display-only.jsonl")}
+    assert legacy_sha in preserved.values()
+    preserved[str(config_path)] = digest(config_path)
+    write(root / "before.json", {"chat_id": chat_id, "history": before, "legacy": legacy_before,
+                                "display_only": display_before, "canonical_only": context_before,
+                                "files": preserved, "run_id": receipt.run_id,
+                                "database": str(sessions / "sessions.sqlite3"),
+                                "canonical": (canonical_records(sessions / "sessions.sqlite3")
+                                              if (sessions / "sessions.sqlite3").exists() else None)})
+
+    async def plan_update():
+        state = installation_state_dir()
+        async with ReleaseFeed(state / "feed") as feed:
+            plan = await UpdatePlans(state / "plans").prepare(inspect_installation(),
+                "preview" if Version(case["target_version"]).is_prerelease else "stable", feed, restart_running=True)
+            assert plan.stop_profiles and plan.restart_profiles
+            return await prepare_job(plan, feed)
+    directory = asyncio.run(plan_update())
+    # Capture the production launch, then let the outer, stdlib-only controller
+    # execute it after this process exits. Otherwise Windows DLL locks from the
+    # *test controller* prevent restoring the live venv directory.
+    with patch("nanobot.update_jobs.subprocess.Popen") as spawn:
+        start_handoff(directory, once=True)
+        command = spawn.call_args.args[0]
+    write(root / "launch.json", {"command": command, "directory": str(directory)})
+
+
+def verify(root: Path) -> dict:
+    import nanobot
+    from nanobot.build_info import COMMIT
+    from nanobot.config.loader import set_config_path
+    from nanobot.update_worker import JobStatus, Phase
+
+    set_config_path(root / "account/.nanobot/config.json")
+    case, before, launch = read(root / "case.json"), read(root / "before.json"), read(root / "launch.json")
+    directory = Path(launch["directory"])
+    restored = case["scenario"] not in {"upgrade", "skipped-preview", "worker-exit"}
+    status = JobStatus.read(directory)
+    assert status.phase == (Phase.RESTORED if restored else Phase.SUCCEEDED), status
+    expected = case["baseline_version"] if restored else case["target_version"]
+    receipt = ready(root, expected)
+    assert receipt.run_id != before["run_id"], "Update did not restart the gateway"
+    assert nanobot.__version__ == expected
+    if not restored:
+        assert COMMIT == case["commit"]
+        assert digest(Path(case["target_wheel"])) == case["target_sha256"]
+    assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
+    key = "websocket:" + before["chat_id"]
+    assert history(root, key) == before["history"]
+    assert history(root, "websocket:legacy-acceptance") == before["legacy"]
+    assert history(root, "websocket:display-only") == before["display_only"]
+    assert canonical_context(root) == before["canonical_only"], (canonical_context(root), before["canonical_only"])
+    canonical = canonical_records(Path(before["database"]))
+    if before["canonical"] is not None:
+        assert canonical == before["canonical"]
+    asyncio.run(chat(root, before["chat_id"]))
+    continued = history(root, key)
+    canonical = canonical_records(Path(before["database"]))
+    assert len(continued["events"]) > len(before["history"]["events"])
+    gateway(root, "stop")
+    gateway(root, "--background")
+    ready(root, expected)
+    assert history(root, key) == continued
+    assert history(root, "websocket:legacy-acceptance") == before["legacy"]
+    assert history(root, "websocket:display-only") == before["display_only"]
+    assert canonical_context(root) == before["canonical_only"]
+    assert canonical_records(Path(before["database"])) == canonical
+    assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
+    if case["scenario"] in {"worker-exit", "metadata-loss"}:
+        assert (directory / "fault-fired").exists()
+    if case["scenario"] == "restore-interruption":
+        assert (directory / "restore-fault-fired").exists()
+    return {**case, "phase": status.phase.value, "running_version": receipt.version,
+            "restarted": True, "config_and_legacy_bytes_preserved": True,
+            "authenticated_history_preserved": True, "sqlite_records_preserved": True,
+            "continued_write_and_second_start": True}
+
+
+def run(args) -> dict:
+    from packaging.utils import parse_wheel_filename
+    from packaging.version import Version
+
+    # The build environment supplies dependencies for metadata construction only.
+    # All product imports and execution happen in the separately installed wheel.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.build_tui_wheels import wheel_files
+    from scripts.verify_installed_release import _wait_for_closed_listeners, host_environment
+
+    target = args.wheel.resolve(strict=True)
+    version = str(parse_wheel_filename(target.name)[1])
+    tags = parse_wheel_filename(target.name)[3]
+    if len(tags) != 1 or any(tag.platform == "any" for tag in tags):
+        raise ValueError("Acceptance requires the final native wheel, not an intermediate universal wheel")
+    files, _, _ = wheel_files(target, version, platform=next(iter(tags)).platform)
+    if files["nanobot/_build_commit.txt"].decode().strip() != args.commit:
+        raise ValueError("Target wheel does not contain the requested candidate commit")
+    original_hash = digest(target)
+    root = args.output.resolve()
+    root.mkdir(mode=0o700)  # Exclusive evidence root. Never use a user's installation.
+    environment = root / "managed"
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    base = Version(version).release
+    baseline_version = ".".join(map(str, (*base[:-1], max(0, base[-1] - 1))))
+    if Version(baseline_version) >= Version(version):
+        raise ValueError("Select a baseline wheel for this candidate version")
+    baseline_source = args.baseline_wheel.resolve(strict=True) if args.baseline_wheel else target
+    if args.baseline_wheel:
+        baseline_version = str(parse_wheel_filename(baseline_source.name)[1])
+        if Version(baseline_version) >= Version(version):
+            raise ValueError("Baseline must precede the target")
+    results = []
+    system = host_environment(dict(os.environ))
+    system.update(HOME=str(root), USERPROFILE=str(root), APPDATA=str(root / "config"),
+                  LOCALAPPDATA=str(root / "data"), XDG_CONFIG_HOME=str(root / "config"),
+                  XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
+                  TMPDIR=str(root), TMP=str(root), TEMP=str(root),
+                  PIP_CONFIG_FILE=os.devnull, PIP_NO_INPUT="1", PIP_DISABLE_PIP_VERSION_CHECK="1", PYTHONUTF8="1",
+                  NANOBOT_TUI_NO_DOWNLOAD="1", NO_COLOR="1", PATH=os.defpath)
+    if os.name == "nt":
+        system["PATH"] = str(Path(system["SYSTEMROOT"]) / "System32")
+    # Install once, without inherited user pip settings; every case resets only
+    # nanobot in this private environment. Dependencies stay pinned by its snapshot.
+    subprocess.run([sys.executable, "-I", "-m", "venv", str(environment)], check=True, env=system, timeout=90)
+    subprocess.run([str(python), "-I", "-m", "pip", "install", "--only-binary=:all:", str(target)],
+                   check=True, env=system, timeout=600, stdout=subprocess.DEVNULL)
+    write(environment / "nanobot-install.json", {"schema_version": 1, "owner": "nanobot-installer",
+                                               "environment": str(environment), "extras": []})
+    for scenario in args.scenario or SCENARIOS:
+        case_root = root / scenario
+        case_root.mkdir()
+        account = case_root / "account"
+        account.mkdir()
+        env = dict(system, HOME=str(account), USERPROFILE=str(account), APPDATA=str(account / "config"),
+                   LOCALAPPDATA=str(account / "data"), XDG_CONFIG_HOME=str(account / "config"),
+                   XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(account / "data"),
+                   TMPDIR=str(case_root), TMP=str(case_root), TEMP=str(case_root))
+        selected = target
+        if scenario in {"import-failure", "restart-failure", "restore-interruption"}:
+            selected = fixture_wheel(target, case_root / "fault-target", version, scenario=scenario)
+        feed = case_root / "feed.json"
+        write(feed, feed_records(selected, args.commit))
+        earlier = baseline_version
+        if scenario == "skipped-preview" and not args.baseline_wheel:
+            earlier = Version(version).base_version + ".dev0"
+            if Version(earlier) >= Version(version):
+                raise ValueError("Skipped Preview requires a target newer than dev0")
+        baseline = fixture_wheel(baseline_source, case_root / "baseline", earlier, feed=feed, scenario=scenario)
+        case = {"scenario": scenario, "baseline_version": earlier, "target_version": version,
+                "baseline_kind": "instrumented historical wheel" if args.baseline_wheel else "instrumented version fixture",
+                "baseline_source_sha256": digest(baseline_source), "baseline_fixture_sha256": digest(baseline),
+                "target_wheel": str(selected), "target_sha256": digest(selected), "commit": args.commit,
+                "target_unmodified": selected == target}
+        write(case_root / "case.json", case)
+        subprocess.run([str(python), "-I", "-m", "pip", "install", "--no-deps", "--force-reinstall", str(baseline)],
+                       check=True, env=env, timeout=120, stdout=subprocess.DEVNULL)
+        child = [str(python), "-I", str(Path(__file__).resolve())]
+        with (case_root / "acceptance.log").open("w", encoding="utf-8") as log:
+            try:
+                subprocess.run([*child, "--phase", "prepare", "--output", str(case_root)],
+                               check=True, env=env, cwd=case_root, stdout=log, stderr=log, timeout=180)
+                launch = read(case_root / "launch.json")
+                subprocess.run(launch["command"], check=True, env=env, cwd=launch["directory"],
+                               stdout=log, stderr=log, timeout=420)
+                subprocess.run([*child, "--phase", "verify", "--output", str(case_root)],
+                               check=True, env=env, cwd=case_root, stdout=log, stderr=log, timeout=180)
+                results.append(read(case_root / "result.json"))
+            finally:
+                subprocess.run([str(python), "-I", "-m", "nanobot", "gateway", "stop", "--config",
+                                str(account / ".nanobot/config.json")], env=env, cwd=case_root,
+                               stdout=log, stderr=log, timeout=60, check=True)
+                config_file = account / ".nanobot/config.json"
+                if config_file.exists():
+                    config = read(config_file)
+                    _wait_for_closed_listeners((config["gateway"]["port"], config["channels"]["websocket"]["port"]))
+        results[-1]["gateway_process_stopped"] = True
+        print(f"PASS {scenario}: {results[-1]['phase']}", flush=True)
+    assert digest(target) == original_hash
+    return {"platform": platform.system(), "machine": platform.machine(), "python": platform.python_version(),
+            "target_sha256": original_hash, "candidate_commit": args.commit, "version": version,
+            "release_transport": "local fixture; no public-download proof", "interactive_ui_e2e": False,
+            "scenarios": results}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--baseline-wheel", type=Path)
+    parser.add_argument("--commit")
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--scenario", action="append", choices=SCENARIOS)
+    parser.add_argument("--phase", choices=("prepare", "verify"), help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if not sys.flags.isolated:
+        parser.error("Run with python -I")
+    if args.phase:
+        if sys.prefix == sys.base_prefix:
+            parser.error("Product phases must run in the disposable installation")
+        if args.phase == "prepare":
+            prepare(args.output)
+        else:
+            write(args.output / "result.json", verify(args.output))
+        return
+    if not args.wheel or not args.commit:
+        parser.error("--wheel and --commit are required")
+    result = run(args)
+    write(args.output / "packaged-update-report.json", result)
+
+
+if __name__ == "__main__":
+    main()

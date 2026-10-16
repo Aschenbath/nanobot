@@ -1,0 +1,86 @@
+"""Keep acceptance evidence honest: real target bytes and fail-closed fixtures."""
+
+import asyncio
+import csv
+import hashlib
+import io
+import json
+import subprocess
+import sys
+from zipfile import ZipFile, ZipInfo
+
+import httpx
+import pytest
+
+from nanobot.release_feed import ReleaseFeed
+from scripts.verify_packaged_update import digest, feed_records, fixture_wheel, replace_once
+
+
+def wheel(tmp_path, version):
+    path = tmp_path / f"nanobot_ai-{version}-py3-none-manylinux_2_17_x86_64.whl"
+    with ZipFile(path, "w") as archive:
+        archive.writestr(f"nanobot_ai-{version}.dist-info/METADATA", f"Name: nanobot-ai\nVersion: {version}\n")
+        archive.writestr("nanobot/__init__.py", "# unchanged application\n")
+        archive.writestr("nanobot/release_feed.py", "transport=transport or PinnedDNSAsyncTransport(),\n")
+        archive.writestr("nanobot/update_worker.py", "# worker\n")
+        binary = ZipInfo("nanobot/tui/bin/nanobot-tui")
+        binary.external_attr = 0o100755 << 16
+        archive.writestr(binary, b"native executable fixture")
+    return path
+
+
+def test_baseline_instrumentation_does_not_modify_the_target(tmp_path):
+    source = wheel(tmp_path, "0.3.6")
+    before = digest(source)
+    baseline = fixture_wheel(source, tmp_path / "baseline", "0.3.5", feed=tmp_path / "feed.json")
+    assert digest(source) == before
+    with ZipFile(source) as original, ZipFile(baseline) as copied:
+        assert copied.read("nanobot/__init__.py") == original.read("nanobot/__init__.py")
+        assert "nanobot/_acceptance_feed.py" not in original.namelist()
+        assert copied.getinfo("nanobot/tui/bin/nanobot-tui").external_attr == original.getinfo("nanobot/tui/bin/nanobot-tui").external_attr
+        records = csv.reader(io.StringIO(copied.read("nanobot_ai-0.3.5.dist-info/RECORD").decode()))
+        for name, checksum, size in records:
+            if checksum:
+                assert int(size) == len(copied.read(name))
+                assert checksum.startswith("sha256=")
+    with pytest.raises(FileExistsError):
+        fixture_wheel(source, tmp_path / "baseline", "0.3.5", feed=tmp_path / "feed.json")
+
+
+@pytest.mark.parametrize("version,channel", [("0.3.6", "stable"), ("0.3.6.dev42", "preview")])
+def test_local_feed_uses_the_real_resolver_and_exact_target_hash(tmp_path, version, channel):
+    from packaging.tags import Tag
+
+    candidate = wheel(tmp_path, version)
+    records = feed_records(candidate, "a" * 40)
+
+    def respond(request):
+        item = records[str(request.url)]
+        return httpx.Response(200, content=candidate.read_bytes() if "file" in item else json.dumps(item["json"]).encode())
+
+    async def check():
+        async with ReleaseFeed(tmp_path / "feed", transport=httpx.MockTransport(respond),
+                               supported_tags=[Tag("py3", "none", "manylinux_2_17_x86_64")]) as feed:
+            target = await feed.latest(channel)
+            assert target.version == version
+            assert target.artifact.sha256 == hashlib.sha256(candidate.read_bytes()).hexdigest()
+            await feed.revalidate(target)
+    asyncio.run(check())
+
+
+def test_changed_fault_seam_is_not_silently_reported_as_fault_coverage():
+    with pytest.raises(ValueError, match="seam changed"):
+        replace_once(b"new worker", b"old worker", b"fault")
+    with pytest.raises(ValueError, match="seam changed"):
+        replace_once(b"old old", b"old", b"fault")
+
+
+def test_unisolated_probe_refuses_before_creating_output(tmp_path):
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts/verify_packaged_update.py"
+    output = tmp_path / "must-not-exist"
+    result = subprocess.run([sys.executable, str(script), "--output", str(output)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 2 and "python -I" in result.stderr
+    assert not output.exists()

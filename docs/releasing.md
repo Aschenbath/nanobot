@@ -220,6 +220,52 @@ configuration and sessions, retained backup and verified restarted version. Reco
 which OS ran that journey separately from installer fixtures and startup probes.
 Do not call a skipped platform or a structurally valid cross-build a native pass.
 
+### Packaged upgrade and recovery acceptance
+
+The Linux and Windows native CI jobs also run `scripts/verify_packaged_update.py`
+against the same native wheel. The manual candidate workflow runs it against the
+assembled Linux wheel. Run it locally on macOS against that candidate's macOS wheel:
+
+```bash
+<build-tools-python> -I scripts/verify_packaged_update.py \
+  --wheel <exact-native-wheel> --commit <candidate-commit> \
+  --output <new-private-acceptance-directory>
+```
+
+The build-tools environment needs the project's Python dependencies. The probe
+creates a separate venv, account, configuration, workspace and loopback gateways.
+It does not use the maintainer's configuration, chat records, model or credentials.
+The healthy target is not rewritten. The report records its SHA-256 and candidate
+commit. Faulted targets are separate private files and must never be uploaded.
+
+The journeys cover normal upgrade, an earlier Preview, candidate import/startup
+failure, backup-write failure after shutdown, worker termination, partial package
+metadata loss, and interruption between the program-restoration renames. Each
+successful journey requires the expected running version, a new gateway run,
+authenticated history reads, continued writes and a second ordinary start. The
+probe compares configuration and retained legacy-source bytes, canonical SQLite
+records and WebUI transcripts separately. It seeds canonical-only, display-only
+and mixed history; it does not invent canonical records for display-only chats.
+SQLite checkpoint byte changes alone are not data loss. Only small success reports
+are retained in CI; no success report is written after a failed assertion.
+
+These are real installed-process journeys with controlled release transport and
+explicit fault injection, not public-download or interactive browser evidence.
+Until a public updater-enabled baseline exists, the default earlier versions are
+clearly labelled fixtures made from the target application. They test the installed
+transaction but do not prove compatibility with historical release code. For a
+release handoff, also pass `--baseline-wheel <previously-accepted-wheel>` and repeat
+with the supported stable baseline and an older Preview, including a skipped
+Preview. The baseline's feed transport is instrumented; the healthy target remains
+unchanged. Versions without this updater use the original install owner's bootstrap
+upgrade, not an invented in-app upgrade. Record that acceptance separately.
+
+Keep the private evidence directory until the reports are reviewed. It can contain
+retained program generations and disposable backup data; it is not a release upload
+set. Native execution on Linux x64, Windows x64 and macOS arm64 does not establish
+native macOS x64 or Linux arm64 coverage. Those targets and the final public download
+still need their own acceptance before claiming that coverage.
+
 Run `pytest tests/test_install_scripts.py` with `uv` and `pipx` available. These
 checks use private homes, offline fixture wheels and actual package managers; they
 do not start a gateway or install the real application. Unix uses `install.sh` and

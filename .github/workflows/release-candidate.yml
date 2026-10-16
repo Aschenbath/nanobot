@@ -144,6 +144,14 @@ jobs:
             --artifacts "$RUNNER_TEMP/release-artifacts" \
             --output "$RUNNER_TEMP/install-candidate.md"
 
+      - name: Verify packaged Linux upgrades and service recovery
+        working-directory: ${{ env.CANDIDATE_DIR }}
+        run: |
+          version="${NEXT_STABLE}.dev${PREVIEW_SEQUENCE}"
+          python -I scripts/verify_packaged_update.py \
+            --wheel "$RUNNER_TEMP/release-artifacts/nanobot_ai-${version}-py3-none-manylinux_2_17_x86_64.whl" \
+            --commit "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/packaged-update"
+
       # Keep the default preflight cheap: no ~400 MB archive upload per manual run.
       # These reports are not installable releases or publication approvals.
       - name: Retain identity, structural and native Linux probe reports
@@ -154,6 +162,7 @@ jobs:
             ${{ runner.temp }}/candidate.json
             ${{ runner.temp }}/release-artifacts/release-manifest.json
             ${{ runner.temp }}/installed-candidate-report.json
+            ${{ runner.temp }}/packaged-update/packaged-update-report.json
             ${{ runner.temp }}/install-candidate.md
           if-no-files-found: error
           retention-days: 3

@@ -208,6 +208,16 @@ def restore_program(directory: Path, spec: WorkerSpec) -> None:
     write_record(directory / "restoration.json", {"plan_id": spec.plan_id, "state": "restarting"})
 
 
+def _shutdown_committed(spec: WorkerSpec) -> bool:
+    from nanobot.update_worker import read_record
+
+    try:
+        stop = read_record(installation_state_dir(spec.baseline.environment) / "stop.json")
+    except FileNotFoundError:
+        return False
+    return stop.get("plan_id") == spec.plan_id and stop.get("phase") in {"commit", "stopped"}
+
+
 def restore_service(directory: Path) -> None:
     from nanobot.update_worker import (
         JobStatus,
@@ -244,11 +254,7 @@ def restore_service(directory: Path) -> None:
         if (directory / "activation.json").exists():
             raise ValueError("The new runtime was activated; only same-version repair is safe")
         check_approval(directory, spec, handoff=True, check_expiry=False)
-        try:
-            stop = read_record(root / "stop.json")
-        except FileNotFoundError:
-            stop = {}
-        if stop.get("plan_id") != spec.plan_id or stop.get("phase") not in {"commit", "stopped"}:
+        if not _shutdown_committed(spec):
             if not status.mutation_started:
                 status.advance(directory, Phase.HANDOFF_FAILED, "Shutdown was not committed; review the update again", mutation_started=False)
             return  # A refused preflight left the original service running.
@@ -308,6 +314,11 @@ def supervise(directory: Path, arguments: list[str]) -> None:
         if status.phase in {Phase.SUCCEEDED, Phase.RESTORED, Phase.CANCELLED}:
             if status.phase == Phase.SUCCEEDED:
                 _discard_program_snapshot(directory, spec)
+            return
+        if (status.phase == Phase.HANDOFF_FAILED and not status.mutation_started
+                and not _shutdown_committed(spec)):
+            # A busy gateway correctly refused shutdown and retains its runtime
+            # lease. Waiting for that lease would hide the refusal for five minutes.
             return
         # Retry only admitted work. No second stop request, download or release
         # resolution. Lease-owning orphan children must finish before recovery.

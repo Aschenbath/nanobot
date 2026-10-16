@@ -463,11 +463,20 @@ jobs:
             --version "$version" --commit "$(git rev-parse HEAD)" --gateway \
             --report "$RUNNER_TEMP/native-install-report.json"
 
+      - name: Verify packaged upgrades and automatic service recovery
+        shell: bash
+        run: |
+          python -I scripts/verify_packaged_update.py \
+            --wheel "$(find "$RUNNER_TEMP/native-wheel" -name '*.whl' -print -quit)" \
+            --commit "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/packaged-update"
+
       - name: Retain the native package acceptance report
         uses: actions/upload-artifact@v4
         with:
           name: native-install-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/native-install-report.json
+          path: |
+            ${{ runner.temp }}/native-install-report.json
+            ${{ runner.temp }}/packaged-update/packaged-update-report.json
           if-no-files-found: error
           retention-days: 3
 
