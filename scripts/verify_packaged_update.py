@@ -84,7 +84,9 @@ def transport():
         files["nanobot/release_feed.py"] = replace_once(
             files["nanobot/release_feed.py"], b"transport=transport or PinnedDNSAsyncTransport(),",
             b'transport=transport or __import__("nanobot._acceptance_feed", fromlist=["transport"]).transport(),')
-        worker = files["nanobot/update_worker.py"]
+        # Windows source archives can contain CRLF. Normalize only the private
+        # instrumentation copy; the final target's bytes remain untouched.
+        worker = files["nanobot/update_worker.py"].replace(b"\r\n", b"\n")
         if scenario == "worker-exit":
             needle = b'            env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}\n'
             worker = replace_once(worker, needle, b'''            if not (directory / 'fault-fired').exists():
@@ -105,7 +107,7 @@ def transport():
         files["nanobot/update_worker.py"] = worker
         if scenario == "restore-interruption":
             needle = b"    os.rename(original, environment)\n"
-            files["nanobot/update_fallback.py"] = replace_once(files["nanobot/update_fallback.py"], needle, b'''    if not (directory / 'restore-fault-fired').exists():
+            files["nanobot/update_fallback.py"] = replace_once(files["nanobot/update_fallback.py"].replace(b"\r\n", b"\n"), needle, b'''    if not (directory / 'restore-fault-fired').exists():
         (directory / 'restore-fault-fired').write_text('interrupted between renames')
         raise OSError('Injected rename interruption')
 ''' + needle)

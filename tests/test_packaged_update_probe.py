@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import sys
+from pathlib import Path
 from zipfile import ZipFile, ZipInfo
 
 import httpx
@@ -16,13 +17,14 @@ from nanobot.release_feed import ReleaseFeed
 from scripts.verify_packaged_update import digest, feed_records, fixture_wheel, replace_once
 
 
-def wheel(tmp_path, version):
+def wheel(tmp_path, version, *, worker=b"# worker\n", fallback=b"# fallback\n"):
     path = tmp_path / f"nanobot_ai-{version}-py3-none-manylinux_2_17_x86_64.whl"
     with ZipFile(path, "w") as archive:
         archive.writestr(f"nanobot_ai-{version}.dist-info/METADATA", f"Name: nanobot-ai\nVersion: {version}\n")
         archive.writestr("nanobot/__init__.py", "# unchanged application\n")
         archive.writestr("nanobot/release_feed.py", "transport=transport or PinnedDNSAsyncTransport(),\n")
-        archive.writestr("nanobot/update_worker.py", "# worker\n")
+        archive.writestr("nanobot/update_worker.py", worker)
+        archive.writestr("nanobot/update_fallback.py", fallback)
         binary = ZipInfo("nanobot/tui/bin/nanobot-tui")
         binary.external_attr = 0o100755 << 16
         archive.writestr(binary, b"native executable fixture")
@@ -75,9 +77,29 @@ def test_changed_fault_seam_is_not_silently_reported_as_fault_coverage():
         replace_once(b"old old", b"old", b"fault")
 
 
-def test_unisolated_probe_refuses_before_creating_output(tmp_path):
-    from pathlib import Path
+@pytest.mark.parametrize("scenario,marker", [
+    ("worker-exit", b"os._exit(91)"),
+    ("metadata-loss", b"os._exit(92)"),
+    ("backup-failure", b"Injected backup write failure"),
+    ("restore-interruption", b"Injected rename interruption"),
+])
+def test_windows_packaged_sources_keep_fault_injection_reachable(tmp_path, scenario, marker):
+    package = Path(__file__).resolve().parents[1] / "nanobot"
+    def windows_source(name):
+        return (package / name).read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    source = wheel(tmp_path, "0.3.6", worker=windows_source("update_worker.py"),
+                   fallback=windows_source("update_fallback.py"))
+    before = digest(source)
+    baseline = fixture_wheel(source, tmp_path / "baseline", "0.3.5", feed=tmp_path / "feed.json", scenario=scenario)
+    with ZipFile(baseline) as archive:
+        name = "update_fallback.py" if scenario == "restore-interruption" else "update_worker.py"
+        content = archive.read("nanobot/" + name)
+        assert content.count(marker) == 1
+        compile(content, name, "exec")
+    assert digest(source) == before
 
+
+def test_unisolated_probe_refuses_before_creating_output(tmp_path):
     script = Path(__file__).resolve().parents[1] / "scripts/verify_packaged_update.py"
     output = tmp_path / "must-not-exist"
     result = subprocess.run([sys.executable, str(script), "--output", str(output)],
