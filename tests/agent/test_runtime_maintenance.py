@@ -206,7 +206,7 @@ async def test_scheduled_background_work_blocks_before_it_starts(agent):
         release.set()
         await settle(agent)
     with agent.maintenance():
-        agent._check_expired_sessions_if_due()
+        await agent._check_expired_sessions_if_due()
         assert not agent._background_tasks
 
 
@@ -243,6 +243,68 @@ async def test_queued_event_dispatch_cannot_be_overtaken_by_maintenance(agent):
         assert not agent.bus.has_pending_events
 
 
+async def test_async_idle_scan_keeps_storage_work_owned(agent, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def scan(*args, **kwargs):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(agent.auto_compact, "check_expired", scan)
+    agent._next_idle_compact_check_at = 0
+    task = asyncio.create_task(agent._check_expired_sessions_if_due())
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+        with pytest.raises(RuntimeBusyError):
+            with agent.maintenance():
+                pytest.fail("SQLite idle scan was mistaken for an idle runtime")
+    finally:
+        release.set()
+        await task
+    with agent.maintenance():
+        assert agent.bus.admission.paused
+
+
+async def test_cancelled_exec_startup_stays_busy_until_cleanup_finishes(agent, tmp_path, monkeypatch):
+    manager = agent._exec_session_manager
+    entered, cancelling, release = (asyncio.Event() for _ in range(3))
+
+    async def spawn(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelling.set()
+            await release.wait()
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    task = asyncio.create_task(manager.start(
+        command=[sys.executable, "-c", "pass"], cwd=str(tmp_path), env=dict(os.environ),
+        timeout=10, shell_program=None, login=False, yield_time_ms=0,
+        max_output_chars=1000, owner_session_key="cli:direct",
+    ))
+    stop = None
+    try:
+        async with asyncio.timeout(3):
+            await entered.wait()
+        with pytest.raises(RuntimeBusyError):
+            with agent.maintenance():
+                pytest.fail("launch reservation was missed")
+        stop = asyncio.create_task(manager.terminate_by_owner("cli:direct"))
+        async with asyncio.timeout(3):
+            await cancelling.wait()
+        assert not manager._starting
+        with pytest.raises(RuntimeBusyError):
+            with agent.maintenance():
+                pytest.fail("cancelled launch cleanup was missed")
+    finally:
+        release.set()
+        await asyncio.gather(task, *([stop] if stop is not None else []), return_exceptions=True)
+    with agent.maintenance():
+        assert not manager.has_pending_work
+
+
 async def test_detached_real_exec_blocks_maintenance_without_being_killed(agent, tmp_path):
     manager = agent._exec_session_manager
     session_id, result = await manager.start(
@@ -259,7 +321,7 @@ async def test_detached_real_exec_blocks_maintenance_without_being_killed(agent,
         session_id=session_id, chars="finish\n", close_stdin=False, terminate=False,
         yield_time_ms=3000, max_output_chars=1000, owner_session_key="cli:direct",
     )
-    assert result.done and result.exit_code == 0 and not result.terminated
+    assert result.done and result.exit_code == 0 and result.finish_reason == "exit"
     with agent.maintenance():
         assert not manager.has_pending_work
 

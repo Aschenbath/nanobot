@@ -39,7 +39,7 @@ from nanobot.update_profiles import (
     validate_profiles,
 )
 from nanobot.update_uv import UV_TRANSACTION_VERSION
-from nanobot.utils.helpers import atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_lines
 
 Owner = Literal["venv", "uv", "pipx", "source", "container", "system"]
 

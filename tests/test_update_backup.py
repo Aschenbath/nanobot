@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
@@ -136,3 +137,39 @@ def test_scope_cannot_include_its_own_job(tmp_path):
     job.mkdir(parents=True)
     with pytest.raises(ValueError, match="job itself"):
         ensure_backup(job, (BackupSource(str(tmp_path / "sessions")),), "a" * 64, mutated=False)
+
+
+async def test_scoped_backup_reopens_sqlite_history_after_runtime_drain(tmp_path):
+    from nanobot.session.manager import SessionManager
+
+    data, workspace, job = (tmp_path / name for name in ("data", "workspace", "job"))
+    job.mkdir()
+    manager = SessionManager(workspace, sessions_root=data / "sessions")
+    session = manager.get_or_create("cli:backup")
+    session.add_message("user", "original conversation")
+    manager.save(session)
+    await manager.state.aclose()
+
+    sources = unique_sources([BackupSource(str(path)) for path in profile_data_paths(
+        home=tmp_path / "home", data_dir=data, config=data / "config.json", workspace=workspace,
+    )])
+    archive = ensure_backup(job, sources, "a" * 64, mutated=False)
+    restored_root = tmp_path / "restored-sessions"
+    # Reopen the real database from the scoped archive, not a JSONL stand-in.
+    with ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+        for entry in manifest["entries"]:
+            source = Path(entry["path"])
+            if entry["kind"] != "file" or not source.is_relative_to(data / "sessions"):
+                continue
+            target = restored_root / source.relative_to(data / "sessions")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(bundle.read(entry["member"]))
+    restored = SessionManager(workspace, sessions_root=restored_root)
+    try:
+        snapshot = restored.read_session_snapshot("cli:backup")
+        assert snapshot is not None
+        assert snapshot.messages[0]["content"] == "original conversation"
+        assert verify_backup(job, sources, "a" * 64, unchanged=True) == archive
+    finally:
+        await restored.state.aclose()

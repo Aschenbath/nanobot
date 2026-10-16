@@ -36,7 +36,7 @@ from nanobot.releases import (
     release_version,
 )
 from nanobot.security.network import PinnedDNSAsyncTransport
-from nanobot.utils.helpers import atomic_write_lines
+from nanobot.utils.atomic_file import atomic_write_lines
 
 CATALOGUE_URL = "https://raw.githubusercontent.com/HKUDS/nanobot/release-index/catalogue.json"
 PYPI_URL = "https://pypi.org/pypi/nanobot-ai"

@@ -13,9 +13,12 @@ to stop a user's tasks or restart their gateway automatically.
 | --- | --- | --- | --- |
 | Stable feature release | At the planned feature milestone | Final GitHub Release and PyPI; also index its manifest for Preview subscribers | Normal update notice |
 | Stable patch | When a reviewed fix or small, compatible improvement is ready; do not wait for the next monthly milestone | Same stable destinations and checks | Normal update notice, no Preview opt-in required |
-| Preview | At most one routine candidate per day with eligible changes and passing checks; urgent repairs can use a new sequence | GitHub prerelease plus the protected `release-index` catalogue; not PyPI in this design | Same update notice, only for subscribers; risk shown before installation |
+| Preview | When a maintainer requests a candidate from reviewed changes with passing checks; it can be as frequent as daily | GitHub prerelease plus the protected `release-index` catalogue; not PyPI in this design | Same update notice, only for subscribers; risk shown before installation |
 
-These are release policies, not a promise of a new version every day. An unchanged
+Packaging is maintainer-triggered: no nightly timer or push-triggered package build.
+A request to prepare a candidate does not authorize publication. Record the requested
+channel, exact source and candidate identity before acting; publish only with approval
+for those verified artifacts. These policies do not promise a new version every day. An unchanged
 source, failed check, missing platform asset, incomplete acceptance or absent
 publication approval leaves the last verified release in place. Users can skip
 intermediate previews. Release acceptance must cover upgrading from the supported
@@ -39,7 +42,7 @@ stable baseline and an earlier Preview, not only the immediately previous build.
    Existing users who lack this updater still need the original installation method
    for their first upgrade. External package/deployment owners keep their own route.
 
-### Daily Preview procedure
+### Maintainer-triggered Preview procedure
 
 1. Select an exact, reviewed `main` commit whose required CI passed. Compare its
    source SHA with the last accepted candidate; skip an unchanged source. Record
@@ -80,16 +83,16 @@ published under its own final identity; do not rename `.devN` wheels.
 
 This PR implements discovery, consent, update/recovery and manual candidate
 preparation. It does **not** enable a cron schedule, a protected publisher, PyPI
-uploads or a public Preview channel. A daily public channel still needs maintainers
+uploads or a public Preview channel. Public Preview availability still needs maintainers
 to approve index ownership/protection, publication credentials, source retention
 and the exact packaged/public-download acceptance. The candidate workflow's
 one-day installable retention is opt-in (~400 MB); do not turn it on for every
-routine scheduled build. Preserve approved release bytes and corresponding source
+candidate build. Preserve approved release bytes and corresponding source
 for their required lifetime outside expiring CI storage.
 
-To automate later, add a separately reviewed schedule that selects changed, green
-source commits and a protected publication stage with the gates above. Keep build
-permissions read-only and publication permissions restricted to that stage. Record
+Automate the steps inside an explicitly requested run, not the decision to build or
+publish. Keep build permissions read-only and publication permissions restricted to
+a protected publication stage with the gates above. Record
 the last accepted source/version and use one catalogue writer; retries must not
 reuse a published version for different bytes. No schedule is activated here.
 Announce Preview availability, including one dismissible discovery hint for existing
