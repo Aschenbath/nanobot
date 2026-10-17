@@ -302,8 +302,9 @@ probe compares configuration and retained legacy-source bytes, canonical SQLite
 records and WebUI transcripts separately. Every restored service then performs a
 fresh update to the healthy target with the same account and conversations. The
 consecutive-upgrade case uses an explicitly instrumented intermediate Preview;
-its second hop installs the unchanged final wheel. Injected preparation/install
-faults fire once per account so a successful retry cannot conceal a repeated fault.
+its second hop installs the unchanged final wheel. Faults are scoped to the first
+job in each account; backup failure persists across that job's automatic retry,
+while a separately confirmed next update can prepare a healthy backup.
 It seeds canonical-only, display-only
 and mixed history; it does not invent canonical records for display-only chats.
 SQLite checkpoint byte changes alone are not data loss. Only small reports are

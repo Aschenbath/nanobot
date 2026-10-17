@@ -93,8 +93,8 @@ def transport():
         # Windows source archives can contain CRLF. Normalize only the private
         # instrumentation copy; the final target's bytes remain untouched.
         worker = files["nanobot/update_worker.py"].replace(b"\r\n", b"\n")
-        # One fault per disposable account, not per job. The recovered updater
-        # must subsequently install a healthy release without re-injecting it.
+        # Inject into the first job in this disposable account. The recovered
+        # updater must subsequently install a release without re-injecting it.
         fault = f"__import__('pathlib').Path({str(feed.parent / 'injected-fault')!r})"
         if scenario == "worker-exit":
             needle = b'            env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}\n'
@@ -115,7 +115,8 @@ def transport():
         elif scenario == "backup-failure":
             needle = b"                ensure_backup(directory, spec.backup_sources,\n"
             worker = replace_once(worker, needle, f'''                if not {fault}.exists():
-                    {fault}.touch()
+                    {fault}.write_text(str(directory))
+                if {fault}.read_text() == str(directory):
                     raise OSError('Injected backup write failure')
 '''.encode() + needle)
         files["nanobot/update_worker.py"] = worker
