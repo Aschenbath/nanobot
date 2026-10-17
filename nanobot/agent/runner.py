@@ -1351,8 +1351,9 @@ class AgentRunner:
             usage = self._usage_or_estimate(
                 spec, state.messages, response, tool_definitions=state.tool_definitions,
             )
-        state.usage = usage
-        return state.usage
+        # A rewritten input or another model's count cannot bound the next request.
+        state.usage = None if response.provider_compaction_applied or response.is_fallback else usage
+        return usage
 
     def _estimate_response_usage(
         self,
