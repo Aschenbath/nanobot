@@ -33,6 +33,7 @@ import {
   FileReferenceChip,
   isFilePatternReference,
   isLikelyFilePath,
+  splitFilePath,
 } from "@/components/FileReferenceChip";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
 import { inferMediaKind } from "@/lib/media";
@@ -50,6 +51,8 @@ interface MarkdownTextRendererProps {
   streaming?: boolean;
   preserveStreamingLayout?: boolean;
   onOpenFilePreview?: (path: string) => void;
+  /** Read-only documents must not load embedded resources or use chat routing. */
+  documentPath?: string;
 }
 
 type MarkdownAstNode = {
@@ -388,6 +391,29 @@ function fileReferenceFromLink(href: string | undefined): string | null {
   return isPreviewableFileTarget(target) ? target : null;
 }
 
+function DocumentLink({ href, path, onOpen, children }: {
+  href: string;
+  path: string;
+  onOpen?: (path: string) => void;
+  children: ReactNode;
+}) {
+  // Fragment-only links must not replace the application's hash route.
+  if (!href || href.startsWith("#")) return <>{children}</>;
+  if (/^(https?:\/\/|mailto:)/i.test(href)) {
+    return <WebLink href={href} className="text-blue-500 underline underline-offset-2 dark:text-blue-300">{children}</WebLink>;
+  }
+  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("//")) return <>{children}</>;
+  let target = href.split(/[?#]/, 1)[0];
+  try { target = decodeURIComponent(target); } catch { return <>{children}</>; }
+  if (!target) return <>{children}</>;
+  // Resolve against the document, not the WebUI origin or the project root.
+  // The gateway still resolves and authorizes the resulting path.
+  const resolved = /^[\\/]|^[a-z]:[\\/]/i.test(target)
+    ? target : `${splitFilePath(path).directory}${target}`;
+  return <FileReferenceChip path={nodeText(children) || target} previewPath={resolved}
+    tooltipPath={resolved} onOpen={onOpen} />;
+}
+
 function sessionReferenceHref(href: string): string | null {
   const prefix = href.startsWith("#session/")
     ? "#session/"
@@ -554,6 +580,7 @@ export default function MarkdownTextRenderer({
   streaming = false,
   preserveStreamingLayout = false,
   onOpenFilePreview,
+  documentPath,
 }: MarkdownTextRendererProps) {
   const { t } = useTranslation();
   const [mathPlugin, setMathPlugin] = useState(() => loadedMathPlugin);
@@ -588,7 +615,7 @@ export default function MarkdownTextRenderer({
           );
         }
         const raw = String(kids).replace(/\n$/, "");
-        if (isLikelyFilePath(raw)) {
+        if (!documentPath && isLikelyFilePath(raw)) {
           return (
             <InferredFileReferenceChip
               path={raw}
@@ -662,6 +689,9 @@ export default function MarkdownTextRenderer({
         }
         if (href === "streamdown:incomplete-link") {
           return <>{markdownChildren}</>;
+        }
+        if (documentPath) {
+          return <DocumentLink href={href} path={documentPath} onOpen={onOpenFilePreview}>{markdownChildren}</DocumentLink>;
         }
         const sessionHref = sessionReferenceHref(href);
         if (sessionHref) {
@@ -764,7 +794,7 @@ export default function MarkdownTextRenderer({
         );
       },
       li({ children: markdownChildren, className: itemClassName }) {
-        const link = inlineLinkPreviewFromChildren(markdownChildren);
+        const link = !documentPath && inlineLinkPreviewFromChildren(markdownChildren);
         if (link) {
           return (
             <li className={cn("list-none pl-0", itemClassName)}>
@@ -837,6 +867,9 @@ export default function MarkdownTextRenderer({
         const source = typeof src === "string" ? src : "";
         if (!source) return null;
         const label = typeof alt === "string" ? alt : "";
+        if (documentPath) {
+          return <DocumentLink href={source} path={documentPath} onOpen={onOpenFilePreview}>{label || source}</DocumentLink>;
+        }
         const kind = markdownAttachmentKind(source, label);
         return (
           <AttachmentTile
@@ -850,7 +883,7 @@ export default function MarkdownTextRenderer({
         );
       },
     }),
-    [highlightCode, onOpenFilePreview, t],
+    [highlightCode, onOpenFilePreview, documentPath, t],
   );
 
   return (

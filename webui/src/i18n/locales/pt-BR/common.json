@@ -2251,6 +2251,9 @@
     "gatewayPath": "Os caminhos se referem à máquina do gateway."
   },
   "filePreview": {
+    "displayMode": "Modo de exibição",
+    "preview": "Prévia",
+    "source": "Código-fonte",
     "aria": "Pré-visualização de arquivo",
     "breadcrumb": "Caminho do arquivo",
     "close": "Fechar pré-visualização de arquivo",

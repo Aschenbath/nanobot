@@ -9,6 +9,7 @@ interface FilePreviewPanelProps {
   token: string;
   loadPreview?: (path: string) => Promise<FilePreviewPayload>;
   initialPreview?: FilePreviewPayload;
+  onOpenFilePreview?: (path: string) => void;
 }
 
 export function FilePreviewPanel({
@@ -17,6 +18,7 @@ export function FilePreviewPanel({
   token,
   loadPreview,
   initialPreview,
+  onOpenFilePreview,
 }: FilePreviewPanelProps) {
   const [state, setState] = useState<FilePreviewPanelState>(() => initialPreview
     ? { status: "ready", payload: initialPreview } : { status: "loading" });
@@ -55,6 +57,7 @@ export function FilePreviewPanel({
   }, [path, sessionKey, loadPreview]);
 
   const reportImageError = useCallback(() => setState({ status: "error" }), []);
-  return <FilePreviewPanelView path={path} state={state} imageOpen={imageOpen}
+  return <FilePreviewPanelView key={`${sessionKey}:${path}`} path={path} state={state} imageOpen={imageOpen}
+    onOpenFilePreview={onOpenFilePreview}
     onImageOpenChange={setImageOpen} onImageError={reportImageError} />;
 }

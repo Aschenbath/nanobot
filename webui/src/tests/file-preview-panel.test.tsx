@@ -168,13 +168,82 @@ describe("FilePreviewPanel", () => {
       />,
     );
 
-    await screen.findByTestId("mock-code-block");
+    await screen.findByRole("heading", { name: "Notes" });
     expect(fetchFilePreview).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       await setAppLanguage("zh-CN");
     });
 
+    expect(screen.getByRole("button", { name: "预览" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "原文" })).toBeInTheDocument();
+    expect(fetchFilePreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults old Markdown payloads to preview and switches to exact source without another read", async () => {
+    const content = "# Report\n\n**Done**\n\n| Item | Status |\n| --- | --- |\n| Copy | OK |\n";
+    vi.mocked(fetchFilePreview).mockResolvedValue({ path: "/workspace/REPORT.md", display_path: "REPORT.md",
+      language: "markdown", content, truncated: true });
+    render(<FilePreviewPanel sessionKey="a" path="REPORT.md" token="test" />);
+    await screen.findByRole("heading", { name: "Report" });
+    expect(screen.getByRole("table")).toHaveTextContent("CopyOK");
+    const notice = "Preview is truncated because this file is large.";
+    expect(screen.getByText(notice)).toBeInTheDocument();
+    const source = screen.getByRole("button", { name: "Source" });
+    source.focus();
+    fireEvent.click(source);
+    expect(source).toHaveFocus();
+    expect(source).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("mock-code-block").textContent).toBe(content);
+    expect(CodeBlock).toHaveBeenLastCalledWith(expect.objectContaining({
+      code: content, chrome: "none", showLineNumbers: true, wrapLongLines: false, viewportHighlight: true,
+    }), expect.anything());
+    expect(screen.getByText(notice)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByRole("heading", { name: "Report" });
+    expect(fetchFilePreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the display for another file or session but keeps source on credential renewal", async () => {
+    const payload = { path: "/workspace/notes.md", display_path: "notes.md", language: "markdown",
+      content: "# Notes", truncated: false };
+    vi.mocked(fetchFilePreview).mockResolvedValue(payload);
+    const view = (path: string, sessionKey = "a", token = "old") =>
+      <FilePreviewPanel sessionKey={sessionKey} path={path} token={token} />;
+    const { rerender } = render(view("notes.md"));
+    await screen.findByRole("heading", { name: "Notes" });
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    rerender(view("notes.md", "a", "new"));
+    expect(screen.getByRole("button", { name: "Source" })).toHaveAttribute("aria-pressed", "true");
+    expect(fetchFilePreview).toHaveBeenCalledTimes(1);
+    rerender(view("other.md"));
+    await screen.findByRole("heading", { name: "Notes" });
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    rerender(view("other.md", "b"));
+    await screen.findByRole("heading", { name: "Notes" });
+    expect(fetchFilePreview).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps document resources inert and opens relative links through the session preview callback", async () => {
+    const open = vi.fn();
+    vi.mocked(fetchFilePreview).mockResolvedValue({ path: "/workspace/reports/REPORT.mdx", display_path: "reports/REPORT.mdx",
+      language: "markdown", truncated: false, content: [
+        "# Report", "[Local](../notes%20one.md)", "![Chart](https://example.com/chart.png)",
+        "- Reference — [Website](https://example.com)", "[Section](#details)", "[Chat](#/chat/websocket:other)",
+        "[Unsafe](javascript:alert(1))", '<img src="https://example.com/raw.png" onerror="alert(1)">',
+        '<iframe src="https://example.com/frame"></iframe>', '<script>alert(1)</script>',
+        "`skills/cron/SKILL.md`", "<CustomComponent />",
+      ].join("\n\n") });
+    const { container } = render(<FilePreviewPanel sessionKey="a" path="reports/REPORT.mdx" token="test" onOpenFilePreview={open} />);
+    await screen.findByRole("heading", { name: "Report" });
+    expect(container.querySelector("img, iframe, script, video, audio")).toBeNull();
+    expect(screen.getByRole("link", { name: "Chart" })).toHaveAttribute("href", "https://example.com/chart.png");
+    expect(screen.getByRole("link", { name: "Website" })).toHaveAttribute("rel", "noreferrer noopener");
+    expect(screen.queryByRole("link", { name: /Section|Chat|Unsafe/ })).not.toBeInTheDocument();
+    expect(container.querySelector("code")?.textContent).toBe("skills/cron/SKILL.md");
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "/workspace/reports/../notes one.md" }));
+    expect(open).toHaveBeenCalledWith("/workspace/reports/../notes one.md");
     expect(fetchFilePreview).toHaveBeenCalledTimes(1);
   });
 

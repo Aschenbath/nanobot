@@ -2437,6 +2437,9 @@
     "gatewayPath": "Paths refer to the gateway machine."
   },
   "filePreview": {
+    "displayMode": "Display mode",
+    "preview": "Preview",
+    "source": "Source",
     "aria": "File preview",
     "breadcrumb": "File path",
     "close": "Close file preview",

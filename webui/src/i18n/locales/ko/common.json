@@ -2237,6 +2237,9 @@
     "gatewayPath": "경로는 게이트웨이 컴퓨터를 가리킵니다."
   },
   "filePreview": {
+    "displayMode": "표시 방식",
+    "preview": "미리 보기",
+    "source": "원문",
     "aria": "파일 미리보기",
     "breadcrumb": "파일 경로",
     "close": "파일 미리보기 닫기",

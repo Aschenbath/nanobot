@@ -2237,6 +2237,9 @@
     "gatewayPath": "Đường dẫn thuộc máy chạy gateway."
   },
   "filePreview": {
+    "displayMode": "Chế độ hiển thị",
+    "preview": "Xem trước",
+    "source": "Mã nguồn",
     "aria": "Xem trước tệp",
     "breadcrumb": "Đường dẫn tệp",
     "close": "Đóng xem trước tệp",

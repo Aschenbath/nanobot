@@ -2134,6 +2134,7 @@ export function ThreadShell({
               token={token}
               loadPreview={filePreviews.load}
               initialPreview={filePreviews.peek(activePreview.value)}
+              onOpenFilePreview={openFilePreview}
             />
           ) : <WebPreviewPanel key={activePreview.id} url={activePreview.value} />}
         </PreviewPane>

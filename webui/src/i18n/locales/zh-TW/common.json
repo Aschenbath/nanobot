@@ -2237,6 +2237,9 @@
     "gatewayPath": "路徑指向閘道所在的電腦。"
   },
   "filePreview": {
+    "displayMode": "顯示方式",
+    "preview": "預覽",
+    "source": "原文",
     "aria": "檔案預覽",
     "breadcrumb": "檔案路徑",
     "close": "關閉檔案預覽",

@@ -2237,6 +2237,9 @@
     "gatewayPath": "Jalur merujuk ke komputer gateway."
   },
   "filePreview": {
+    "displayMode": "Mode tampilan",
+    "preview": "Pratinjau",
+    "source": "Sumber",
     "aria": "Pratinjau file",
     "breadcrumb": "Jalur file",
     "close": "Tutup pratinjau file",

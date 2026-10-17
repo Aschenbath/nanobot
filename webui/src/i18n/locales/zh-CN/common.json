@@ -2437,6 +2437,9 @@
     "gatewayPath": "路径指向网关所在的机器。"
   },
   "filePreview": {
+    "displayMode": "显示方式",
+    "preview": "预览",
+    "source": "原文",
     "aria": "文件预览",
     "breadcrumb": "文件路径",
     "close": "关闭文件预览",

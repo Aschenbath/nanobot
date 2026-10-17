@@ -2237,6 +2237,9 @@
     "gatewayPath": "パスはゲートウェイのマシンを指します。"
   },
   "filePreview": {
+    "displayMode": "表示モード",
+    "preview": "プレビュー",
+    "source": "ソース",
     "aria": "ファイルプレビュー",
     "breadcrumb": "ファイルパス",
     "close": "ファイルプレビューを閉じる",
