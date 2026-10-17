@@ -843,7 +843,7 @@ export function ThreadShell({
   } | null>(null);
   const [heroGreetingKey, setHeroGreetingKey] = useState(randomHeroGreetingKey);
   const [submittedViewportTurnId, setSubmittedViewportTurnId] = useState<string | null>(null);
-  const { state: previewState, openFile, openWeb, selectTab, closeTab, close: closePreview, setWidth: setFilePreviewWidth } =
+  const { state: previewState, openFile, resolveFile, openWeb, selectTab, closeTab, close: closePreview, setWidth: setFilePreviewWidth } =
     useFilePreviewState(previewSessionKey, filePreviewStore);
   const [closingPreview, setClosingPreview] = useState<{ key: string; state: FilePreviewState } | null>(null);
   const filePreviewClosing = closingPreview?.key === previewSessionKey;
@@ -2135,6 +2135,7 @@ export function ThreadShell({
               loadPreview={filePreviews.load}
               initialPreview={filePreviews.peek(activePreview.value)}
               onOpenFilePreview={openFilePreview}
+              onResolvePath={resolveFile}
             />
           ) : <WebPreviewPanel key={activePreview.id} url={activePreview.value} />}
         </PreviewPane>

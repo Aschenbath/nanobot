@@ -3,8 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { CodeBlock } from "@/components/CodeBlock";
+import { PreviewPane } from "@/components/PreviewPane";
+import { FilePreviewStore, useFilePreviewState } from "@/hooks/useFilePreviewState";
 import { setAppLanguage } from "@/i18n";
 import { fetchFilePreview } from "@/lib/api";
+import { createFilePreviewResource } from "@/lib/file-preview-resource";
 
 vi.mock("@/components/CodeBlock", () => ({
   CodeBlock: vi.fn(({
@@ -56,6 +59,7 @@ describe("FilePreviewPanel", () => {
   });
 
   it("ignores a late response after changing session", async () => {
+    const resolvePath = vi.fn();
     let resolveFirst!: (payload: import("@/lib/types").FilePreviewPayload) => void;
     vi.mocked(fetchFilePreview).mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
     const payload = {
@@ -63,12 +67,52 @@ describe("FilePreviewPanel", () => {
       language: "text", content: "session B", truncated: false, size: 9,
     };
     vi.mocked(fetchFilePreview).mockResolvedValueOnce(payload);
-    const view = (key: string) => <FilePreviewPanel key={key} sessionKey={key} path="notes.txt" token="test" />;
+    const view = (key: string) => <FilePreviewPanel key={key} sessionKey={key} path="notes.txt" token="test" onResolvePath={resolvePath} />;
     const { rerender } = render(view("a"));
     rerender(view("b"));
     await screen.findByText("session B");
     await act(async () => resolveFirst({ ...payload, content: "session A" }));
     expect(screen.queryByText("session A")).not.toBeInTheDocument();
+    expect(resolvePath).toHaveBeenCalledOnce();
+    expect(resolvePath).toHaveBeenCalledWith("notes.txt", "/workspace/b.txt");
+  });
+
+  it("opens, follows a relative link and returns to one report tab with working source controls", async () => {
+    const report = "# Report\n\n[Details](./details.md)\n";
+    vi.mocked(fetchFilePreview).mockImplementation(async (_token, _session, path) => {
+      const details = path.endsWith("details.md");
+      const name = details ? "details.md" : "REPORT.md";
+      return { path: `/workspace/reports/${name}`, display_path: `reports/${name}`,
+        language: "markdown", content: details ? "# Details\n\n[Return](./REPORT.md)\n" : report, truncated: false };
+    });
+    const store = new FilePreviewStore();
+    const resource = createFilePreviewResource(path => fetchFilePreview("test", "a", path));
+    store.open("a", "file", "reports/REPORT.md");
+    function View() {
+      const { state, openFile, resolveFile, selectTab, closeTab, close } = useFilePreviewState("a", store);
+      const active = state.tabs.find(tab => tab.id === state.activeId)!;
+      return <PreviewPane tabs={state.tabs} activeId={active.id} width={544} isClosing={false}
+        onSelect={selectTab} onCloseTab={closeTab} onClose={close} onResizeStart={() => {}}>
+        <FilePreviewPanel key={active.id} sessionKey="a" path={active.value} token="test"
+          loadPreview={resource.load} initialPreview={resource.peek(active.value)}
+          onOpenFilePreview={openFile} onResolvePath={resolveFile} />
+      </PreviewPane>;
+    }
+    render(<View />);
+    await screen.findByRole("heading", { name: "Report" });
+    fireEvent.click(screen.getByRole("button", { name: "/workspace/reports/./details.md" }));
+    await screen.findByRole("heading", { name: "Details" });
+    fireEvent.click(screen.getByRole("button", { name: "/workspace/reports/./REPORT.md" }));
+    await screen.findByRole("heading", { name: "Report" });
+    expect(screen.getAllByRole("tab", { name: "REPORT.md" })).toHaveLength(1);
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: "REPORT.md" })).toHaveAttribute("aria-selected", "true");
+    expect(fetchFilePreview).toHaveBeenCalledTimes(3);
+    fireEvent.click(screen.getByRole("button", { name: "Source" }));
+    expect(screen.getByTestId("mock-code-block").textContent).toBe(report);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByRole("heading", { name: "Report" });
+    expect(fetchFilePreview).toHaveBeenCalledTimes(3);
   });
 
   it("opens the sidebar image in the shared zoomable viewer and returns to the preview", async () => {
