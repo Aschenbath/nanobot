@@ -150,7 +150,7 @@ def transport():
     return result
 
 
-def feed_records(wheel: Path, commit: str) -> dict:
+def feed_records(wheel: Path, commit: str, *, generation: int = 1) -> dict:
     from packaging.utils import parse_wheel_filename
     from packaging.version import Version
 
@@ -181,7 +181,7 @@ def feed_records(wheel: Path, commit: str) -> dict:
     data = manifest.model_dump(mode="json")
     pointer = ReleasePointer(version=version, candidate_commit=commit,
                              manifest_sha256=hashlib.sha256(json.dumps(data).encode()).hexdigest())
-    catalogue = ReleaseCatalogue(generation=1, preview=pointer)
+    catalogue = ReleaseCatalogue(generation=generation, preview=pointer)
     base = f"https://github.com/HKUDS/nanobot/releases/download/v{version}/"
     return {CATALOGUE_URL: {"json": catalogue.model_dump(mode="json")},
             base + "release-manifest.json": {"json": data}, base + wheel.name: {"file": str(wheel)}}
@@ -538,16 +538,15 @@ def run(args) -> dict:
                    XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(account / "data"),
                    TMPDIR=str(case_root), TMP=str(case_root), TEMP=str(case_root))
         selected = target
-        if scenario in {"import-failure", "restart-failure", "restore-interruption"}:
-            selected = fixture_wheel(target, case_root / "fault-target", version, scenario=scenario)
         feed = case_root / "feed.json"
-        if scenario == "upgrade-again":
+        if scenario in {"upgrade-again", "import-failure", "restart-failure", "restore-interruption"}:
             intermediate = Version(version).base_version + ".dev0"
             if not Version(baseline_version) < Version(intermediate) < Version(version):
                 raise ValueError("Consecutive updates require baseline < target.dev0 < target")
-            # Only the intermediate has a fixture transport. The second hop
-            # installs the exact final wheel, and keeps the same account/data.
-            selected = fixture_wheel(target, case_root / "intermediate", intermediate, feed=feed)
+            # Faults and the instrumented intermediate get a distinct version:
+            # never overwrite a previously observed version with healthy bytes.
+            selected = fixture_wheel(target, case_root / "intermediate", intermediate,
+                                     feed=feed if scenario == "upgrade-again" else None, scenario=scenario)
         write(feed, feed_records(selected, args.commit))
         earlier = baseline_version
         if scenario == "skipped-preview" and not args.baseline_wheel:
@@ -580,7 +579,7 @@ def run(args) -> dict:
                 result = journey()
                 if result["phase"] == "restored" or scenario == "upgrade-again":
                     previous_job = read(case_root / "launch.json")["directory"]
-                    write(feed, feed_records(target, args.commit))
+                    write(feed, feed_records(target, args.commit, generation=2))
                     write(case_root / "case.json", {
                         **case, "scenario": "upgrade", "baseline_version": result["running_version"],
                         "target_version": version, "target_wheel": str(target),

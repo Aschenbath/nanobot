@@ -81,6 +81,19 @@ def test_changed_fault_seam_is_not_silently_reported_as_fault_coverage():
         replace_once(b"old old", b"old", b"fault")
 
 
+def test_consecutive_feed_advances_generation_without_rewriting_a_release(tmp_path):
+    from nanobot.release_feed import CATALOGUE_URL
+    from nanobot.releases import ReleaseCatalogue
+
+    intermediate = wheel(tmp_path, "0.3.6.dev0")
+    target = wheel(tmp_path, "0.3.6.dev2")
+    previous = ReleaseCatalogue.model_validate(feed_records(intermediate, "a" * 40)[CATALOGUE_URL]["json"])
+    current = ReleaseCatalogue.model_validate(feed_records(target, "b" * 40, generation=2)[CATALOGUE_URL]["json"])
+    current.validate_successor(previous)
+    with pytest.raises(ValueError, match="newer generation"):
+        current.model_copy(update={"generation": 1}).validate_successor(previous)
+
+
 @pytest.mark.parametrize("scenario,marker", [
     ("worker-exit", b"os._exit(91)"),
     ("metadata-loss", b"os._exit(92)"),
