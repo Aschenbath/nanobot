@@ -134,6 +134,32 @@ async def wait_until(predicate, *, timeout=5):
             await asyncio.sleep(0.01)
 
 
+@pytest.mark.parametrize("failure", [ValueError("Invalid release approval"), TimeoutError("Trust service unavailable")])
+async def test_handoff_rejects_approval_before_requesting_gateway_shutdown(protocol, monkeypatch, failure):
+    from unittest.mock import AsyncMock
+
+    from nanobot import update_handoff
+
+    directory, _, _, stops = protocol
+    state = JobStatus.read(directory)
+    state.advance(directory, Phase.CHECKING, "Checking approval", mutation_started=False)
+    # Environment inspection is covered by the real installed-process tests;
+    # exercise the actual handoff ordering and durable status here.
+    monkeypatch.setattr(update_handoff, "current_environment", lambda **_: None)
+    monkeypatch.setattr(update_handoff, "check_environment", lambda *_, **__: None)
+    monkeypatch.setattr(update_handoff.ReleaseFeed, "revalidate", AsyncMock(side_effect=failure))
+    stop = AsyncMock()
+    monkeypatch.setattr(update_handoff, "stop_reviewed_gateways", stop)
+    with pytest.raises(type(failure), match=str(failure)):
+        await update_handoff._prepare(directory)
+    stop.assert_not_called()
+    assert not any(event.is_set() for event in stops)
+    state = JobStatus.read(directory)
+    assert state.phase == Phase.HANDOFF_FAILED and not state.mutation_started
+    assert "shutdown was not requested" in state.message
+    assert not (directory / "handoff-approval.json").exists()
+
+
 @pytest.mark.parametrize("phase", [Phase.READY, Phase.HANDOFF_FAILED])
 def test_expired_uncommitted_handoff_can_be_settled_while_gateway_remains_running(protocol, monkeypatch, phase):
     directory, plan, _, stops = protocol

@@ -32,7 +32,11 @@ def verify_release_approval(payload: bytes, signature: bytes) -> None:
             Identity(identity=RELEASE_IDENTITY, issuer=RELEASE_ISSUER),
             GitHubWorkflowTrigger("workflow_dispatch"),
         ])
-        Verifier.production().verify_artifact(payload, Bundle.from_json(signature), policy)
+        # Reject malformed remote input before refreshing the trust service.
+        # Parsing a bundle grants no authority: the fixed verifier still checks
+        # its certificate, log proof, policy and signature over the exact bytes.
+        bundle = Bundle.from_json(signature)
+        Verifier.production().verify_artifact(payload, bundle, policy)
     except Exception as exc:
         # Keep library/network/certificate details out of the public job. A
         # missing verifier, unavailable trust service or invalid proof all deny

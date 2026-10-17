@@ -92,14 +92,22 @@ def test_policy_is_fixed_to_manual_official_main_workflow(monkeypatch):
 
 @pytest.mark.parametrize("failure", ["malformed", "unavailable", "oversized"])
 def test_failed_verification_has_no_checksum_only_fallback(monkeypatch, failure):
-    def unavailable():
-        raise OSError("trust service unavailable")
+    unavailable = Mock(side_effect=OSError("trust service unavailable"))
     monkeypatch.setattr(Verifier, "production", unavailable)
     proof = b"x" * (256 * 1024 + 1) if failure == "oversized" else b"invalid"
-    if failure == "malformed":
-        monkeypatch.setattr(Verifier, "production", lambda: Mock())
+    if failure == "unavailable":
+        proof = (Path(__file__).parent / "fixtures/sigstore/bundle_v3.txt.sigstore").read_bytes()
     with pytest.raises(ValueError):
         release_trust.verify_release_approval(b"manifest", proof)
+    assert unavailable.call_count == (1 if failure == "unavailable" else 0)
+
+
+def test_malformed_approval_is_rejected_without_contacting_trust_service(monkeypatch):
+    verifier = Mock()
+    monkeypatch.setattr(Verifier, "production", verifier)
+    with pytest.raises(ValueError, match="official release approval"):
+        release_trust.verify_release_approval(b"manifest", b"not a bundle")
+    verifier.assert_not_called()
 
 
 def release(version):
@@ -152,6 +160,12 @@ async def test_download_and_handoff_require_approval_before_any_staging(tmp_path
         if change == "valid":
             await feed.revalidate(target)
             verifier.assert_called_once_with(payload, b"proof")
+            # A previous successful check is not a reusable authorization when
+            # the proof disappears or changes before handoff/retry.
+            verifier.side_effect = ValueError("approval revoked or replaced")
+            with pytest.raises(ValueError, match="revoked or replaced"):
+                await feed.revalidate(target)
+            assert verifier.call_count == 2
         else:
             with pytest.raises((ValueError, httpx.HTTPStatusError, ReleaseFeedError)):
                 await feed.download(target, tmp_path / "staging")

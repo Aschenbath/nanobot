@@ -293,16 +293,23 @@ It does not use the maintainer's configuration, chat records, model or credentia
 The healthy target is not rewritten. The report records its SHA-256 and candidate
 commit. Faulted targets are separate private files and must never be uploaded.
 
-The journeys cover normal upgrade, an earlier Preview, candidate import/startup
+The journeys cover normal upgrade, consecutive upgrades, an earlier Preview, candidate import/startup
 failure, backup-write failure after shutdown, worker termination, partial package
 metadata loss, and interruption between the program-restoration renames. Each
 successful journey requires the expected running version, a new gateway run,
 authenticated history reads, continued writes and a second ordinary start. The
 probe compares configuration and retained legacy-source bytes, canonical SQLite
-records and WebUI transcripts separately. It seeds canonical-only, display-only
+records and WebUI transcripts separately. Every restored service then performs a
+fresh update to the healthy target with the same account and conversations. The
+consecutive-upgrade case uses an explicitly instrumented intermediate Preview;
+its second hop installs the unchanged final wheel. Injected preparation/install
+faults fire once per account so a successful retry cannot conceal a repeated fault.
+It seeds canonical-only, display-only
 and mixed history; it does not invent canonical records for display-only chats.
-SQLite checkpoint byte changes alone are not data loss. Only small success reports
-are retained in CI; no success report is written after a failed assertion.
+SQLite checkpoint byte changes alone are not data loss. Only small reports are
+retained in CI, including completed per-case reports if a later case fails. The
+aggregate success report is written only after every selected journey passes;
+partial case reports and a timed-out job are not an overall pass.
 
 These are real installed-process journeys with controlled release transport and
 explicit fault injection, not public-download or interactive browser evidence.

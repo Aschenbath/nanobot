@@ -366,7 +366,9 @@ jobs:
     if: needs.changes.outputs.tui_required == 'true' || needs.changes.outputs.python_required == 'true' || needs.changes.outputs.webui_required == 'true'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Native build + clean install + recovery/next-update journeys on Windows.
+    # Each subprocess is separately bounded by the acceptance harness.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -471,12 +473,14 @@ jobs:
             --commit "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/packaged-update"
 
       - name: Retain the native package acceptance report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-install-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/native-install-report.json
             ${{ runner.temp }}/packaged-update/packaged-update-report.json
+            ${{ runner.temp }}/packaged-update/*/result.json
           if-no-files-found: error
           retention-days: 3
 

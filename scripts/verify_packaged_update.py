@@ -31,7 +31,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 from zipfile import ZIP_DEFLATED, ZipFile
 
-SCENARIOS = ("upgrade", "skipped-preview", "import-failure", "restart-failure",
+SCENARIOS = ("upgrade", "upgrade-again", "skipped-preview", "import-failure", "restart-failure",
              "backup-failure", "worker-exit", "metadata-loss", "restore-interruption")
 
 
@@ -93,23 +93,31 @@ def transport():
         # Windows source archives can contain CRLF. Normalize only the private
         # instrumentation copy; the final target's bytes remain untouched.
         worker = files["nanobot/update_worker.py"].replace(b"\r\n", b"\n")
+        # One fault per disposable account, not per job. The recovered updater
+        # must subsequently install a healthy release without re-injecting it.
+        fault = f"__import__('pathlib').Path({str(feed.parent / 'injected-fault')!r})"
         if scenario == "worker-exit":
             needle = b'            env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PIP_")}\n'
-            worker = replace_once(worker, needle, b'''            if not (directory / 'fault-fired').exists():
+            worker = replace_once(worker, needle, f'''            if not {fault}.exists():
+                {fault}.touch()
                 (directory / 'fault-fired').write_text('worker exit')
                 os._exit(91)
-''' + needle)
+'''.encode() + needle)
         elif scenario == "metadata-loss":
             needle = b"\n            _verify(spec, directory)\n"
-            worker = replace_once(worker, needle, b'''
-            if not (directory / 'fault-fired').exists():
+            worker = replace_once(worker, needle, f'''
+            if not {fault}.exists():
+                {fault}.touch()
                 (directory / 'fault-fired').write_text('metadata loss')
                 next(Path(spec.baseline.environment).rglob('nanobot_ai-' + spec.version + '.dist-info/METADATA')).unlink()
                 os._exit(92)
-''' + needle)
+'''.encode() + needle)
         elif scenario == "backup-failure":
             needle = b"                ensure_backup(directory, spec.backup_sources,\n"
-            worker = replace_once(worker, needle, b"                raise OSError('Injected backup write failure')\n" + needle)
+            worker = replace_once(worker, needle, f'''                if not {fault}.exists():
+                    {fault}.touch()
+                    raise OSError('Injected backup write failure')
+'''.encode() + needle)
         files["nanobot/update_worker.py"] = worker
         if scenario == "restore-interruption":
             needle = b"    os.rename(original, environment)\n"
@@ -404,7 +412,7 @@ def verify(root: Path) -> dict:
     set_config_path(root / "account/.nanobot/config.json")
     case, before, launch = read(root / "case.json"), read(root / "before.json"), read(root / "launch.json")
     directory = Path(launch["directory"])
-    restored = case["scenario"] not in {"upgrade", "skipped-preview", "worker-exit"}
+    restored = case["scenario"] not in {"upgrade", "upgrade-again", "skipped-preview", "worker-exit"}
     status = JobStatus.read(directory)
     assert status.phase == (Phase.RESTORED if restored else Phase.SUCCEEDED), status
     expected = case["baseline_version"] if restored else case["target_version"]
@@ -417,6 +425,8 @@ def verify(root: Path) -> dict:
     sqlite_expected = verify_data(root, expected)
     if case["scenario"] in {"worker-exit", "metadata-loss"}:
         assert (directory / "fault-fired").exists()
+    if case["scenario"] in {"worker-exit", "metadata-loss", "backup-failure"}:
+        assert (root / "injected-fault").exists()
     if case["scenario"] == "restore-interruption":
         assert (directory / "restore-fault-fired").exists()
     return {**case, "phase": status.phase.value, "running_version": receipt.version,
@@ -531,6 +541,13 @@ def run(args) -> dict:
         if scenario in {"import-failure", "restart-failure", "restore-interruption"}:
             selected = fixture_wheel(target, case_root / "fault-target", version, scenario=scenario)
         feed = case_root / "feed.json"
+        if scenario == "upgrade-again":
+            intermediate = Version(version).base_version + ".dev0"
+            if not Version(baseline_version) < Version(intermediate) < Version(version):
+                raise ValueError("Consecutive updates require baseline < target.dev0 < target")
+            # Only the intermediate has a fixture transport. The second hop
+            # installs the exact final wheel, and keeps the same account/data.
+            selected = fixture_wheel(target, case_root / "intermediate", intermediate, feed=feed)
         write(feed, feed_records(selected, args.commit))
         earlier = baseline_version
         if scenario == "skipped-preview" and not args.baseline_wheel:
@@ -538,7 +555,8 @@ def run(args) -> dict:
             if Version(earlier) >= Version(version):
                 raise ValueError("Skipped Preview requires a target newer than dev0")
         baseline = fixture_wheel(baseline_source, case_root / "baseline", earlier, feed=feed, scenario=scenario)
-        case = {"scenario": scenario, "baseline_version": earlier, "target_version": version,
+        case = {"scenario": scenario, "baseline_version": earlier,
+                "target_version": str(parse_wheel_filename(selected.name)[1]),
                 "baseline_kind": "instrumented historical wheel" if args.baseline_wheel else "instrumented version fixture",
                 "baseline_source_sha256": digest(baseline_source), "baseline_fixture_sha256": digest(baseline),
                 "target_wheel": str(selected), "target_sha256": digest(selected), "commit": args.commit,
@@ -548,7 +566,7 @@ def run(args) -> dict:
                        check=True, env=env, timeout=120, stdout=subprocess.DEVNULL)
         child = [str(python), "-I", str(Path(__file__).resolve())]
         with (case_root / "acceptance.log").open("w", encoding="utf-8") as log:
-            try:
+            def journey():
                 subprocess.run([*child, "--phase", "prepare", "--output", str(case_root)],
                                check=True, env=env, cwd=case_root, stdout=log, stderr=log, timeout=180)
                 launch = read(case_root / "launch.json")
@@ -556,7 +574,23 @@ def run(args) -> dict:
                                stdout=log, stderr=log, timeout=420)
                 subprocess.run([*child, "--phase", "verify", "--output", str(case_root)],
                                check=True, env=env, cwd=case_root, stdout=log, stderr=log, timeout=180)
-                results.append(read(case_root / "result.json"))
+                return read(case_root / "result.json")
+
+            try:
+                result = journey()
+                if result["phase"] == "restored" or scenario == "upgrade-again":
+                    previous_job = read(case_root / "launch.json")["directory"]
+                    write(feed, feed_records(target, args.commit))
+                    write(case_root / "case.json", {
+                        **case, "scenario": "upgrade", "baseline_version": result["running_version"],
+                        "target_version": version, "target_wheel": str(target),
+                        "target_sha256": original_hash, "target_unmodified": True,
+                    })
+                    result["subsequent_update"] = journey()
+                    assert read(case_root / "launch.json")["directory"] != previous_job
+                    assert result["subsequent_update"]["phase"] == "succeeded"
+                    write(case_root / "result.json", result)
+                results.append(result)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 log.flush()
                 tail = (case_root / "acceptance.log").read_text(encoding="utf-8", errors="replace")[-8192:]
