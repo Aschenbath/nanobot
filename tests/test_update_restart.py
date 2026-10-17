@@ -86,7 +86,7 @@ def private_home(tmp_path, monkeypatch):
     return root
 
 
-def _job(previous):
+def _job(previous, *, legacy_scope=False):
     """Materialize the immutable record supplied by verified package installation."""
     identifier = str(uuid4())
     directory = installation_state_dir() / "jobs" / identifier
@@ -106,9 +106,12 @@ def _job(previous):
                              artifact=ReleaseArtifact(filename=filename, size=1, sha256="0" * 64)),
     )
     write_record(directory / "plan.json", plan.model_dump(mode="json"))
-    sources = unique_sources([BackupSource(str(path)) for path in profile_data_paths(
+    paths = profile_data_paths(
         home=Path(previous.home), data_dir=Path(previous.data_dir),
-        config=Path(previous.config), workspace=Path(previous.workspace))])
+        config=Path(previous.config), workspace=Path(previous.workspace))
+    if legacy_scope:
+        paths = tuple(path for path in paths if path != Path(previous.data_dir) / "delivery")
+    sources = unique_sources([BackupSource(str(path)) for path in paths])
     spec = WorkerSpec(
         identifier, hashlib.sha256((directory / "plan.json").read_bytes()).hexdigest(),
         _worker_archive(directory / "worker.pyz"),
@@ -126,7 +129,8 @@ def _job(previous):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Native Windows lifecycle execution requires a Windows runner")
-def test_actual_gateway_is_parked_until_exact_runtime_activation(private_home, tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_scope", [False, True])
+def test_actual_gateway_is_parked_until_exact_runtime_activation(private_home, tmp_path, monkeypatch, legacy_scope):
     from nanobot import update_restart
 
     profile = tmp_path / "gateway home"
@@ -202,7 +206,7 @@ def test_actual_gateway_is_parked_until_exact_runtime_activation(private_home, t
         assert runtime.stop(timeout_s=10).ok
         assert children[-1].wait(timeout=10) == 0
         marker.unlink()
-        directory, spec = _job(previous)
+        directory, spec = _job(previous, legacy_scope=legacy_scope)
         original_wait = update_restart._wait_verified
 
         def wait_verified(*args, **kwargs):
@@ -227,6 +231,7 @@ def test_actual_gateway_is_parked_until_exact_runtime_activation(private_home, t
         status, body = _http(health_port, "/health")
         assert status == 200 and json.loads(body)["maintenance"] is True
         assert not marker.exists(), "MCP started before gateway activation"
+        assert not (Path(previous.data_dir) / "delivery/outbox.sqlite3").exists()
         assert _http(web_port, "/webui/bootstrap")[0] == 503
         assert _http(web_port, "/api/uploads", method="POST")[0] == 503
         assert JobStatus.read(directory).phase == Phase.RESTARTING

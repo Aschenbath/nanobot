@@ -166,6 +166,19 @@ def test_profile_handoff_keeps_delivery_leased_without_expanding_old_grant(priva
         pass
 
 
+def test_profile_handoff_cannot_defer_an_existing_store(private_home, tmp_path):
+    selectors = dict(home=private_home, data_dir=tmp_path / "data",
+                     config=tmp_path / "data/config.json", workspace=tmp_path / "workspace")
+    scope = tuple(path for path in profile_data_paths(**selectors)
+                  if path not in {selectors["data_dir"] / "delivery", selectors["data_dir"] / "auth"})
+    job_id = str(uuid4())
+    with data_access(scope, updating=True, job_id=job_id) as owner:
+        owner.reserve()
+    with data_access(scope, job_id=job_id) as handoff:
+        with pytest.raises(ValueError, match="exceeds the reviewed data scope"):
+            handoff.grant_profile_startup("a" * 64, **selectors)
+
+
 def test_verified_handoff_admits_only_granted_scope_until_explicit_completion(private_home, tmp_path):
     store = tmp_path / "sessions"
     runtime_scope = [store / "profile"]

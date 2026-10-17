@@ -199,6 +199,18 @@ class DataLease:
         # unsynced unlink and resurrect an apparently cleared reservation.
         atomic_write_lines(self.reservation_path, ["null"])
 
+    def grant_profile_startup(self, participant: str, *, home: Path, data_dir: Path,
+                              config: Path, workspace: Path) -> DataStartupGrant:
+        """Honor a protocol-1 handoff without granting its new lazy store early."""
+        paths = profile_data_paths(home=home, data_dir=data_dir, config=config, workspace=workspace)
+        delivery = (data_dir / "delivery").absolute()
+        if not _covered(_canonical_roots((delivery,)), self.roots):
+            paths = tuple(path for path in paths if path != delivery)
+        # Every other store must still be covered by the immutable reservation.
+        # profile_data_access holds the deferred store's ordinary lease, and the
+        # runtime admission gate keeps its lazy owner inactive until activation.
+        return self.grant_startup(participant, paths)
+
 
 def _canonical_roots(paths: Iterable[str | Path]) -> tuple[str, ...]:
     roots: set[str] = set()

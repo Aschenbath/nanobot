@@ -313,6 +313,9 @@ Its runtime owner must remain inactive during protected startup and maintenance.
 The original protocol-1 store grant remains accepted without changing its scope;
 the new, lazy delivery store holds a separate ordinary lease for its lifetime,
 with writes deferred until activation.
+The new restart coordinator must derive its grant from the reviewed old scope,
+not implicitly expand it by recomputing the latest store inventory. The real
+parked-gateway regression exercises both inventories through activation.
 Current updaters include the store in their full backup and reservation. This
 compatibility path does not permit initialization or migration outside an old grant.
 Only small reports are

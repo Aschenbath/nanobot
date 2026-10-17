@@ -211,7 +211,10 @@ def run_restarts(directory: Path) -> None:
         status.advance(directory, Phase.RESTARTING, "Starting the reviewed gateways with task intake closed", mutation_started=True)
         for previous in profiles:
             if observed[previous.id].state == "stopped":
-                grant = data.grant_startup(previous.id, previous.data_paths)
+                grant = data.grant_profile_startup(
+                    previous.id, home=Path(previous.home), data_dir=Path(previous.data_dir),
+                    config=Path(previous.config), workspace=Path(previous.workspace),
+                )
                 _start_gateway(directory, previous, grant)
 
         # A resumed activation can include already active runs; their durable
