@@ -582,6 +582,11 @@ def run(args) -> dict:
                     write(feed, feed_records(target, args.commit, generation=2))
                     write(case_root / "case.json", {
                         **case, "scenario": "upgrade", "baseline_version": result["running_version"],
+                        "baseline_kind": "previous journey's running installation",
+                        "baseline_source_sha256": (case["baseline_source_sha256"] if result["phase"] == "restored"
+                                                   else case["target_sha256"]),
+                        "baseline_fixture_sha256": (case["baseline_fixture_sha256"] if result["phase"] == "restored"
+                                                    else case["target_sha256"]),
                         "target_version": version, "target_wheel": str(target),
                         "target_sha256": original_hash, "target_unmodified": True,
                     })
