@@ -307,7 +307,15 @@ job in each account; backup failure persists across that job's automatic retry,
 while a separately confirmed next update can prepare a healthy backup.
 It seeds canonical-only, display-only
 and mixed history; it does not invent canonical records for display-only chats.
-SQLite checkpoint byte changes alone are not data loss. Only small reports are
+SQLite checkpoint byte changes alone are not data loss. The journeys also cover
+pending scheduled-delivery records in `delivery/outbox.sqlite3`.
+Its runtime owner must remain inactive during protected startup and maintenance.
+The original protocol-1 store grant remains accepted without changing its scope;
+the new, lazy delivery store holds a separate ordinary lease for its lifetime,
+with writes deferred until activation.
+Current updaters include the store in their full backup and reservation. This
+compatibility path does not permit initialization or migration outside an old grant.
+Only small reports are
 retained in CI, including completed per-case reports if a later case fails. The
 aggregate success report is written only after every selected journey passes;
 partial case reports and a timed-out job are not an overall pass.

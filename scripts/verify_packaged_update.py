@@ -226,12 +226,12 @@ def history(root: Path, key: str):
     return {name: response[name] for name in ("events", "completed_turn_ids")}
 
 
-def canonical_records(path: Path) -> dict:
+def canonical_records(path: Path, tables: tuple[str, ...] = ("sessions", "messages", "checkpoints", "pending_inputs")) -> dict:
     """Compare logical records, not SQLite's transient WAL/checkpoint layout."""
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         return {table: [list(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
-                for table in ("sessions", "messages", "checkpoints", "pending_inputs")}
+                for table in tables}
 
 
 def canonical_context(root: Path) -> dict:
@@ -339,6 +339,19 @@ def snapshot(root: Path) -> None:
     case = read(root / "case.json")
     config_path = root / "account/.nanobot/config.json"
     set_config_path(config_path)
+    delivery = config_path.parent / "delivery/outbox.sqlite3"
+    if not delivery.exists() and importlib.util.find_spec("nanobot.channels.outbox") is not None:
+        from nanobot.bus.delivery import DeliveryRequest
+        from nanobot.bus.events import OutboundMessage
+        from nanobot.channels.outbox import DeliveryOutbox
+
+        # Keep a real durable result pending through the private journey without
+        # attempting an external send. Older retained code has no outbox owner.
+        with patch("nanobot.channels.outbox.time.time", return_value=time.time() + 3600):
+            DeliveryOutbox(delivery).record(OutboundMessage(
+                "whatsapp", "acceptance-offline", "Retain this scheduled result",
+                delivery=DeliveryRequest("acceptance-run", "websocket:legacy-acceptance", None),
+            ))
     if importlib.util.find_spec("nanobot.session.location") is not None:
         from nanobot.session.location import SessionLocation
         location = SessionLocation(root / "workspace")
@@ -367,6 +380,7 @@ def snapshot(root: Path) -> None:
                                 "display_only": display_before, "canonical_only": context_before,
                                 "files": preserved, "run_id": receipt.run_id,
                                 "database": str(sessions / "sessions.sqlite3"),
+                                "delivery": (canonical_records(delivery, ("deliveries",)) if delivery.exists() else None),
                                 "canonical": (canonical_records(sessions / "sessions.sqlite3")
                                               if (sessions / "sessions.sqlite3").exists() else None)})
 
@@ -433,6 +447,7 @@ def verify(root: Path) -> dict:
     return {**case, "phase": status.phase.value, "running_version": receipt.version,
             "restarted": True, "config_and_legacy_bytes_preserved": True,
             "authenticated_history_preserved": True, "sqlite_records_preserved": True if sqlite_expected else None,
+            "scheduled_delivery_preserved": True if before.get("delivery") is not None else None,
             "continued_write_and_second_start": True}
 
 
@@ -455,6 +470,9 @@ def verify_data(root: Path, expected: str) -> bool:
     canonical = canonical_records(database) if sqlite_expected else None
     if before["canonical"] is not None:
         assert canonical == before["canonical"]
+    delivery = root / "account/.nanobot/delivery/outbox.sqlite3"
+    if before.get("delivery") is not None:
+        assert canonical_records(delivery, ("deliveries",)) == before["delivery"]
     if canonical is not None:
         assert "websocket:display-only" not in {row[0] for row in canonical["sessions"]}
         # Display transcripts are not canonical agent context. Check the actual
@@ -476,6 +494,8 @@ def verify_data(root: Path, expected: str) -> bool:
     assert canonical_context(root) == before["canonical_only"]
     if sqlite_expected:
         assert canonical_records(database) == canonical
+    if before.get("delivery") is not None:
+        assert canonical_records(delivery, ("deliveries",)) == before["delivery"]
     assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
     return sqlite_expected
 

@@ -24,7 +24,7 @@ from nanobot.installation_lock import FileLease, InstallationBusyError, file_acc
 from nanobot.utils.atomic_file import atomic_write_lines, read_atomic_bytes
 
 _DATA_STORES = (
-    "sessions", "webui", "media", "auth", "pairing.json", "cron",
+    "sessions", "webui", "media", "auth", "pairing.json", "cron", "delivery",
     "llm_usage.sqlite3", "llm_usage.sqlite3-wal", "llm_usage.sqlite3-shm",
     "whatsapp-auth", "weixin", "matrix-store", "linear", "mochat", "cli-apps/installed.json",
 )
@@ -223,6 +223,31 @@ def profile_data_paths(*, home: Path, data_dir: Path, config: Path, workspace: P
         *(data_dir / name for name in _DATA_STORES),
         *(workspace / name for name in _WORKSPACE_STORES),
     ))
+
+
+@contextmanager
+def profile_data_access(*, home: Path, data_dir: Path, config: Path, workspace: Path,
+                        grant: DataStartupGrant | None = None) -> Generator[None]:
+    """Lease current stores without expanding an older updater's startup grant.
+
+    Protocol 1 predates the delivery store. That owner is lazy and cannot open
+    its database until runtime admission opens. Under an exact legacy grant,
+    lease delivery normally, separately from protected initialization. No data
+    migration or delivery write is permitted before activation. New updaters
+    include it in the ordinary full backup/reservation scope.
+    """
+    paths = profile_data_paths(home=home, data_dir=data_dir, config=config, workspace=workspace)
+    delivery = (data_dir / "delivery").absolute()
+    legacy = tuple(path for path in paths if path != delivery)
+    if grant is not None:
+        pending = _reservation(Path.home() / ".nanobot/updates/data-locks/maintenance.json")
+        if (pending is not None and pending.job_id == grant.job_id
+                and pending.grants.get(grant.participant) == (grant.digest, _canonical_roots(legacy))):
+            with data_access(legacy, grant=grant), data_access((delivery,)):
+                yield
+            return
+    with data_access(paths, grant=grant):
+        yield
 
 
 def finish_data_handoff(paths: Iterable[str | Path], *, job_id: str) -> None:

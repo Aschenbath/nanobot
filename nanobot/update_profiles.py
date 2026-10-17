@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import nanobot
 from nanobot.config.home import get_home_path
-from nanobot.data_access import DataStartupGrant, data_access, profile_data_paths
+from nanobot.data_access import DataStartupGrant, profile_data_access, profile_data_paths
 from nanobot.gateway.runtime import (
     GatewayHealthIdentity,
     GatewayInstance,
@@ -199,7 +199,8 @@ def record_gateway_profile(instance: GatewayInstance, runtime: GatewayRuntime, *
     )
     if grant is not None and grant.participant != receipt.id:
         raise ValueError("Startup grant belongs to a different gateway instance")
-    with data_access(receipt.data_paths, grant=grant):
+    with profile_data_access(home=Path(receipt.home), data_dir=Path(receipt.data_dir),
+                             config=Path(receipt.config), workspace=Path(receipt.workspace), grant=grant):
         with FileLock(str(directory / "profiles.lock"), timeout=5):
             _save(directory, receipt)
         try:

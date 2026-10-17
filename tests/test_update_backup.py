@@ -132,6 +132,35 @@ def test_no_space_and_missing_original_backup_block_before_snapshot(scoped_data,
         ensure_backup(job, sources, "a" * 64, mutated=True)
 
 
+def test_scheduled_delivery_is_backed_up_and_changes_block_program_rollback(tmp_path):
+    from nanobot.bus.delivery import DeliveryRequest
+    from nanobot.bus.events import OutboundMessage
+    from nanobot.channels.outbox import DeliveryOutbox
+
+    data, job = tmp_path / "data", tmp_path / "job"
+    job.mkdir()
+    outbox = DeliveryOutbox(data / "delivery/outbox.sqlite3")
+    message = OutboundMessage("whatsapp", "chat", "undelivered scheduled result",
+                              delivery=DeliveryRequest("run", "whatsapp:chat", None))
+    outbox.record(message)
+    sources = unique_sources([BackupSource(str(path)) for path in profile_data_paths(
+        home=tmp_path / "home", data_dir=data, config=data / "config.json", workspace=tmp_path / "workspace",
+    )])
+    archive = ensure_backup(job, sources, "a" * 64, mutated=False)
+    with ZipFile(archive) as bundle:
+        entry = next(item for item in json.loads(bundle.read("manifest.json"))["entries"]
+                     if item["path"] == str(outbox.path))
+        saved = bundle.read(entry["member"])
+    assert saved == outbox.path.read_bytes()
+    copied = tmp_path / "retained-outbox.sqlite3"
+    copied.write_bytes(saved)
+    assert DeliveryOutbox(copied).ready()[0].content == message.content
+    outbox.finish(message, "sent")
+    with pytest.raises(ValueError, match="changed"):
+        verify_backup(job, sources, "a" * 64, unchanged=True)
+    assert outbox.ready() == []  # Never replace the live store with the old backup.
+
+
 def test_scope_cannot_include_its_own_job(tmp_path):
     job = tmp_path / "sessions/job"
     job.mkdir(parents=True)

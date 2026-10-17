@@ -4,12 +4,17 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from uuid import uuid4
 
 import pytest
 
-from nanobot.data_access import DataStartupGrant, data_access
+from nanobot.data_access import (
+    DataStartupGrant,
+    data_access,
+    profile_data_access,
+    profile_data_paths,
+)
 from nanobot.installation_lock import InstallationBusyError
 
 _CHILD = """
@@ -132,6 +137,32 @@ def test_job_reservation_survives_process_exit_until_same_scope_is_recovered(pri
     with data_access([store], updating=True, job_id=job_id) as recovered:
         recovered.release_reservation()
     with data_access([store]):
+        pass
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_profile_handoff_keeps_delivery_leased_without_expanding_old_grant(private_home, tmp_path, legacy):
+    selectors = dict(home=private_home, data_dir=tmp_path / "data",
+                     config=tmp_path / "data/config.json", workspace=tmp_path / "workspace")
+    delivery = selectors["data_dir"] / "delivery"
+    scope = tuple(path for path in profile_data_paths(**selectors) if not legacy or path != delivery)
+    job_id, participant = str(uuid4()), "a" * 64
+    with data_access(scope, updating=True, job_id=job_id) as owner:
+        owner.reserve()
+    with ExitStack() as runtime:
+        with data_access(scope, job_id=job_id) as owner:
+            grant = owner.grant_startup(participant, scope)
+            runtime.enter_context(profile_data_access(**selectors, grant=grant))
+            # The old reservation is not enlarged to authorize initialization.
+            saved = json.loads(owner.reservation_path.read_text())
+            assert saved["grants"][participant]["roots"] == sorted(str(path.resolve()).casefold() for path in scope)
+            assert not delivery.exists()
+            owner.release_reservation()
+        # Once handoff ends, the running profile still owns the new store lease.
+        with pytest.raises(InstallationBusyError, match="data is in use"):
+            with data_access((delivery,), updating=True):
+                pytest.fail("A delivery store writer escaped the runtime lease")
+    with data_access((delivery,), updating=True):
         pass
 
 
