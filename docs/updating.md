@@ -543,6 +543,8 @@ first asks the gateway to settle the old job, then shows a fresh version and res
 review. Installation starts only after a separate **Update & restart** confirmation.
 This also allows an expired plan to be replaced without extending its old consent.
 
+After reconnecting to an interrupted preparation, **Review update** first asks the gateway to settle that preparation. The gateway refuses while a preparation owner is still active. A successful settlement records `preparation_failed` and opens a fresh review; it does not start another preparation or install. If settlement is refused or its response is lost, the saved job remains available for status checks.
+
 The optional `webui.update-jobs.settle-handoff.v1` capability extends the existing
 authenticated `settings.nanobot.update.settle` action to prepared or failed handoffs.
 Settlement requires the worker, preflight and stop-coordinator leases to be free;
