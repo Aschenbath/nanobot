@@ -113,7 +113,7 @@ def test_windows_packaged_sources_keep_fault_injection_reachable(tmp_path, scena
         content = archive.read("nanobot/" + name)
         assert content.count(marker) == 1
         if scenario != "restore-interruption":
-            assert str(tmp_path / "injected-fault").encode() in content
+            assert repr(str(tmp_path / "injected-fault")).encode() in content
         compile(content, name, "exec")
     assert digest(source) == before
 
