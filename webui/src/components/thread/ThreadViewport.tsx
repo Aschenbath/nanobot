@@ -530,6 +530,9 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   }, []);
 
   const jumpToUserPrompt = useCallback((promptId: string) => {
+    // A local destination also supersedes an in-flight remote jump.
+    navigation?.cancel();
+    pendingPromptJumpRef.current = null;
     if (navigateToVisiblePrompt(promptId)) return;
     if (navigation?.prompts.some((prompt) => prompt.id === promptId && prompt.cursor)) {
       threadMotionRef.current?.takeUserControl();
@@ -1146,10 +1149,10 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
             variant="outline"
             size="icon"
             onClick={() => {
+              navigation?.latest();
               if (historyWindow) {
                 pendingConversationScrollRef.current = true;
                 setVisibleMessageCount(INITIAL_HISTORY_WINDOW);
-                navigation?.latest();
               } else scrollToBottom(true, { force: true });
             }}
             className={cn(

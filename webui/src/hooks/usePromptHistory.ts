@@ -28,6 +28,7 @@ export interface PromptHistoryNavigation {
   jump: (id: string) => void;
   older: () => void;
   newer: () => void;
+  cancel: () => void;
   latest: () => void;
   retry: () => void;
   updateMessages: (update: (messages: UIMessage[]) => UIMessage[]) => void;
@@ -51,14 +52,18 @@ export function usePromptHistory(key: string | null, version: number, messages: 
   const scope = useRef({ key, client });
   const currentScope = scope.current.key === key && scope.current.client === client;
 
-  const latest = useCallback(() => {
+  const cancel = useCallback(() => {
     request.current?.abort();
     request.current = null;
-    setPages([]);
     setTarget(null);
     setLoading(false);
     setError(null);
   }, []);
+
+  const latest = useCallback(() => {
+    cancel();
+    setPages([]);
+  }, [cancel]);
 
   useEffect(() => {
     scope.current = { key, client };
@@ -161,7 +166,7 @@ export function usePromptHistory(key: string | null, version: number, messages: 
   }, [currentScope, pages, first, last]);
 
   return { prompts, window, target: currentScope ? target : null, loading: currentScope && loading,
-    error: currentScope ? error ?? indexError : null, latest, updateMessages,
+    error: currentScope ? error ?? indexError : null, cancel, latest, updateMessages,
     retry: () => error ? retry.current() : setRefresh((value) => value + 1),
     jump: (id) => {
       const prompt = prompts.find((item) => item.id === id);

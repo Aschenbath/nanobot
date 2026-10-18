@@ -1,11 +1,12 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { type ReactNode } from "react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { createRef, type ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { usePromptHistory } from "@/hooks/usePromptHistory";
 import * as api from "@/lib/api";
 import { NanobotClient } from "@/lib/nanobot-client";
 import { ClientProvider } from "@/providers/ClientProvider";
 import type { UIMessage, WebuiThreadPersistedPayload } from "@/lib/types";
+import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
 
 vi.mock("@/lib/api", async (original) => ({ ...await original<typeof api>(), fetchPromptIndex: vi.fn(), fetchWebuiThread: vi.fn() }));
 const index = Array.from({ length: 2000 }, (_, index) => ({ id: `u${index}`, preview: `question ${index}`,
@@ -85,6 +86,32 @@ it("does not request new endpoints from an older compatible host", () => {
   expect(result.current.prompts[0].id).toBe("u1999");
   expect(api.fetchPromptIndex).not.toHaveBeenCalled();
   expect(api.fetchWebuiThread).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("a local jump supersedes a pending history read without discarding the current window (history=%s)", async (history) => {
+  const viewport = createRef<ThreadViewportHandle>();
+  function Conversation() {
+    const navigation = usePromptHistory("a", 1, latest);
+    return <ThreadViewport ref={viewport} messages={latest} navigation={navigation} isStreaming={false} />;
+  }
+  render(<Conversation />, { wrapper: wrapper() });
+  await waitFor(() => expect(screen.getByTestId("prompt-rail-scroll")).toBeInTheDocument());
+  if (history) {
+    await act(async () => viewport.current?.jumpToUserPrompt("u10"));
+  }
+  const visible = history ? 10 : 1999;
+  const body = within(screen.getByTestId("thread-message-region"));
+  expect(body.getByText(`question ${visible}`)).toBeInTheDocument();
+  let finish!: (body: WebuiThreadPersistedPayload) => void;
+  vi.mocked(api.fetchWebuiThread).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  act(() => viewport.current?.jumpToUserPrompt("u20"));
+  const options = vi.mocked(api.fetchWebuiThread).mock.lastCall?.[2];
+  if (typeof options !== "object") throw new Error("expected history read");
+  act(() => viewport.current?.jumpToUserPrompt(`u${visible}`));
+  await act(async () => finish(page(20)));
+  expect(body.getByText(`question ${visible}`)).toBeInTheDocument();
+  expect(body.queryByText("question 20")).not.toBeInTheDocument();
+  expect(options.signal?.aborted).toBe(true);
 });
 
 it("keeps legacy backfilled and newly sent prompts navigable without a transcript cursor", async () => {
