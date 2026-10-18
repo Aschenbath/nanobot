@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
 import { ThreadViewport } from "@/components/thread/ThreadViewport";
+import { PaneWorkbench } from "@/components/workbench/PaneWorkbench";
 import { usePromptHistory } from "@/hooks/usePromptHistory";
 import { ClientProvider } from "@/providers/ClientProvider";
 import { NanobotClient } from "@/lib/nanobot-client";
@@ -82,14 +84,24 @@ function RailFixture() {
     return () => window.clearInterval(timer);
   }, [streaming]);
   const navigation = usePromptHistory(messages.length ? "websocket:rail" : null, version, messages);
+  const composer = <div style={{ height: parameters.has("tall-composer") ? 240 : 100, border: "1px solid #ddd", borderRadius: 20, padding: 20 }}>Message nanobot</div>;
+  const viewport = (external: boolean, navigationFrame?: HTMLElement | null) => <ThreadViewport
+    messages={messages} isStreaming={streaming} conversationKey="websocket:rail"
+    navigation={parameters.has("short") ? undefined : navigation}
+    navigationFrame={navigationFrame} composer={external ? null : composer} />;
   return <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
     {parameters.has("real") && <div>
       <button onClick={() => setVersion((value) => value + 1)}>Refresh index</button>
       <button onClick={() => setStreaming(true)} disabled={streaming}>{streaming ? "Streaming" : "Simulate stream"}</button>
     </div>}
-    <ThreadViewport messages={messages} isStreaming={streaming} conversationKey="websocket:rail"
-      navigation={parameters.has("short") ? undefined : navigation}
-      composer={<div style={{ height: 100, border: "1px solid #ddd", borderRadius: 20, padding: 20 }}>Message nanobot</div>} />
+    {parameters.has("workbench") ? <PaneWorkbench
+      panes={[{ key: "rail", title: "Rail conversation" }]} activePaneKey="rail" layout="columns" showLayoutControl={false}
+      onActivatePane={() => {}} onAddPane={() => {}} onLayoutChange={() => {}} onPaneOrderChange={() => {}}
+      renderPane={(_pane, context) => <>
+        {viewport(true, context.navigationFrame)}
+        {context.composerPortalTarget && createPortal(composer, context.composerPortalTarget)}
+      </>}
+    /> : viewport(false)}
   </main>;
 }
 await initializeI18n();

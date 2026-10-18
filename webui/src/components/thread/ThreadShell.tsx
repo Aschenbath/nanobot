@@ -538,6 +538,7 @@ interface ThreadShellProps {
   headerPortalTarget?: HTMLElement | null;
   headerActive?: boolean;
   composerPortalTarget?: HTMLElement | null;
+  navigationFrame?: HTMLElement | null;
   composerActive?: boolean;
   composerInputAriaLabel?: string;
   emptyComposerVariant?: "hero" | "thread";
@@ -756,6 +757,7 @@ export function ThreadShell({
   headerPortalTarget,
   headerActive = true,
   composerPortalTarget,
+  navigationFrame,
   composerActive = true,
   composerInputAriaLabel,
   emptyComposerVariant = "hero",
@@ -2077,6 +2079,7 @@ export function ThreadShell({
             ref={viewportRef}
             messages={displayMessages}
             navigation={promptNavigation}
+            navigationFrame={navigationFrame}
             temporary={temporary}
             isStreaming={turnActive}
             runStartedAt={currentRunStartedAt}

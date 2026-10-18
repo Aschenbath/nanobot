@@ -1,4 +1,4 @@
-import { memo, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MarkdownText } from "@/components/MarkdownText";
 import { floatingSurfaceElevationClassName } from "@/components/ui/floating-surface";
@@ -7,11 +7,11 @@ import type { UIMessage } from "@/lib/types";
 import { type PromptAnchor, userPromptAnchors } from "./promptNavigation";
 
 interface PromptRailProps {
-  bottomOffset: number;
   messages: UIMessage[];
   prompts?: PromptAnchor[];
   onJumpToPrompt: (promptId: string) => void;
   scrollRef: RefObject<HTMLDivElement>;
+  navigationFrame?: HTMLElement | null;
 }
 
 const GAP = 16;
@@ -19,13 +19,15 @@ const EDGE = 20;
 const WIDTHS = [28, 22, 16, 11];
 
 /** Complete logical list; only the visible markers and one preview are mounted. */
-export const PromptRail = memo(function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, scrollRef }: PromptRailProps) {
+export const PromptRail = memo(function PromptRail({ messages, prompts, onJumpToPrompt, scrollRef, navigationFrame }: PromptRailProps) {
   const { t } = useTranslation();
   const anchors = useMemo(() => prompts ?? userPromptAnchors(messages), [prompts, messages]);
   const anchorPositions = useMemo(() => new Map(anchors.map((anchor, index) => [anchor.id, index])), [anchors]);
   // Assistant token updates do not change which user elements need observation.
   const userIds = messages.filter((message) => message.role === "user").map((message) => message.id).join("\n");
   const railRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [frame, setFrame] = useState<{ center: number; height: number } | null>(null);
   const inside = useRef(false);
   const [height, setHeight] = useState(300);
   const [scrollTop, setScrollTop] = useState(0);
@@ -36,15 +38,33 @@ export const PromptRail = memo(function PromptRail({ bottomOffset, messages, pro
   const first = Math.max(0, Math.floor((scrollTop - padding) / GAP) - 4);
   const end = Math.min(anchors.length, Math.ceil((scrollTop + height - padding) / GAP) + 5);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const rail = railRef.current;
     if (!rail) return;
-    const measure = () => setHeight(rail.clientHeight || 300);
+    // The rail is a direct child of ThreadViewport. Unlike offsetParent this
+    // remains available while the narrow-pane CSS hides the rail.
+    const pane = frameRef.current?.parentElement;
+    const measure = () => {
+      if (navigationFrame && pane) {
+        const target = navigationFrame.getBoundingClientRect();
+        const bounds = pane.getBoundingClientRect();
+        const center = target.top + target.height / 2 - bounds.top;
+        // Keep the centered rail inside the transcript, even when a shared
+        // composer outside this viewport grows. It must not be clipped below.
+        const height = Math.max(0, Math.min(target.height * 0.8, 2 * (Math.min(center, bounds.height - center) - 12)));
+        setFrame((previous) => previous?.center === center && previous.height === height ? previous : { center, height });
+      } else setFrame(null);
+      setHeight(rail.clientHeight || 300);
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(rail);
+    if (navigationFrame && pane) {
+      observer.observe(navigationFrame);
+      observer.observe(pane);
+    }
     return () => observer.disconnect();
-  }, [anchors.length >= 2, bottomOffset]);
+  }, [anchors.length >= 2, navigationFrame]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -117,9 +137,10 @@ export const PromptRail = memo(function PromptRail({ bottomOffset, messages, pro
   };
 
   return <div
+    ref={frameRef}
     aria-label={t("thread.promptNavigator.railAria")}
-    className="thread-prompt-rail pointer-events-auto absolute top-3 z-20 w-9"
-    style={{ bottom: Math.max(16, bottomOffset) }}
+    className="thread-prompt-rail pointer-events-auto absolute inset-y-[10%] z-20 w-9"
+    style={frame ? { top: frame.center, bottom: "auto", height: frame.height, transform: "translateY(-50%)" } : undefined}
     onPointerEnter={() => { inside.current = true; }}
     onPointerLeave={() => { inside.current = false; setFocused(null); }}
   >

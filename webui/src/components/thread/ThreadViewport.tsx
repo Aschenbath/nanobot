@@ -44,6 +44,7 @@ interface ThreadViewportProps {
   runStartedAt?: number | null;
   retryStatus?: RetryStatus | null;
   composer?: ReactNode;
+  navigationFrame?: HTMLElement | null;
   emptyState?: ReactNode;
   scrollToBottomSignal?: number;
   activeTurnId?: string | null;
@@ -241,6 +242,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   runStartedAt = null,
   retryStatus = null,
   composer,
+  navigationFrame,
   emptyState,
   scrollToBottomSignal = 0,
   activeTurnId: liveTurnId = null,
@@ -1130,7 +1132,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
           messages={messages}
           prompts={navigation?.prompts}
           scrollRef={scrollRef}
-          bottomOffset={scrollButtonBottom}
+          navigationFrame={navigationFrame}
           onJumpToPrompt={jumpToUserPrompt}
         />
       ) : null}

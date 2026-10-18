@@ -16,10 +16,17 @@ test("complete rail scrolls independently, jumps to unloaded history and returns
       has_more_before: start > 0, has_more_after: start + 10 < 2000 } } });
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/browser/fixture.html?case=rail");
+  await page.goto("/browser/fixture.html?case=rail&workbench=1");
   const rail = page.getByTestId("prompt-rail-scroll");
   const body = page.getByTestId("thread-message-region");
   await expect(rail).toBeVisible();
+  // Center against the complete chat pane, not the rail's own (possibly shifted) box.
+  const expectRailCentered = async () => {
+    const pane = await page.getByRole("region", { name: "Workbench", exact: true }).boundingBox();
+    const bounds = await rail.boundingBox();
+    expect(Math.abs(bounds!.y + bounds!.height / 2 - (pane!.y + pane!.height / 2))).toBeLessThan(2);
+  };
+  await expectRailCentered();
   await expect.poll(() => rail.evaluate((node) => node.scrollHeight)).toBe(32024);
   expect(reads).toHaveLength(0);
   // Lazy markdown and content-visibility can change the scroll range during startup.
@@ -64,11 +71,28 @@ test("complete rail scrolls independently, jumps to unloaded history and returns
   expect(await rail.evaluate((node) => getComputedStyle(node).maskImage)).toContain("linear-gradient");
   await page.screenshot({ path: "test-results/prompt-rail-long.png" });
   // Short lists remain centered in the same viewport-relative space.
-  await page.goto("/browser/fixture.html?case=rail&short=1");
+  await page.goto("/browser/fixture.html?case=rail&short=1&workbench=1");
   const markers = page.getByTestId("prompt-rail-marker");
   await expect(markers).toHaveCount(5);
-  const bounds = await rail.boundingBox();
+  await expectRailCentered();
+  const bounds = await page.getByRole("region", { name: "Workbench", exact: true }).boundingBox();
   const middle = await markers.nth(2).boundingBox();
   expect(Math.abs(middle!.y + middle!.height / 2 - (bounds!.y + bounds!.height / 2))).toBeLessThan(2);
   await page.screenshot({ path: "test-results/prompt-rail-short.png" });
+  // A taller composer in a shorter window must not push navigation above center.
+  await page.setViewportSize({ width: 1440, height: 640 });
+  await page.goto("/browser/fixture.html?case=rail&short=1&tall-composer=1&workbench=1");
+  await expect(markers).toHaveCount(5);
+  await expectRailCentered();
+  const shortBounds = await page.getByRole("region", { name: "Workbench", exact: true }).boundingBox();
+  const shortMiddle = await markers.nth(2).boundingBox();
+  expect(Math.abs(shortMiddle!.y + shortMiddle!.height / 2 - (shortBounds!.y + shortBounds!.height / 2))).toBeLessThan(2);
+  await expect(markers.first()).toBeInViewport();
+  await expect(markers.last()).toBeInViewport();
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.goto("/browser/fixture.html?case=rail&short=1&workbench=1");
+  await expect(rail).not.toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(rail).toBeVisible();
+  await expectRailCentered();
 });
