@@ -1989,6 +1989,20 @@ describe("ThreadViewport", () => {
     await waitFor(() => expect(screen.getByText("message 20")).toBeInTheDocument());
   });
 
+  it("returns from a history window to a live prompt that has no saved cursor yet", async () => {
+    const viewportRef = createRef<ThreadViewportHandle>();
+    const latest = vi.fn();
+    const navigation = { prompts: [{ id: "u1", label: "hello", preview: "hello", answerPreview: "", createdAt: 1, index: 0 }],
+      window: { messages: [{ id: "old", role: "user" as const, content: "old question", createdAt: 0 }],
+        userMessageOffset: 0, hasMoreBefore: false, hasMoreAfter: true, forkBoundaryMessageCount: null },
+      target: null, loading: false, error: null, jump: vi.fn(), older: vi.fn(), newer: vi.fn(), latest, retry: vi.fn(), updateMessages: vi.fn() };
+    const view = render(<ThreadViewport ref={viewportRef} messages={messages} isStreaming={false} composer={<div />} navigation={navigation} />);
+    act(() => viewportRef.current?.jumpToUserPrompt("u1"));
+    expect(latest).toHaveBeenCalledOnce();
+    view.rerender(<ThreadViewport ref={viewportRef} messages={messages} isStreaming={false} composer={<div />} navigation={{ ...navigation, window: null }} />);
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+  });
+
   it("includes the selected prompt when one server turn exceeds the local render window", async () => {
     const history: UIMessage[] = [{ id: "old-user", role: "user", content: "Large old turn", createdAt: 1 },
       ...Array.from({ length: INITIAL_HISTORY_WINDOW + 10 }, (_, index): UIMessage => ({

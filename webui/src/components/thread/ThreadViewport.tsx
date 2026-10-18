@@ -534,13 +534,15 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       navigation.jump(promptId);
       return;
     }
-    const index = messages.findIndex((message) => message.id === promptId);
+    const localMessages = historyWindow ? latestMessages : messages;
+    const index = localMessages.findIndex((message) => message.id === promptId);
     if (index < 0) return;
+    if (historyWindow) navigation?.latest();
     threadMotionRef.current?.takeUserControl();
     pendingPromptJumpRef.current = promptId;
     setAtBottom(false);
-    setVisibleMessageCount((count) => Math.max(count, messages.length - index));
-  }, [messages, navigateToVisiblePrompt, navigation]);
+    setVisibleMessageCount((count) => Math.max(count, localMessages.length - index));
+  }, [historyWindow, latestMessages, messages, navigateToVisiblePrompt, navigation]);
 
   useLayoutEffect(() => {
     if (!navigation?.target) return;
