@@ -1705,6 +1705,11 @@ export interface PromptSummary {
   turnId: string;
 }
 
+export interface PromptIndex {
+  prompts: PromptSummary[];
+  revision?: string;
+}
+
 export interface WebuiThreadPersistedPayload {
   schemaVersion: number;
   sessionKey?: string;

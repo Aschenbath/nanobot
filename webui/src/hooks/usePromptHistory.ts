@@ -5,7 +5,7 @@ import { projectThreadEvents } from "@/lib/thread-event-projection";
 import { projectWebuiThreadMessages } from "@/lib/thread-display-projection";
 import { isModelCommandText } from "@/lib/format";
 import { isSystemCommandTurnId } from "@/lib/nanobot-client";
-import type { UIMessage, WebuiThreadPersistedPayload } from "@/lib/types";
+import type { PromptIndex, UIMessage, WebuiThreadPersistedPayload } from "@/lib/types";
 import { type PromptAnchor, userPromptAnchors } from "@/components/thread/promptNavigation";
 
 interface HistoryPage {
@@ -38,6 +38,7 @@ export function usePromptHistory(key: string | null, version: number, messages: 
   const { client, getToken, webuiCapabilities } = useClient();
   const enabled = !!key && webuiCapabilities.includes("webui.prompt-navigation.v1");
   const [index, setIndex] = useState<{ key: string; prompts: PromptAnchor[] } | null>(null);
+  const indexSnapshot = useRef<PromptIndex>();
   const [pages, setPages] = useState<HistoryPage[]>([]);
   const [target, setTarget] = useState<PromptHistoryNavigation["target"]>(null);
   const [loading, setLoading] = useState(false);
@@ -63,6 +64,7 @@ export function usePromptHistory(key: string | null, version: number, messages: 
     scope.current = { key, client };
     latest();
     setIndex(null);
+    indexSnapshot.current = undefined;
     setIndexError(null);
     return () => request.current?.abort();
   }, [key, client, enabled, latest]);
@@ -70,9 +72,11 @@ export function usePromptHistory(key: string | null, version: number, messages: 
   useEffect(() => {
     if (!enabled || !key) return;
     const controller = new AbortController();
-    void fetchPromptIndex(getToken(), key, controller.signal).then((items) => {
+    void fetchPromptIndex(getToken(), key, controller.signal, indexSnapshot.current).then((snapshot) => {
       if (controller.signal.aborted) return;
-      setIndex({ key, prompts: items.filter((item) => !isSystemCommandTurnId(item.turnId) && !isModelCommandText(item.preview)).map((item, position) => ({ ...item, index: position,
+      if (snapshot === indexSnapshot.current) { setIndexError(null); return; }
+      indexSnapshot.current = snapshot;
+      setIndex({ key, prompts: snapshot.prompts.filter((item) => !isSystemCommandTurnId(item.turnId) && !isModelCommandText(item.preview)).map((item, position) => ({ ...item, index: position,
         label: item.preview.replace(/\s+/g, " ").slice(0, 80) || `Prompt ${position + 1}`,
       })) });
       setIndexError(null);
@@ -83,17 +87,24 @@ export function usePromptHistory(key: string | null, version: number, messages: 
     return () => controller.abort();
   }, [client, enabled, getToken, key, version, refresh]);
 
+  const indexedIds = useMemo(() => new Set(index?.prompts.map((prompt) => prompt.id)), [index]);
+  const localCache = useRef<{ index: typeof index; users: UIMessage[]; prompts: PromptAnchor[] }>();
   const prompts = useMemo(() => {
     if (!enabled) return userPromptAnchors(messages);
     if (!currentScope || index?.key !== key) return [];
     // Keep live prompts and legacy prompts backfilled by the history reader
     // navigable, even when they have no persisted transcript cursor yet.
-    const ids = new Set(index.prompts.map((prompt) => prompt.id));
-    const local = userPromptAnchors(messages).filter((prompt) => !ids.has(prompt.id));
-    if (!local.length) return index.prompts;
-    return [...index.prompts, ...local].sort((a, b) => a.createdAt - b.createdAt)
+    const users = messages.filter((message) => message.role === "user" && !indexedIds.has(message.id));
+    if (!users.length) return index.prompts;
+    const cached = localCache.current;
+    if (cached?.index === index && users.length === cached.users.length
+      && users.every((user, position) => user === cached.users[position])) return cached.prompts;
+    const local = userPromptAnchors(messages).filter((prompt) => !indexedIds.has(prompt.id));
+    const merged = [...index.prompts, ...local].sort((a, b) => a.createdAt - b.createdAt)
       .map((prompt, position) => ({ ...prompt, index: position }));
-  }, [currentScope, enabled, index, key, messages]);
+    localCache.current = { index, users, prompts: merged };
+    return merged;
+  }, [currentScope, enabled, index, indexedIds, key, messages]);
 
   const updateMessages = useCallback((update: (messages: UIMessage[]) => UIMessage[]) => {
     setPages((current) => current.map((page) => ({ ...page, messages: update(page.messages) })));
@@ -109,7 +120,7 @@ export function usePromptHistory(key: string | null, version: number, messages: 
     retry.current = () => { void read(cursor, direction, id); };
     try {
       const body = await fetchWebuiThread(getToken(), key, {
-        [direction]: cursor, limit: 40, signal: controller.signal,
+        [direction]: cursor, limit: 24, signal: controller.signal,
       });
       if (controller.signal.aborted) return;
       if (!body) throw new Error("History is no longer available");

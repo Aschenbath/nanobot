@@ -80,6 +80,12 @@ async def test_navigation_public_routes_auth_validation_and_old_reads(tmp_path, 
     transcript.append_transcript_object("websocket:test", {"event": "user", "chat_id": "test", "text": "hello"})
     response = await gateway.http._dispatch_session_routes(Request(path + "/prompts", headers), path + "/prompts")
     prompt = json.loads(response.body)["prompts"][0]
+    revision = json.loads(response.body)["revision"]
+    revalidate = Headers([("Authorization", "Bearer test-token"), ("If-None-Match", f'"{revision}"')])
+    unchanged = await gateway.http._dispatch_session_routes(Request(path + "/prompts", revalidate), path + "/prompts")
+    assert unchanged.status_code == 304 and not unchanged.body
+    denied = await gateway.http._dispatch_session_routes(Request(path + "/prompts", Headers([("If-None-Match", f'"{revision}"')])), path + "/prompts")
+    assert denied.status_code == 401
     current = await gateway.http._dispatch_session_routes(Request(path + "?after=" + prompt["cursor"], headers), path)
     legacy = await gateway.http._dispatch_session_routes(Request(path + "?direction=latest&limit=40", headers), path)
     assert current.status_code == legacy.status_code == 200
@@ -87,3 +93,32 @@ async def test_navigation_public_routes_auth_validation_and_old_reads(tmp_path, 
     invalid = await gateway.http._dispatch_session_routes(Request(path + "?after=bad", headers), path)
     assert invalid.status_code == 400
     assert "webui.prompt-navigation.v1" in webui_contract()["capabilities"]
+
+
+def test_summary_deltas_rebuild_after_append_rewrite_eviction_and_delete(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    key = "websocket:index-delta"
+    for i in range(100):
+        transcript.append_transcript_object(key, {"event": "user", "text": f"question {i}", "turn_id": f"t{i}"})
+        transcript.append_transcript_object(key, {"event": "turn_end", "turn_id": f"t{i}"})
+    initial = transcript.prompt_index_response(key, None)
+    assert len(initial["prompts"]) == 100
+    transcript.append_transcript_object(key, {"event": "user", "text": "next", "turn_id": "next"})
+    appended = transcript.prompt_index_response(key, initial["revision"])
+    assert appended["replaceFrom"] == 100
+    assert len(appended["prompts"]) == 1
+    assert [*initial["prompts"], *appended["prompts"]] == transcript.build_prompt_index(key)
+    # A late answer changes the last preview; it must replace that prompt, not append it.
+    transcript.append_transcript_object(key, {"event": "message", "text": "answer", "turn_id": "next"})
+    changed = transcript.prompt_index_response(key, appended["revision"])
+    assert changed["replaceFrom"] == 100
+    assert changed["prompts"][0]["answerPreview"] == "answer"
+    transcript.delete_webui_transcript(key)
+    transcript.append_transcript_object(key, {"event": "user", "text": "replacement"})
+    replaced = transcript.prompt_index_response(key, changed["revision"])
+    assert replaced["replaceFrom"] == 0
+    assert len(replaced["prompts"]) == 1
+    transcript._PROMPT_SNAPSHOTS.clear()  # Restart/eviction sends a complete response.
+    assert transcript.prompt_index_response(key, replaced["revision"])["replaceFrom"] == 0
+    transcript.delete_webui_transcript(key)
+    assert transcript.prompt_index_response(key, replaced["revision"])["prompts"] == ()

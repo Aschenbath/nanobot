@@ -1,10 +1,10 @@
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MarkdownText } from "@/components/MarkdownText";
 import { floatingSurfaceElevationClassName } from "@/components/ui/floating-surface";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "@/lib/types";
-import { type PromptAnchor, promptTop, userPromptAnchors } from "./promptNavigation";
+import { type PromptAnchor, userPromptAnchors } from "./promptNavigation";
 
 interface PromptRailProps {
   bottomOffset: number;
@@ -19,9 +19,12 @@ const EDGE = 20;
 const WIDTHS = [28, 22, 16, 11];
 
 /** Complete logical list; only the visible markers and one preview are mounted. */
-export function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, scrollRef }: PromptRailProps) {
+export const PromptRail = memo(function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, scrollRef }: PromptRailProps) {
   const { t } = useTranslation();
   const anchors = useMemo(() => prompts ?? userPromptAnchors(messages), [prompts, messages]);
+  const anchorPositions = useMemo(() => new Map(anchors.map((anchor, index) => [anchor.id, index])), [anchors]);
+  // Assistant token updates do not change which user elements need observation.
+  const userIds = messages.filter((message) => message.role === "user").map((message) => message.id).join("\n");
   const railRef = useRef<HTMLDivElement>(null);
   const inside = useRef(false);
   const [height, setHeight] = useState(300);
@@ -49,6 +52,7 @@ export function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, sc
     // Measure only mounted messages, not the complete navigation index.
     let positions: { id: string; top: number }[] = [];
     let frame = 0;
+    let dirty = false;
     const update = () => {
       const cursor = scroller.scrollTop + 96;
       let low = 0;
@@ -61,16 +65,25 @@ export function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, sc
       setActiveId(positions[Math.max(0, high)]?.id ?? null);
     };
     const measure = () => {
+      const scrollerTop = scroller.getBoundingClientRect().top;
+      const scrollTop = scroller.scrollTop;
       positions = Array.from(scroller.querySelectorAll<HTMLElement>("[data-user-prompt-id]"),
-        (element) => ({ id: element.dataset.userPromptId!, top: promptTop(scroller, element) - 16 }));
+        (element) => {
+          const top = element.getBoundingClientRect().top;
+          return { id: element.dataset.userPromptId!, top: (scrollerTop || top ? top - scrollerTop + scrollTop : element.offsetTop) - 16 };
+        });
       update();
     };
     const schedule = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(update);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (dirty) { dirty = false; measure(); }
+        else update();
+      });
     };
     measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(() => { dirty = true; schedule(); });
     observer.observe(scroller);
     if (scroller.firstElementChild) observer.observe(scroller.firstElementChild);
     scroller.addEventListener("scroll", schedule, { passive: true });
@@ -79,17 +92,17 @@ export function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, sc
       observer.disconnect();
       scroller.removeEventListener("scroll", schedule);
     };
-  }, [messages, scrollRef]);
+  }, [userIds, scrollRef]);
 
   useEffect(() => {
     if (inside.current) return;
     const rail = railRef.current;
-    const index = anchors.findIndex((item) => item.id === activeId);
-    if (rail && index >= 0) {
+    const index = activeId ? anchorPositions.get(activeId) : undefined;
+    if (rail && index !== undefined) {
       rail.scrollTop = Math.max(0, padding + index * GAP - height / 2);
       setScrollTop(rail.scrollTop);
     }
-  }, [activeId, anchors, height, padding]);
+  }, [activeId, anchorPositions, height, padding]);
 
   if (anchors.length < 2) return null;
   const preview = focused === null ? undefined : anchors[focused];
@@ -148,4 +161,4 @@ export function PromptRail({ bottomOffset, messages, prompts, onJumpToPrompt, sc
       </div> : null}
     </div> : null}
   </div>;
-}
+});

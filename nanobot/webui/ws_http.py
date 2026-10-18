@@ -1042,7 +1042,7 @@ class GatewayHTTPHandler:
         return {"sessions": cleaned}
 
     def _handle_prompt_index_get(self, request: WsRequest, key: str) -> Response:
-        from nanobot.webui.transcript import build_prompt_index
+        from nanobot.webui.transcript import prompt_index_response, webui_transcript_revision
 
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
@@ -1051,10 +1051,20 @@ class GatewayHTTPHandler:
             return _http_error(400, "invalid session key")
         if not _is_websocket_channel_session_key(decoded_key):
             return _http_error(404, "session not found")
+        revision = webui_transcript_revision(decoded_key)
+        etag = _quoted_etag(revision) if revision else None
+        if etag and _etag_matches(_case_insensitive_header(request.headers, "If-None-Match"), etag):
+            return _http_response(b"", status=304, extra_headers=[*_NO_STORE_HEADERS, ("ETag", etag)])
+        query = _parse_query(request.path)
+        data = prompt_index_response(decoded_key, _query_first(query, "since"))
+        headers = list(_NO_STORE_HEADERS)
+        response_revision = data.get("revision")
+        if response_revision:
+            headers.append(("ETag", _quoted_etag(response_revision)))
         return _http_json_response(
-            {"prompts": build_prompt_index(decoded_key)},
+            dict(data),
             accept_encoding=_combined_list_header(request.headers, "Accept-Encoding"),
-            extra_headers=list(_NO_STORE_HEADERS),
+            extra_headers=headers,
         )
 
     async def _handle_webui_thread_get_async(self, request: WsRequest, key: str) -> Response:

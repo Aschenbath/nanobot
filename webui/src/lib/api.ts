@@ -21,7 +21,7 @@ import type {
   ModelConfigurationUpdate,
   NetworkSafetySettingsUpdate,
   PairingPayload,
-  PromptSummary,
+  PromptIndex,
   ProviderCreationUpdate,
   ProviderModelsPayload,
   ProviderOAuthCompletionResult,
@@ -438,14 +438,22 @@ export async function fetchWebuiThread(
   return parseWebuiThreadPayload(await res.json());
 }
 
-export async function fetchPromptIndex(token: string, key: string, signal: AbortSignal): Promise<PromptSummary[]> {
-  const res = await fetchWithTimeout(`/api/sessions/${encodeURIComponent(key)}/webui-thread/prompts`, {
-    headers: { Authorization: `Bearer ${token}` }, credentials: "same-origin", cache: "no-store", signal,
+export async function fetchPromptIndex(token: string, key: string, signal: AbortSignal, cached?: PromptIndex): Promise<PromptIndex> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const query = cached?.revision ? `?since=${encodeURIComponent(cached.revision)}` : "";
+  if (cached?.revision) headers["If-None-Match"] = `"${cached.revision}"`;
+  const res = await fetchWithTimeout(`/api/sessions/${encodeURIComponent(key)}/webui-thread/prompts${query}`, {
+    headers, credentials: "same-origin", cache: "no-store", signal,
   });
+  if (res.status === 304 && cached) return cached;
   if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
   const body: unknown = await res.json();
   if (!isRecord(body) || !Array.isArray(body.prompts)) throw new Error("Invalid prompt index");
-  return body.prompts.map((item: unknown) => {
+  const replaceFrom = body.replaceFrom ?? 0;
+  if (typeof replaceFrom !== "number" || !Number.isSafeInteger(replaceFrom)
+    || replaceFrom < 0 || replaceFrom > (cached?.prompts.length ?? 0)
+    || (body.revision != null && typeof body.revision !== "string")) throw new Error("Invalid prompt index revision");
+  const prompts = body.prompts.map((item: unknown) => {
     if (!isRecord(item) || typeof item.id !== "string" || typeof item.preview !== "string"
       || typeof item.answerPreview !== "string" || typeof item.cursor !== "string" || typeof item.turnId !== "string"
       || typeof item.createdAt !== "number" || !Number.isFinite(item.createdAt)) {
@@ -454,6 +462,8 @@ export async function fetchPromptIndex(token: string, key: string, signal: Abort
     return { id: item.id, preview: item.preview, answerPreview: item.answerPreview,
       cursor: item.cursor, createdAt: item.createdAt, turnId: item.turnId };
   });
+  return { prompts: [...(cached?.prompts.slice(0, replaceFrom) ?? []), ...prompts],
+    revision: typeof body.revision === "string" ? body.revision : undefined };
 }
 
 export async function fetchWebuiThreadTraceDetail(

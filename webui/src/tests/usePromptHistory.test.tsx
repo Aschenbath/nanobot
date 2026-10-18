@@ -24,7 +24,7 @@ function wrapper(enabled = true) {
     webuiCapabilities={enabled ? ["webui.prompt-navigation.v1"] : []}>{children}</ClientProvider>;
 }
 beforeEach(() => {
-  vi.mocked(api.fetchPromptIndex).mockReset().mockResolvedValue(index);
+  vi.mocked(api.fetchPromptIndex).mockReset().mockResolvedValue({ prompts: index, revision: "first" });
   vi.mocked(api.fetchWebuiThread).mockReset().mockImplementation(async (_token, _key, options) => {
     if (typeof options === "string") throw new Error("expected page options");
     return page(Number(options?.after ?? Number(options?.before) - 1));
@@ -48,7 +48,7 @@ it("loads the complete index without bodies, reads bounded windows and leaves li
   await act(async () => result.current.older());
   expect(result.current.window?.userMessageOffset).toBe(505);
   expect(result.current.window?.messages).toHaveLength(6);
-  expect(api.fetchWebuiThread).toHaveBeenLastCalledWith("test", "a", expect.objectContaining({ before: "506", limit: 40 }));
+  expect(api.fetchWebuiThread).toHaveBeenLastCalledWith("test", "a", expect.objectContaining({ before: "506", limit: 24 }));
   act(() => result.current.latest());
   expect(result.current.window).toBeNull();
   expect(latest).toHaveLength(1);
@@ -88,7 +88,7 @@ it("does not request new endpoints from an older compatible host", () => {
 });
 
 it("keeps legacy backfilled and newly sent prompts navigable without a transcript cursor", async () => {
-  vi.mocked(api.fetchPromptIndex).mockResolvedValue([]);
+  vi.mocked(api.fetchPromptIndex).mockResolvedValue({ prompts: [] });
   const { result, rerender } = renderHook(({ messages }) => usePromptHistory("a", 1, messages), {
     wrapper: wrapper(), initialProps: { messages: latest },
   });
@@ -97,4 +97,22 @@ it("keeps legacy backfilled and newly sent prompts navigable without a transcrip
   expect(result.current.prompts.map((prompt) => prompt.id)).toEqual(["u1999", "live-user"]);
   act(() => result.current.jump("live-user"));
   expect(api.fetchWebuiThread).not.toHaveBeenCalled();
+});
+
+it("reuses the full directory during token updates and conditional revalidation", async () => {
+  const user: UIMessage = { id: "live", role: "user", content: "new question", createdAt: 2001 };
+  const { result, rerender } = renderHook(({ version, messages }) => usePromptHistory("a", version, messages), {
+    wrapper: wrapper(), initialProps: { version: 1, messages: [...latest, user] },
+  });
+  await waitFor(() => expect(result.current.prompts).toHaveLength(2001));
+  const anchors = result.current.prompts;
+  for (let chunk = 0; chunk < 100; chunk++) {
+    rerender({ version: 1, messages: [...latest, user, { id: "answer", role: "assistant", content: String(chunk), createdAt: 2002 }] });
+    expect(result.current.prompts).toBe(anchors);
+  }
+  expect(api.fetchPromptIndex).toHaveBeenCalledTimes(1);
+  rerender({ version: 2, messages: [...latest, user] });
+  await waitFor(() => expect(api.fetchPromptIndex).toHaveBeenCalledTimes(2));
+  expect(api.fetchPromptIndex).toHaveBeenLastCalledWith("test", "a", expect.any(AbortSignal), { prompts: index, revision: "first" });
+  expect(result.current.prompts).toBe(anchors);
 });

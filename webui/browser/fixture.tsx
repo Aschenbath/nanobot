@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
@@ -6,6 +6,8 @@ import { ThreadViewport } from "@/components/thread/ThreadViewport";
 import { usePromptHistory } from "@/hooks/usePromptHistory";
 import { ClientProvider } from "@/providers/ClientProvider";
 import { NanobotClient } from "@/lib/nanobot-client";
+import { fetchWebuiThread } from "@/lib/api";
+import { projectThreadEvents } from "@/lib/thread-event-projection";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initializeI18n } from "@/i18n";
@@ -56,9 +58,36 @@ const railHistory: UIMessage[] = Array.from({ length: 5 }, (_, index) => [
   { id: `a${1995 + index}`, role: "assistant" as const, content: "A synthetic answer.\n\n".repeat(8), createdAt: index + 1 },
 ]).flat();
 function RailFixture() {
-  const navigation = usePromptHistory("websocket:rail", 1, railHistory);
+  const [messages, setMessages] = useState(parameters.has("real") ? [] : railHistory);
+  const [version, setVersion] = useState(1);
+  const [streaming, setStreaming] = useState(false);
+  useEffect(() => {
+    if (!parameters.has("real")) return;
+    const controller = new AbortController();
+    void fetchWebuiThread("fixture", "websocket:rail", { limit: 40, signal: controller.signal }).then((page) => {
+      if (page && !controller.signal.aborted) setMessages(projectThreadEvents(page.events));
+    });
+    return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!streaming) return;
+    let count = 0;
+    const user: UIMessage = { id: "stream-user", role: "user", content: "Streaming question", createdAt: Date.now() };
+    const timer = window.setInterval(() => {
+      count++;
+      setMessages((current) => [...current.filter((message) => message.id !== "stream-user" && message.id !== "stream-answer"), user,
+        { id: "stream-answer", role: "assistant", content: "Streaming text. ".repeat(count), createdAt: user.createdAt + 1, isStreaming: count < 120 }]);
+      if (count === 120) setStreaming(false);
+    }, 16);
+    return () => window.clearInterval(timer);
+  }, [streaming]);
+  const navigation = usePromptHistory(messages.length ? "websocket:rail" : null, version, messages);
   return <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-    <ThreadViewport messages={railHistory} isStreaming={false} conversationKey="websocket:rail"
+    {parameters.has("real") && <div>
+      <button onClick={() => setVersion((value) => value + 1)}>Refresh index</button>
+      <button onClick={() => setStreaming(true)} disabled={streaming}>{streaming ? "Streaming" : "Simulate stream"}</button>
+    </div>}
+    <ThreadViewport messages={messages} isStreaming={streaming} conversationKey="websocket:rail"
       navigation={parameters.has("short") ? undefined : navigation}
       composer={<div style={{ height: 100, border: "1px solid #ddd", borderRadius: 20, padding: 20 }}>Message nanobot</div>} />
   </main>;

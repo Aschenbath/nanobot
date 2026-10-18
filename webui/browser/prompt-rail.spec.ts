@@ -46,18 +46,18 @@ test("complete rail scrolls independently, jumps to unloaded history and returns
   await expect(first).toBeFocused();
   await first.press("Enter");
   await expect(body.getByText("Question 0", { exact: true })).toBeInViewport();
-  expect(reads).toEqual(["?limit=40&after=0"]);
+  expect(reads).toEqual(["?limit=24&after=0"]);
   await expect(body.getByText("Question 1999", { exact: true })).toHaveCount(0);
   for (const after of [10, 20, 30, 40]) {
     await body.hover();
     await page.mouse.wheel(0, 10000);
-    await expect.poll(() => reads.some((query) => query === `?limit=40&after=${after}`)).toBe(true);
+    await expect.poll(() => reads.some((query) => query === `?limit=24&after=${after}`)).toBe(true);
     await expect(body.getByText(`Question ${after + 9}`, { exact: true })).toBeAttached();
   }
   expect(await body.locator("[data-user-prompt-id]").count()).toBeLessThanOrEqual(30);
   await body.hover();
   await page.mouse.wheel(0, -100000);
-  await expect.poll(() => reads.some((query) => query.startsWith("?limit=40&before="))).toBe(true);
+  await expect.poll(() => reads.some((query) => query.startsWith("?limit=24&before="))).toBe(true);
   await page.getByRole("button", { name: "Scroll to bottom" }).click();
   await expect(body.getByText("Question 1999", { exact: true })).toBeVisible();
   await expect(rail.locator('[aria-current="location"]')).toBeInViewport();

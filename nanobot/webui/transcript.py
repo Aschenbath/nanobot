@@ -12,11 +12,12 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Mapping, NamedTuple, Sequence, TypedDict, cast
+from typing import Any, Callable, Mapping, NamedTuple, NotRequired, Sequence, TypedDict, cast
 from urllib.parse import unquote, urlparse
 
 from loguru import logger
@@ -2590,12 +2591,14 @@ class PromptSummary(TypedDict):
 
 @lru_cache(maxsize=64)
 def _chunk_prompt_summaries(path: Path, identity: tuple[int, int, int], start: int) -> tuple[PromptSummary, ...]:
-    del identity  # Part of the cache key, not the contents of the summary.
+    # Stored records use compact JSON. A normal chunk already fits the page byte
+    # budget, so do not serialize all answer/tool bodies again just to count them.
+    check_turn_bytes = identity[2] > _MAX_TRANSCRIPT_PAGE_BYTES
     result: list[PromptSummary] = []
     turns = _split_transcript_turns(_read_transcript_file(path))
     for ordinal, raw_turn in enumerate(turns, start):
         turn, _ = _compact_completed_stream_deltas(raw_turn)
-        if len(turn) > _MAX_TRANSCRIPT_PAGE_RECORDS or _records_bytes(turn) > _MAX_TRANSCRIPT_PAGE_BYTES:
+        if len(turn) > _MAX_TRANSCRIPT_PAGE_RECORDS or (check_turn_bytes and _records_bytes(turn) > _MAX_TRANSCRIPT_PAGE_BYTES):
             turn = _trim_oversized_turn(
                 turn, max_records=_MAX_TRANSCRIPT_PAGE_RECORDS,
                 max_bytes=_MAX_TRANSCRIPT_PAGE_BYTES,
@@ -2654,3 +2657,41 @@ def build_prompt_index(session_key: str) -> list[PromptSummary]:
         result.extend(_chunk_prompt_summaries(path, (stat.st_ino, stat.st_mtime_ns, stat.st_size), start))
         start += count
     return result
+
+
+# Short-lived response snapshots share the chunk summaries; they do not retain
+# full transcripts or write another durable representation of the conversation.
+_PROMPT_SNAPSHOTS: OrderedDict[tuple[Path, str], tuple[PromptSummary, ...]] = OrderedDict()
+_PROMPT_SNAPSHOT_LOCK = threading.Lock()
+
+
+class PromptIndexResponse(TypedDict):
+    prompts: Sequence[PromptSummary]
+    replaceFrom: int
+    revision: NotRequired[str | None]
+
+
+def prompt_index_response(session_key: str, previous_revision: str | None) -> PromptIndexResponse:
+    path = webui_transcript_path(session_key)
+    revision = webui_transcript_revision(session_key)
+    with _PROMPT_SNAPSHOT_LOCK:
+        previous = _PROMPT_SNAPSHOTS.get((path, previous_revision)) if previous_revision else None
+        current = _PROMPT_SNAPSHOTS.get((path, revision)) if revision else None
+    if current is None:
+        current = tuple(build_prompt_index(session_key))
+        # Do not label a read made across an append/rotation as one stable revision.
+        if revision != webui_transcript_revision(session_key):
+            return {"prompts": current, "replaceFrom": 0}
+        if revision:
+            with _PROMPT_SNAPSHOT_LOCK:
+                _PROMPT_SNAPSHOTS[path, revision] = current
+                _PROMPT_SNAPSHOTS.move_to_end((path, revision))
+                while len(_PROMPT_SNAPSHOTS) > 8:
+                    _PROMPT_SNAPSHOTS.popitem(last=False)
+    replace_from = 0
+    if previous is not None:
+        for old, new in zip(previous, current):
+            if old != new:
+                break
+            replace_from += 1
+    return {"prompts": current[replace_from:], "replaceFrom": replace_from, "revision": revision}
