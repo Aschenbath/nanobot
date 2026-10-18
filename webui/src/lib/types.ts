@@ -1690,8 +1690,19 @@ export interface OutboundMcpPresetMention {
 interface WebuiThreadPagePayload {
   before_cursor?: string | null;
   has_more_before?: boolean;
+  after_cursor?: string | null;
+  has_more_after?: boolean;
   user_message_offset?: number;
   loaded_event_count?: number;
+}
+
+export interface PromptSummary {
+  id: string;
+  preview: string;
+  answerPreview: string;
+  createdAt: number;
+  cursor: string;
+  turnId: string;
 }
 
 export interface WebuiThreadPersistedPayload {

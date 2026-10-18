@@ -1845,9 +1845,9 @@ describe("ThreadViewport", () => {
     expect(screen.getByLabelText("My message navigation")).toBeInTheDocument();
     const promptMarkers = screen.getAllByRole("button", { name: /Jump to message:/ });
     const markerTops = promptMarkers.map((marker) => Number.parseFloat(marker.style.top));
-    expect(markerTops[2]).toBeCloseTo(50);
-    expect(markerTops[1] - markerTops[0]).toBeCloseTo(16 / 3);
-    expect(markerTops[4] - markerTops[0]).toBeCloseTo(64 / 3);
+    expect(markerTops[2]).toBeCloseTo(150);
+    expect(markerTops[1] - markerTops[0]).toBeCloseTo(16);
+    expect(markerTops[4] - markerTops[0]).toBeCloseTo(64);
 
     const railMarkers = screen.getAllByTestId("prompt-rail-marker");
     expect(railMarkers).toHaveLength(promptMarkers.length);
@@ -1983,9 +1983,23 @@ describe("ThreadViewport", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Message navigation" }));
     const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Search messages" }), { target: { value: "message 20" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Jump to message: message 20" }));
 
     await waitFor(() => expect(screen.getByText("message 20")).toBeInTheDocument());
+  });
+
+  it("includes the selected prompt when one server turn exceeds the local render window", async () => {
+    const history: UIMessage[] = [{ id: "old-user", role: "user", content: "Large old turn", createdAt: 1 },
+      ...Array.from({ length: INITIAL_HISTORY_WINDOW + 10 }, (_, index): UIMessage => ({
+        id: `old-answer-${index}`, role: "assistant", content: `Answer part ${index}`, createdAt: index + 2,
+      }))];
+    render(<ThreadViewport messages={messages} isStreaming={false} composer={<div />}
+      navigation={{ prompts: [], window: { messages: history, userMessageOffset: 0,
+        hasMoreBefore: false, hasMoreAfter: true, forkBoundaryMessageCount: null },
+      target: { id: "old-user", sequence: 1 }, loading: false, error: null,
+      jump: vi.fn(), older: vi.fn(), newer: vi.fn(), latest: vi.fn(), retry: vi.fn(), updateMessages: vi.fn() }} />);
+    await waitFor(() => expect(screen.getByText("Large old turn")).toBeInTheDocument());
   });
 
   it("renders the prompt rail for compact scroll ranges", async () => {
@@ -2072,7 +2086,7 @@ describe("ThreadViewport", () => {
     expect(navigateTo).toHaveBeenLastCalledWith(312);
   });
 
-  it("buckets dense prompt rails without rendering every prompt as a marker", async () => {
+  it("windows dense prompt rails while keeping each individual prompt reachable", async () => {
     const navigateTo = vi.spyOn(ThreadCameraController.prototype, "navigateTo")
       .mockReturnValue("started");
     const promptMessages = makeLongMessages(100);
@@ -2112,13 +2126,8 @@ describe("ThreadViewport", () => {
     const promptMarkers = screen.getAllByRole("button", { name: /Jump to message:/ });
     expect(promptMarkers.length).toBeGreaterThan(3);
     expect(promptMarkers.length).toBeLessThan(100);
-    expect(
-      promptMarkers.some((marker) =>
-        marker.getAttribute("aria-label")?.includes("prompts, latest"),
-      ),
-    ).toBe(true);
-
-    fireEvent.click(promptMarkers[promptMarkers.length - 1]);
+    fireEvent.scroll(screen.getByTestId("prompt-rail-scroll"), { target: { scrollTop: 1500 } });
+    fireEvent.click(screen.getByRole("button", { name: "Jump to message: message 99" }));
 
     expect(navigateTo).toHaveBeenCalledWith(8862);
   });

@@ -13,6 +13,7 @@ import { parseWebLink } from "@/lib/web-preview";
 import { createFilePreviewResource } from "@/lib/file-preview-resource";
 import { SessionHandleLabel } from "@/components/SessionHandleLabel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
+import { usePromptHistory } from "@/hooks/usePromptHistory";
 import { ModelFallbackNotice } from "@/components/thread/ModelFallbackNotice";
 import { RecoveryNotice } from "@/components/thread/RecoveryNotice";
 import { SubagentTasksProvider } from "@/components/thread/SubagentTasks";
@@ -934,6 +935,9 @@ export function ThreadShell({
   } = useNanobotStream(
     chatId, initial, hasPendingToolCalls, handleTurnEnd, handleStreamDetach, completedTurnIds,
   );
+  const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
+  const promptNavigation = usePromptHistory(historyKey, historyVersion, displayMessages);
+  const updateNavigationMessages = promptNavigation.updateMessages;
 
   const loadTraceDetails = useCallback(async (refs: string[]) => {
     const requestKey = historyKey;
@@ -950,13 +954,15 @@ export function ThreadShell({
         .then((detail) => {
           if (activeHistoryKeyRef.current !== requestKey) return;
           const projected = projectThreadEvents(detail.events);
-          setMessages((current) => current.flatMap((message) => {
+          const hydrate = (current: UIMessage[]) => current.flatMap((message) => {
             if (message.traceDetail?.ref !== ref) return [message];
             return projected.map((replacement) => ({
               ...replacement,
               activitySegmentId: message.activitySegmentId ?? replacement.activitySegmentId,
             }));
-          }));
+          });
+          setMessages(hydrate);
+          updateNavigationMessages(hydrate);
         })
         .catch((error: unknown) => {
           if (activeHistoryKeyRef.current !== requestKey) return;
@@ -969,7 +975,7 @@ export function ThreadShell({
       requests.push(request);
     }
     await Promise.all(requests);
-  }, [getToken, historyKey, setMessages]);
+  }, [getToken, historyKey, setMessages, updateNavigationMessages]);
 
   useEffect(() => () => {
     activeHistoryKeyRef.current = null;
@@ -1033,7 +1039,6 @@ export function ThreadShell({
     };
   }, []);
 
-  const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
   const hasAppMentions = displayMessages.some((message) => message.cliApps?.length || message.mcpPresets?.length);
   useEffect(() => {
     if (hasAppMentions) requestMentionCatalogs();
@@ -2008,6 +2013,7 @@ export function ThreadShell({
   const promptNavigatorAction = historyKey ? (
     <PromptNavigator
       messages={displayMessages}
+      prompts={promptNavigation.prompts}
       onJumpToPrompt={(promptId) => viewportRef.current?.jumpToUserPrompt(promptId)}
     />
   ) : undefined;
@@ -2070,6 +2076,7 @@ export function ThreadShell({
           <ThreadViewport
             ref={viewportRef}
             messages={displayMessages}
+            navigation={promptNavigation}
             temporary={temporary}
             isStreaming={turnActive}
             runStartedAt={currentRunStartedAt}

@@ -2,6 +2,10 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
+import { ThreadViewport } from "@/components/thread/ThreadViewport";
+import { usePromptHistory } from "@/hooks/usePromptHistory";
+import { ClientProvider } from "@/providers/ClientProvider";
+import { NanobotClient } from "@/lib/nanobot-client";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initializeI18n } from "@/i18n";
@@ -46,9 +50,24 @@ function TallDialogFixture({ placement }: { placement: "center" | "bottom" }) {
 }
 
 const parameters = new URLSearchParams(location.search);
+const railClient = new NanobotClient({ url: "ws://127.0.0.1:8765", reconnect: false });
+const railHistory: UIMessage[] = Array.from({ length: 5 }, (_, index) => [
+  { id: `u${1995 + index}`, role: "user" as const, content: `Question ${1995 + index}`, createdAt: index + 1 },
+  { id: `a${1995 + index}`, role: "assistant" as const, content: "A synthetic answer.\n\n".repeat(8), createdAt: index + 1 },
+]).flat();
+function RailFixture() {
+  const navigation = usePromptHistory("websocket:rail", 1, railHistory);
+  return <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <ThreadViewport messages={railHistory} isStreaming={false} conversationKey="websocket:rail"
+      navigation={parameters.has("short") ? undefined : navigation}
+      composer={<div style={{ height: 100, border: "1px solid #ddd", borderRadius: 20, padding: 20 }}>Message nanobot</div>} />
+  </main>;
+}
 await initializeI18n();
 createRoot(document.getElementById("root")!).render(<TooltipProvider>
-  {parameters.get("case") === "history"
+  {parameters.get("case") === "rail"
+    ? <ClientProvider client={railClient} token="fixture" webuiCapabilities={["webui.prompt-navigation.v1"]}><RailFixture /></ClientProvider>
+    : parameters.get("case") === "history"
     ? <HistoryFixture />
     : <TallDialogFixture placement={parameters.get("placement") === "bottom" ? "bottom" : "center"} />}
 </TooltipProvider>);

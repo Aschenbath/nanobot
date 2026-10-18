@@ -56,6 +56,12 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
 
+## Navigate a long conversation
+
+On wide conversation panes, the left message rail lists all saved prompts independently of the loaded message page. Scroll the rail to browse, hover to preview, and click to jump directly to a prompt; its edges fade without extending the conversation layout. The header's message navigation also supports searching the prompt summaries. Both lists render a visible window rather than thousands of controls. Older compatible hosts without `webui.prompt-navigation.v1` retain navigation within already-loaded messages.
+
+Jumping reads a bounded page near the selected prompt, not every earlier answer. Browsing keeps at most three server pages, supports scrolling backward and forward, and the bottom arrow returns to the live conversation. A failed read leaves the current content intact and offers retry. The navigation index is a rebuildable, bounded summary cache over the WebUI display transcript; it does not change the SQLite session schema, agent context, configuration, or chat data. On first access to a long uncached conversation, building the summaries requires reading its transcript segments in a worker thread; later accesses reuse unchanged segment summaries.
+
 ## Sharing access
 
 The WebUI is an administration interface for one nanobot instance. Signed-in WebUI users can work with its saved topics and manage models, channels, Apps, automations, and settings within the gateway's supported capabilities. There are no per-user roles or private topic ownership boundaries. Remote package installation has an additional restriction described under [LAN Access](#lan-access); that restriction does not turn other WebUI users into read-only users.

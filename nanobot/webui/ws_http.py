@@ -808,6 +808,10 @@ class GatewayHTTPHandler:
     # -- Session routes -----------------------------------------------------
 
     async def _dispatch_session_routes(self, request: WsRequest, got: str) -> Response | None:
+        m = re.fullmatch(r"/api/sessions/([^/]+)/webui-thread/prompts", got)
+        if m:
+            return await asyncio.to_thread(self._handle_prompt_index_get, request, m.group(1))
+
         m = re.match(r"^/api/sessions/([^/]+)/webui-thread/trace-detail$", got)
         if m:
             return await asyncio.to_thread(
@@ -1037,6 +1041,22 @@ class GatewayHTTPHandler:
             cleaned.append(row)
         return {"sessions": cleaned}
 
+    def _handle_prompt_index_get(self, request: WsRequest, key: str) -> Response:
+        from nanobot.webui.transcript import build_prompt_index
+
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        return _http_json_response(
+            {"prompts": build_prompt_index(decoded_key)},
+            accept_encoding=_combined_list_header(request.headers, "Accept-Encoding"),
+            extra_headers=list(_NO_STORE_HEADERS),
+        )
+
     async def _handle_webui_thread_get_async(self, request: WsRequest, key: str) -> Response:
         diagnostics = _WebUIThreadDiagnostics()
         loop = asyncio.get_running_loop()
@@ -1156,6 +1176,12 @@ class GatewayHTTPHandler:
         if direction is not None and direction not in {"latest"}:
             return _http_error(400, "invalid direction")
         before = _query_first(query, "before")
+        after = _query_first(query, "after")
+        if after is not None:
+            from nanobot.webui.transcript import decode_transcript_cursor
+
+            if before is not None or direction is not None or decode_transcript_cursor(after) is None:
+                return _http_error(400, "invalid navigation cursor")
         from nanobot.session.webui_turns import (
             websocket_turn_id,
             websocket_turn_transcript_persistence_failed,
@@ -1180,6 +1206,7 @@ class GatewayHTTPHandler:
                 active_turn_transcript_persistence_failed
             ),
             "before": before,
+            "after": after,
             "direction": direction,
             "gateway_instance": self.tokens.instance_id,
             "limit": limit,
@@ -1217,6 +1244,7 @@ class GatewayHTTPHandler:
             limit=limit,
             direction=direction,
             before=before,
+            after=after,
             stats=diagnostics.transcript if diagnostics is not None else None,
         )
         if diagnostics is not None:
