@@ -123,7 +123,7 @@ async def _pid_stopped(pid: int, *, timeout: float = 6) -> None:
     assert not _pid_running(pid), f"subprocess {pid} is still running after {timeout}s"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process probe")
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc process probe")
 @pytest.mark.parametrize("disappeared", [FileNotFoundError, ProcessLookupError])
 async def test_pid_stopped_tolerates_exit_during_proc_read(monkeypatch, disappeared):
     stat = Mock()

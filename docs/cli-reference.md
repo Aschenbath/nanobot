@@ -201,6 +201,7 @@ Interactive mode exits with `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 | `nanobot webui --background` | Deprecated; prints the equivalent explicit `nanobot gateway --background` command and exits |
 | `nanobot webui --dev` | Start the gateway and Vite together at `http://127.0.0.1:5173`, with live frontend updates |
 | `nanobot webui --no-open` | Prepare and start the WebUI without opening a browser |
+| `nanobot webui --no-dock` | Suppress the macOS Dock icon; detached mode remembers this choice until the next WebUI launch |
 | `nanobot webui --port <port>` | Set the WebUI/WebSocket port |
 | `nanobot webui --gateway-port <port>` | Override the gateway health port |
 | `nanobot webui --yes` | Apply safe localhost WebUI defaults without confirmation; configure provider credentials in **Settings → Models** |

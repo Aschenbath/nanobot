@@ -26,6 +26,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.cli import terminal as cli_terminal
+from nanobot.cli.dock import watch_gateway_icon
 from nanobot.cli.runtime_config import _migrate_cron_store
 from nanobot.cli.webui_support import (
     _gateway_health_bind_note,
@@ -997,6 +998,7 @@ def _run_claimed_gateway(
 
     async def run() -> None:
         startup_gate = ExitStack()
+        desktop_activated = asyncio.Event()
         tasks: list[asyncio.Task[Any]] = []
         shutdown_task: asyncio.Task[Any] | None = None
         runtime_tasks: asyncio.Future[list[Any]] | None = None
@@ -1066,8 +1068,17 @@ def _run_claimed_gateway(
                 async def activate(startup: "GatewayStartup") -> None:
                     await startup.wait_for_activation(health_identity)
                     startup_gate.close()
+                    desktop_activated.set()
 
                 tasks.append(asyncio.create_task(activate(update_startup), name="nanobot-update-activation"))
+            else:
+                desktop_activated.set()
+            if _webui_channel_enabled(config):
+                tasks.append(asyncio.create_task(
+                    watch_gateway_icon(webui_url, instance=gateway_instance.paths.state_path,
+                                       activated=desktop_activated),
+                    name="nanobot-dock",
+                ))
             if update_profile is not None:
                 from nanobot.update_stop import watch_gateway_stop
 

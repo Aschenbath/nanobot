@@ -79,6 +79,8 @@ not silently adopted. Explicit `nanobot webui --detach` also starts a persistent
 gateway; ordinary `webui` launches outside installer-managed environments retain
 their previous on-demand lifetime. `--detach --dev` is unsupported.
 
+On a local macOS desktop, the detached WebUI's Dock icon belongs to the gateway, not the terminal that launched it. Closing that terminal keeps the icon available; stopping the gateway removes it. A restarted or restored gateway recreates it only after activation. The icon can disappear during package replacement and does not report update progress. `--no-dock` remembers the choice for that instance. The optional helper holds no installation/data lease and is not loaded by the frozen updater or recovery supervisor. See the [Dock controls](webui.md#macos-dock-icon).
+
 Compatible POSIX uv 0.11.16 **registry** tool installations started with
 `nanobot gateway --background` or `nanobot webui --detach` also support the inline
 route. It preserves recorded extras, constraints and additional packages. Other

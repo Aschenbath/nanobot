@@ -56,6 +56,16 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
 
+### macOS Dock icon
+
+In a local macOS desktop session, `nanobot webui` shows the nanobot cat in the Dock. Click it to open the current local WebUI in your default browser. `--no-open` keeps the icon but does not open a page automatically. SSH, headless, Windows and Linux launches keep their existing behavior. A one-shot connection to an unmanaged gateway does not leave an icon behind.
+
+Ordinary foreground launchers for the same instance, browser address and installation share an icon. The last WebUI launcher removes it when it exits, including after a terminal crash. For `--detach` and official-installer automatic background launch, the gateway owns the icon instead: closing the terminal does not remove it. An ordinary restart, successful update or supported automatic restoration shows it again once that gateway is activated. The icon can disappear while the service is stopped for an update; it is not an update-progress indicator. `nanobot gateway stop` removes it without changing configuration or chats.
+
+Use `--no-dock` to disable the icon for a launcher. In detached mode this also remembers the choice for that instance's later restarts; running `nanobot webui` without it enables the background icon again. The request is stored beside the runtime state as a small `.dock` file, without a URL or credentials. Choosing **Hide Dock Icon** or quitting the icon hides only this shortcut, not the gateway or its tasks. It stays hidden until another explicit launch or service restart. The icon is not a standalone launcher to keep pinned when nanobot is stopped.
+
+The helper uses the installed Python and macOS frameworks, with no Xcode, extra Python dependency, executable download or separate updater. Its temporary application wrapper is private to the OS user. The login URL stays in memory and a private socket, never in process arguments or a file. The helper holds no installation or data lease, and protected restart does not start it until activation. A missing image or unavailable desktop does not prevent WebUI startup, updates or independent recovery. Non-loopback browser addresses continue to use the normal browser launcher.
+
 ## Navigate a long conversation
 
 On wide screens, use the message rail on the left to browse saved prompts; click one to jump to it. You can also search prompt summaries from the header. The WebUI loads messages near the selected prompt rather than the entire conversation. Scroll backward or forward to browse, or use the bottom arrow to return to the latest messages. If loading fails, your current content stays visible and you can retry. Older compatible hosts may only support navigation among messages that are already loaded.

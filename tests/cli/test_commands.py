@@ -5,7 +5,7 @@ import shutil
 import signal
 import sys
 import urllib.error
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,6 +49,8 @@ runner = CliRunner()
 def mock_webui_bundle(monkeypatch) -> MagicMock:
     prepare_bundle = MagicMock()
     monkeypatch.setattr(cli_webui, "_prepare_webui_bundle_for_gateway", prepare_bundle)
+    monkeypatch.setattr(cli_webui, "dock_icon", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(cli_webui, "request_gateway_icon", lambda *_args, **_kwargs: None)
     return prepare_bundle
 
 
@@ -2371,11 +2373,15 @@ def test_webui_background_points_to_the_single_persistent_gateway_command(
 
 
 @pytest.mark.parametrize("managed", [False, True], ids=["explicit-detach", "fresh-installer"])
-def test_webui_detached_gateway_does_not_retain_launcher_lease(monkeypatch, tmp_path, managed):
+@pytest.mark.parametrize("no_dock", [False, True])
+def test_webui_detached_gateway_does_not_retain_launcher_lease(monkeypatch, tmp_path, managed, no_dock):
     config = tmp_path / "config.json"
     _patch_webui_provider_ready(monkeypatch)
     _patch_gateway_ports_free(monkeypatch)
     seen = _patch_webui_managed_gateway(monkeypatch)
+    requested = []
+    monkeypatch.setattr(cli_webui, "request_gateway_icon",
+                        lambda instance, *, enabled: requested.append((instance, enabled)))
     if managed:
         prefix = tmp_path / "managed"
         prefix.mkdir()
@@ -2384,12 +2390,16 @@ def test_webui_detached_gateway_does_not_retain_launcher_lease(monkeypatch, tmp_
         }))
         monkeypatch.setattr(sys, "prefix", str(prefix))
     result = runner.invoke(app, ["webui", "--config", str(config), "--yes", "--no-open",
-                                 *([] if managed else ["--detach"])])
+                                 *([] if managed else ["--detach"]),
+                                 *(["--no-dock"] if no_dock else [])])
     assert result.exit_code == 0, result.output
     assert "start_options" in seen
     assert "attached_runtime" not in seen
     assert "lease_release_wait_for_stop" not in seen
     assert "Stop nanobot" in result.stdout
+    assert len(requested) == 1
+    assert requested[0][0].parent == tmp_path / "run"
+    assert requested[0][1] is not no_dock
 
 
 def test_webui_dev_starts_vite_sidecar_and_gateway(monkeypatch, tmp_path: Path) -> None:
@@ -2748,6 +2758,34 @@ def test_launch_browser_uses_unix_launcher_on_linux(monkeypatch) -> None:
 
     assert cli_webui_support._launch_browser("http://127.0.0.1:8765/") is True
     assert opened == ["http://127.0.0.1:8765/"]
+
+
+@pytest.mark.parametrize("no_dock", [False, True])
+def test_webui_dock_lifetime_wraps_the_attached_client(monkeypatch, tmp_path, no_dock):
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    _patch_webui_provider_ready(monkeypatch)
+    _patch_webui_managed_gateway(monkeypatch)
+    events = []
+
+    @contextmanager
+    def desktop(url, *, instance, enabled):
+        assert url.startswith("http://127.0.0.1:")
+        assert instance.parent == tmp_path / "run"
+        assert enabled is not no_dock
+        events.append("icon attached")
+        try:
+            yield
+        finally:
+            events.append("icon detached")
+
+    monkeypatch.setattr(cli_webui, "dock_icon", desktop)
+    monkeypatch.setattr(cli_webui, "_attach_to_background_gateway",
+                        lambda *_args, **_kwargs: events.append("gateway attached"))
+    result = runner.invoke(app, ["webui", "--config", str(config_file), "--no-open", "--yes",
+                                 *(["--no-dock"] if no_dock else [])])
+    assert result.exit_code == 0, result.output
+    assert events == ["icon attached", "gateway attached", "icon detached"]
 
 
 def test_webui_foreground_attaches_to_existing_managed_gateway(monkeypatch, tmp_path: Path) -> None:

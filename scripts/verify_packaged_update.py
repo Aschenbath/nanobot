@@ -199,6 +199,40 @@ def gateway(root: Path, *arguments: str) -> None:
                     "--config", str(root / "account/.nanobot/config.json")], check=True, timeout=60)
 
 
+def _dock_supported(root: Path) -> bool:
+    return bool(read(root / "case.json").get("dock")
+                and importlib.util.find_spec("nanobot.cli.dock") is not None)
+
+
+def _desktop_webui(root: Path) -> None:
+    # The real managed receipt must select automatic detachment, not a test flag.
+    subprocess.run([sys.executable, "-I", "-m", "nanobot", "webui", "--yes", "--no-open",
+                    "--config", str(root / "account/.nanobot/config.json")], check=True, timeout=60)
+
+
+def _dock_socket(root: Path) -> Path:
+    from nanobot.cli.dock import _directory
+    from nanobot.cli.webui_support import _webui_browser_url
+    from nanobot.config.loader import load_config
+    from nanobot.gateway.runtime import GatewayInstance
+
+    config = root / "account/.nanobot/config.json"
+    instance = GatewayInstance.resolve(config_path=config)
+    return _directory(instance.paths.state_path, _webui_browser_url(load_config(config))) / "s"
+
+
+def _wait_dock(address: Path, *, present: bool) -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        processes = subprocess.run(["/usr/bin/pgrep", "-f", str(address)], capture_output=True,
+                                   text=True, check=False)
+        count = len(processes.stdout.split())
+        if count == (1 if present else 0):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"Expected {'one live' if present else 'no'} Dock helper")
+
+
 def request(root: Path, path: str):
     import httpx
 
@@ -329,7 +363,11 @@ def seed(root: Path) -> None:
                   {"event": "turn_end", "chat_id": chat_id}]
         (webui_dir / f"websocket_{chat_id}.jsonl").write_text(
             "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events), encoding="utf-8")
-    gateway(root, "--background")
+    if _dock_supported(root):
+        _desktop_webui(root)
+        _wait_dock(_dock_socket(root), present=True)
+    else:
+        gateway(root, "--background")
 
 
 def snapshot(root: Path) -> None:
@@ -448,7 +486,9 @@ def verify(root: Path) -> dict:
             "restarted": True, "config_and_legacy_bytes_preserved": True,
             "authenticated_history_preserved": True, "sqlite_records_preserved": True if sqlite_expected else None,
             "scheduled_delivery_preserved": True if before.get("delivery") is not None else None,
-            "continued_write_and_second_start": True}
+            "continued_write_and_second_start": True,
+            "dock_socket": str(_dock_socket(root)) if _dock_supported(root) else None,
+            "dock_restart_verified": True if _dock_supported(root) else None}
 
 
 def verify_data(root: Path, expected: str) -> bool:
@@ -459,6 +499,15 @@ def verify_data(root: Path, expected: str) -> bool:
     before = read(root / "before.json")
     receipt = ready(root, expected)
     assert receipt.run_id != before["run_id"], "Update did not restart the gateway"
+    if _dock_supported(root):
+        from nanobot.gateway.runtime import GatewayInstance
+
+        instance = GatewayInstance.resolve(config_path=root / "account/.nanobot/config.json")
+        # A historical package without this feature cannot record desktop intent.
+        # After that first upgrade, exercise the real new launcher, then restart.
+        if not instance.paths.state_path.with_suffix(".dock").exists():
+            _desktop_webui(root)
+        _wait_dock(_dock_socket(root), present=True)
     assert {name: digest(Path(name)) for name in before["files"]} == before["files"]
     key = "websocket:" + before["chat_id"]
     assert history(root, key) == before["history"]
@@ -486,8 +535,12 @@ def verify_data(root: Path, expected: str) -> bool:
     canonical = canonical_records(database) if sqlite_expected else None
     assert len(continued["events"]) > len(before["history"]["events"])
     gateway(root, "stop")
+    if _dock_supported(root):
+        _wait_dock(_dock_socket(root), present=False)
     gateway(root, "--background")
     ready(root, expected)
+    if _dock_supported(root):
+        _wait_dock(_dock_socket(root), present=True)
     assert history(root, key) == continued
     assert history(root, "websocket:legacy-acceptance") == before["legacy"]
     assert history(root, "websocket:display-only") == before["display_only"]
@@ -575,7 +628,7 @@ def run(args) -> dict:
             if Version(earlier) >= Version(version):
                 raise ValueError("Skipped Preview requires a target newer than dev0")
         baseline = fixture_wheel(baseline_source, case_root / "baseline", earlier, feed=feed, scenario=scenario)
-        case = {"scenario": scenario, "baseline_version": earlier,
+        case = {"scenario": scenario, "baseline_version": earlier, "dock": args.dock,
                 "target_version": str(parse_wheel_filename(selected.name)[1]),
                 "baseline_kind": "instrumented historical wheel" if args.baseline_wheel else "instrumented version fixture",
                 "baseline_source_sha256": digest(baseline_source), "baseline_fixture_sha256": digest(baseline),
@@ -634,6 +687,12 @@ def run(args) -> dict:
                     config = read(config_file)
                     _wait_for_closed_listeners((config["gateway"]["port"], config["channels"]["websocket"]["port"]))
         results[-1]["gateway_process_stopped"] = True
+        dock_address = results[-1].get("dock_socket")
+        if not dock_address:
+            dock_address = results[-1].get("subsequent_update", {}).get("dock_socket")
+        if dock_address:
+            _wait_dock(Path(dock_address), present=False)
+            results[-1]["dock_stopped"] = True
         print(f"PASS {scenario}: {results[-1]['phase']}", flush=True)
     assert digest(target) == original_hash
     return {"platform": platform.system(), "machine": platform.machine(), "python": platform.python_version(),
@@ -650,10 +709,13 @@ def main() -> None:
     parser.add_argument("--commit")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--scenario", action="append", choices=SCENARIOS)
+    parser.add_argument("--dock", action="store_true", help="Verify native macOS background Dock lifecycle")
     parser.add_argument("--phase", choices=("prepare", "verify"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not sys.flags.isolated:
         parser.error("Run with python -I")
+    if args.dock and sys.platform != "darwin":
+        parser.error("--dock requires a real macOS desktop session")
     if args.phase:
         if sys.prefix == sys.base_prefix:
             parser.error("Product phases must run in the disposable installation")

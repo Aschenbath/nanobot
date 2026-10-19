@@ -293,6 +293,8 @@ It does not use the maintainer's configuration, chat records, model or credentia
 The healthy target is not rewritten. The report records its SHA-256 and candidate
 commit. Faulted targets are separate private files and must never be uploaded.
 
+On a local macOS desktop, add `--dock` to verify the real AppKit helper alongside these journeys. The managed receipt must make `nanobot webui --yes --no-open` detach automatically; each applicable running version must have one helper, preserve desktop intent through upgrade/recovery and a second start, and remove its helper on stop. Historical packages without Dock support gain the icon only after their first healthy upgrade and an explicit WebUI launch. This is process/lifecycle acceptance, not a visual Dock-click test; do not enable it on headless CI or claim native Windows/Linux icon coverage.
+
 The journeys cover normal upgrade, consecutive upgrades, an earlier Preview, candidate import/startup
 failure, backup-write failure after shutdown, worker termination, partial package
 metadata loss, and interruption between the program-restoration renames. Each
