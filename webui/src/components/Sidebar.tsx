@@ -51,7 +51,7 @@ interface SidebarProps {
   onRequestDelete: (key: string, label: string) => void;
   onRequestDeleteMany?: (items: SidebarDeleteItem[]) => void;
   onTogglePin: (key: string) => void;
-  onRequestRename: (key: string, label: string) => void;
+  onRequestRename: (key: string, title: string) => Promise<void>;
   onRequestRenameTab?: (key: string, label: string) => void;
   onToggleArchive: (key: string) => void;
   paneGroups?: Record<string, SidebarPaneGroup>;

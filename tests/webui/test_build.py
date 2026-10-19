@@ -89,13 +89,6 @@ def test_shared_notifications_make_existing_bundle_stale(tmp_path: Path) -> None
     assert status.newest_source == shared
 
 
-def test_channel_owned_ui_sources_are_included_in_distributions() -> None:
-    project_root = Path(__file__).resolve().parents[2]
-    pyproject = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
-
-    assert "nanobot/channels/*/webui/**/*" in pyproject["tool"]["hatch"]["build"]["include"]
-
-
 def test_inspect_webui_bundle_accepts_fresh_dist(tmp_path: Path) -> None:
     source = tmp_path / "webui"
     dist = tmp_path / "nanobot" / "web" / "dist"

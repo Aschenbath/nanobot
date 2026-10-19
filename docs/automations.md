@@ -46,17 +46,9 @@ Write what the task should do, such as "Remind me to drink water". nanobot sends
 
 For separate sends, specify the recipients in the instructions. The agent can still use `message` to send to other chats, send to several recipients, or attach files. Existing tasks that explicitly request this tool remain supported.
 
-Writing "send to WhatsApp" in the instructions does not change the task's saved chat. Its normal
-reply still returns to that chat. A separate send requires the agent to call `message` with the
-other destination.
-For a fixed destination, create the task in that chat or use
-[Change the Chat for a Scheduled Task](#change-the-chat-for-a-scheduled-task). Keep explicit
-`message` instructions when you want separate sends or several recipients.
+Writing "send to WhatsApp" in the instructions does not change the task's saved chat. Its normal reply still returns to that chat. A separate send requires the agent to call `message` with the other destination. For a fixed destination, create the task in that chat or use [Change the Chat for a Scheduled Task](#change-the-chat-for-a-scheduled-task). Keep explicit `message` instructions when you want separate sends or several recipients.
 
-If a result does not arrive, check the saved chat and the run's `message` calls first. Then check
-the gateway's channel send errors. `Turn completed` confirms execution finished, not that the
-destination received a message. A successful `message` tool return confirms queue acceptance,
-not receipt by the chat service. Do not resend until you check whether the first send arrived.
+If a result does not arrive, check that the task finished, then check its saved chat and destination. For a separate send, review the run's `message` calls and the gateway's channel send errors. `Turn completed` means the task finished; it does not confirm that the chat service delivered the message. A successful `message` result means nanobot accepted it for sending, not that it arrived. Check the destination before trying again to avoid duplicates.
 
 For background checks that should stay quiet unless there is something useful to report, use heartbeat instead of a user-created scheduled automation.
 
@@ -66,26 +58,13 @@ An upgrade does not overwrite your workspace's `AGENTS.md` or convert existing h
 
 ### Scheduled Result Delivery
 
-The gateway saves final scheduled messages before it accepts them into the outgoing queue.
-This includes explicit `message` calls in existing tasks. Each recipient has a separate delivery
-record. Progress, reasoning, and streaming events do not enter this queue. WebUI streaming and
-saved chat history keep their existing behavior. External channels receive a complete scheduled
-reply instead of a streamed reply. Ordinary chat streaming is unchanged.
+The gateway saves final scheduled messages before it accepts them into the outgoing queue. This includes explicit `message` calls in existing tasks. Each recipient has a separate delivery record. Progress, reasoning, and streaming events do not enter this queue. WebUI streaming and saved chat history keep their existing behavior. External channels receive a complete scheduled reply instead of a streamed reply. Ordinary chat streaming is unchanged.
 
-The queue cannot recover a send that the agent never requested. If an expected recipient has no
-delivery record, check the task's saved chat and the run's `message` calls first.
+The queue cannot recover a send that the agent never requested. If an expected recipient has no delivery record, check the task's saved chat and the run's `message` calls first.
 
-If a channel reports that it has not sent any part of a message, the gateway retries every
-30 seconds, for up to one hour after queue acceptance. It sends the saved message to the saved
-destination. It does not run the task or call the model again. A gateway restart resumes pending
-messages. Deleting or resetting the source chat cancels pending messages from that chat generation.
-Disabling a channel prevents its pending messages from being sent. Changing, pausing, or deleting
-a task affects future runs; it does not redirect or recall an already queued result.
+If a channel reports that it has not sent any part of a message, the gateway retries every 30 seconds, for up to one hour after queue acceptance. It sends the saved message to the saved destination. It does not run the task or call the model again. A gateway restart resumes pending messages. Deleting or resetting the source chat cancels pending messages from that chat generation. Disabling a channel prevents its pending messages from being sent. Changing, pausing, or deleting a task affects future runs; it does not redirect or recall an already queued result.
 
-If a request times out after sending starts, or the gateway stops during a send, delivery is
-unknown. The gateway does not retry that message automatically: the service might already have
-accepted it. Check the destination before sending the result again. This is not an exactly-once
-delivery guarantee. Adapter or service-specific retries still follow their own protocol.
+If a request times out after sending starts, or the gateway stops during a send, delivery is unknown. The gateway does not retry that message automatically: the service might already have accepted it. Check the destination before sending the result again. This is not an exactly-once delivery guarantee. Adapter or service-specific retries still follow their own protocol.
 
 Look for `Channel delivery` in the gateway log. The run ID links execution to each delivery ID:
 
@@ -96,13 +75,7 @@ Look for `Channel delivery` in the gateway log. The run ID links execution to ea
 | `failed` | Not sent: expired, disabled channel, replaced source chat, or rejected destination/policy |
 | `unknown` | An interrupted or failed attempt might have reached the service; no automatic retry |
 
-The queue is stored in `delivery/outbox.sqlite3`, beside the active config file. Include this
-directory in instance backups; stop the gateway before copying it. It holds at most 256 pending
-messages, with a 1 MiB serialized limit per message. A full queue or storage error rejects the
-enqueue operation instead of reporting it as accepted. Terminal records discard message text
-and keep status for up to seven days, capped at 1,000 records. Existing job and session files
-are not converted. Older versions ignore this queue. After an upgrade, pending messages can
-resume only within the original one-hour limit.
+The queue is stored in `delivery/outbox.sqlite3`, beside the active config file. Include this directory in instance backups; stop the gateway before copying it. It holds at most 256 pending messages, with a 1 MiB serialized limit per message. A full queue or storage error rejects the enqueue operation instead of reporting it as accepted. Terminal records discard message text and keep status for up to seven days, capped at 1,000 records. Existing job and session files are not converted. Older versions ignore this queue. After an upgrade, pending messages can resume only within the original one-hour limit.
 
 ## Local Triggers
 
@@ -175,7 +148,7 @@ Future runs use the new chat's history and reply there by default. Previous mess
 
 You can discuss each new result in that same chat. Background task results also return there. If you delete that chat, nanobot asks you to confirm deletion of its scheduled tasks as well. Cancelling the deletion keeps the chat and tasks.
 
-The list contains existing chats on the same gateway with the same effective workspace and access mode. Chat-app targets need a running channel and a saved reply route from an earlier incoming message. If a chat is missing, send nanobot a message there and check that its channel is running. Raw recipient IDs, cross-host moves, unified sessions, system jobs, and local triggers are not supported by this selector. An older gateway keeps the existing read-only view.
+The list shows chats available on this gateway that use the same workspace and access permissions. A chat-app destination appears only after its channel is running and nanobot has received a message there. If the chat you want is missing, first send nanobot a message in that chat, then confirm its channel is running. You cannot choose a raw recipient ID, a chat on another host, a unified session, a system job, or a local trigger. Older gateway versions show this list as read-only.
 
 If a scheduled turn is running or queued, wait for it to finish before changing the chat. The current scheduler also rejects a change while another scheduled turn is active. If another editor changes the task, reopen the task and review the latest instructions. A rejected save leaves the draft visible.
 
@@ -196,7 +169,7 @@ Schedules do not replay missed occurrences after a gateway restart:
 | Schedule | Behavior after restart |
 |---|---|
 | One-time (`at`) | A time already in the past has no next run and is not automatically executed. Review the task and run it manually or create a replacement. |
-| Interval (`every`) | The next run is one full interval after restart; missed intervals are not replayed. |
+| Interval (`every`) | If the next run is still in the future and no more than one interval away, nanobot keeps that time. If it has already passed, that run is skipped and the next run is scheduled; missed runs are not replayed. |
 | Cron expression | The next matching time after restart is used; missed matches are not replayed. |
 
 Intervals are also recalculated after a run finishes, so a long-running task can shift its next interval. Use a cron expression for wall-clock scheduling, and keep the host awake and gateway running when timing matters. These rules concern scheduled jobs; queued local trigger messages have the separate recovery behavior below.

@@ -47,16 +47,36 @@ def test_windows_handoff_file_is_private_readable_and_removed(opens):
         "    if ($owned) { [IO.File]::Delete($path) }\n"
         "    [Console]::Write('removed=' + (-not [IO.File]::Exists($path)))",
     )
+    # A timeout must identify the native stage, not dump the encoded script.
+    # Keep the same deadline and all filesystem/security assertions.
+    script = """
+$testTimer = [Diagnostics.Stopwatch]::StartNew()
+function Test-Trace($stage) {
+    [Console]::Error.WriteLine($stage + ': ' + $testTimer.ElapsedMilliseconds + 'ms')
+}
+Test-Trace 'PowerShell started'
+""" + script
+    for anchor, stage in (
+        ("    Add-Type -TypeDefinition", "Compile helper"),
+        ("    $content =", "Helper compiled"),
+        ("    $file =", "Create private file"),
+        ("    $acl =", "Check private file"),
+        ("    if ($guard)", "Clean up private file"),
+    ):
+        assert anchor in script
+        script = script.replace(anchor, f"    Test-Trace '{stage}'\n" + anchor, 1)
     content = _redirect_html('http://localhost/#/?bootstrapSecret="/><script>$(test)&中文</script>')
 
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand",
-         base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
-        # This checks ACLs, sharing and cleanup, not the launcher's acknowledgement
-        # deadline. A fresh Windows runner also compiles the helper's C# via
-        # Add-Type; keep that cold-start budget separate from the 30 ms lifetime.
-        input=base64.b64encode(content) + b"\n", capture_output=True, timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand",
+             base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+            # Cold C# compilation on a Windows runner is not the acknowledgement deadline.
+            input=base64.b64encode(content) + b"\n", capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stages = (exc.stderr or b"").decode("utf-8", errors="replace")
+        pytest.fail(f"Windows handoff exceeded 60s. Native stages:\n{stages}", pytrace=False)
 
     assert result.returncode == (0 if opens else 1), result.stderr
     assert result.stdout == b"private;" + (b"1" if opens else b"") + b"removed=True"

@@ -357,6 +357,14 @@ jobs:
         working-directory: webui
         run: bun run test:coverage
 
+      - name: Install browser for layout regressions
+        working-directory: webui
+        run: bun x playwright install --with-deps chromium
+
+      - name: Test browser layout and history motion
+        working-directory: webui
+        run: bun run test:browser
+
       - name: Build WebUI
         working-directory: webui
         run: bun run build
@@ -495,6 +503,9 @@ jobs:
 
       - name: Build image with default channel dependencies
         run: docker build -t nanobot:test .
+
+      - name: Verify first-boot WebUI and API
+        run: python scripts/docker_compose_smoke.py --image nanobot:test
 
       - name: Verify Docker Compose startup and privilege boundary
         env:

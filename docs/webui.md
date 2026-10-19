@@ -56,6 +56,10 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
 
+## Navigate a long conversation
+
+On wide screens, use the message rail on the left to browse saved prompts; click one to jump to it. You can also search prompt summaries from the header. The WebUI loads messages near the selected prompt rather than the entire conversation. Scroll backward or forward to browse, or use the bottom arrow to return to the latest messages. If loading fails, your current content stays visible and you can retry. Older compatible hosts may only support navigation among messages that are already loaded.
+
 ## Sharing access
 
 The WebUI is an administration interface for one nanobot instance. Signed-in WebUI users can work with its saved topics and manage models, channels, Apps, automations, and settings within the gateway's supported capabilities. There are no per-user roles or private topic ownership boundaries. Remote package installation has an additional restriction described under [LAN Access](#lan-access); that restriction does not turn other WebUI users into read-only users.
@@ -99,7 +103,7 @@ Returning users may see an illustrated invitation to star nanobot on GitHub. It 
 
 The sidebar is the topic switcher. Each topic keeps its own history, title, workspace selection, and linked automations. Use a new topic when you want a separate context; use fork when you want to continue from an existing point without changing the original thread.
 
-On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing Rename instead moves focus into the dialog; clicking outside a menu keeps focus at the clicked destination.
+On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing **Rename** for a topic moves focus into its sidebar title. Edit the name in place, then press Enter or choose the checkmark to save; press Escape or choose × to cancel. A failed save keeps the draft and an error beside it so you can retry. Project and conversation-group names still use dialogs. Clicking outside a menu keeps focus at the clicked destination.
 
 Drag a topic within its current sidebar group to keep frequently used work in your preferred order. Drag a topic from the sidebar into the composer when you want to reference it in the next message instead of switching to it.
 
@@ -121,7 +125,9 @@ When the agent writes or edits files, the activity item shows the target path, s
 
 Files open as tabs in one preview pane. Select another file to add or switch a tab without reopening the pane; close a tab with its **×**, or close the pane with **Escape**. Tabs and width follow each session while the WebUI remains open. They are kept only in memory and cleared when that session is deleted or the connection ends. The pane overlays the conversation on narrow screens.
 
-Text previews include up to 384 KiB, with a notice when the file is truncated. Large previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the code pane scrolls in both directions.
+Markdown files open in **Preview**, with formatted headings, lists, tables and code blocks. Select **Source** to see the original Markdown with line numbers, then **Preview** to return. The control changes only the display; it does not edit or read the file again. Each newly opened or selected file starts in Preview. Images in Markdown appear as links and do not load automatically. Local links open through the same file access checks; relative paths start from the document's folder. Section-only links remain text. HTML and MDX components do not execute.
+
+Text previews include up to 384 KiB, with a notice when the file is truncated. Large source previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the source pane scrolls in both directions.
 
 PNG, JPEG, GIF and WebP files up to 8 MiB can be previewed as images. Hover or focus an image file reference for a compact quick look, or select it to open the pane. Select the preview image for the full-size viewer, which supports zoom controls, pinch-to-zoom and panning. HTML and SVG files remain read-only source previews rather than executable pages.
 
