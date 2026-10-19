@@ -143,6 +143,10 @@ PNG, JPEG, GIF and WebP files up to 8 MiB can be previewed as images. Hover or f
 
 A plain image file link does not automatically insert a large image into the reply. Explicit Markdown images appear inline; image attachments use a compact gallery, showing at most four thumbnails before a count of the remaining images. An image already displayed inline is not duplicated in the attachment gallery.
 
+Mermaid code fences show their source while a reply is being generated, then render a diagram when the reply finishes. Choose **Source** or **Diagram** to switch views, or **Copy source** to copy the original code. **Enlarge diagram** opens a viewer with zoom buttons, pinch-to-zoom and drag-to-pan. With the viewport focused, use **+**, **−** and **0** to zoom or reset, and arrow keys to pan; **Escape** closes the viewer.
+
+If a diagram cannot be rendered, its source stays available with an error message. Links, external images and executable HTML inside diagrams are disabled.
+
 Select a file reference to preview it. Right-click the reference or its preview tab to copy its absolute or project-relative path. Keyboard users can focus a reference and press **Shift+F10**. Paths are resolved on the gateway machine, which may not be the computer running your browser. Files outside the project do not have a project-relative path. If a reference cannot be resolved, you can still copy the original reference; the menu does not invent an absolute path. Finder, external editor and terminal launching are not available from this browser menu.
 
 File previews follow the active topic's access mode. Restricted workspace access previews only files under the selected workspace. Full Access can preview files outside the workspace when that access mode is allowed by the gateway.

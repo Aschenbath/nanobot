@@ -44,6 +44,7 @@ interface SidebarProps {
   temporarySessions?: ChatSummary[];
   activeKey: string | null;
   loading: boolean;
+  initialLoading?: boolean;
   newChatActive: boolean;
   onNewChat: () => void;
   onSelect: (key: string) => void;
@@ -276,6 +277,7 @@ export function Sidebar(props: SidebarProps) {
             temporarySessions={props.temporarySessions}
             activeKey={props.activeKey}
             loading={props.loading}
+            initialLoading={props.initialLoading}
             emptyLabel={t("chat.noSessions")}
             onSelect={props.onSelect}
             onCloseTemporaryChat={props.onCloseTemporaryChat}
