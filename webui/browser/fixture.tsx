@@ -24,6 +24,7 @@ import "../src/globals.css";
 import { DiagramFixture } from "./diagram-fixture";
 import { TypographyFixture } from "./typography-fixture";
 import { HistoryBoundaryFixture } from "./history-boundary-fixture";
+import { ThreadLoadingFixture } from "./thread-loading-fixture";
 
 const history: UIMessage[] = [
   { id: "question", role: "user", content: "Earlier question", createdAt: 1_700_000_000_000 },
@@ -151,6 +152,8 @@ createRoot(document.getElementById("root")!).render(<TooltipProvider>
     ? <ClientProvider client={railClient} token="fixture" webuiCapabilities={["webui.prompt-navigation.v1"]}><HistoryBoundaryFixture local={parameters.has("local")} navigate={parameters.has("navigate")} /></ClientProvider>
     : parameters.get("case") === "diagrams"
     ? <DiagramFixture parameters={parameters} />
+    : parameters.get("case") === "thread-loading"
+    ? <ClientProvider client={railClient} token="fixture"><ThreadLoadingFixture /></ClientProvider>
     : parameters.get("case") === "new-chat-skeleton"
     ? <ClientProvider client={railClient} token="fixture"><NewChatSkeletonFixture /></ClientProvider>
     : parameters.get("case") === "skeleton-additions"

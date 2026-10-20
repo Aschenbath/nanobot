@@ -48,6 +48,7 @@ interface ThreadViewportProps {
   composer?: ReactNode;
   navigationFrame?: HTMLElement | null;
   emptyState?: ReactNode;
+  initialLoading?: boolean;
   scrollToBottomSignal?: number;
   activeTurnId?: string | null;
   activeTurnStartedHere?: boolean;
@@ -249,6 +250,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   composer,
   navigationFrame,
   emptyState,
+  initialLoading = false,
   scrollToBottomSignal = 0,
   activeTurnId: liveTurnId = null,
   activeTurnStartedHere = false,
@@ -384,6 +386,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   }
   const hasTaskContent = useHasSubagentContent();
   const hasMessages = messages.length > 0 || (hasTaskContent && conversationReady);
+  const hasThreadLayout = hasMessages || initialLoading;
   useLayoutEffect(() => {
     scrollRef.current = hasMessages
       ? messageRegionRef.current
@@ -1045,11 +1048,11 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       >
         <div
           ref={contentRef}
-          data-testid={!hasMessages ? "thread-welcome-layout" : undefined}
-          data-layout={hasComposer ? (hasMessages ? "thread" : "hero") : "external"}
+          data-testid={!hasThreadLayout ? "thread-welcome-layout" : undefined}
+          data-layout={hasComposer ? (hasThreadLayout ? "thread" : "hero") : "external"}
           className={cn(
             "thread-layout mx-auto grid min-h-full w-full",
-            hasMessages
+            hasThreadLayout
               ? "h-full"
               : "max-w-[72rem] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-6 sm:px-4 sm:py-12",
           )}
@@ -1097,8 +1100,10 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               ref={emptyStateRef}
               data-testid="thread-empty-region"
               className={cn(
-                "row-start-1 flex min-h-0 min-w-0 w-full items-center justify-center",
-                hasComposer && "sm:items-end sm:pb-8",
+                "row-start-1 min-h-0 min-w-0 w-full",
+                initialLoading
+                  ? "overflow-hidden"
+                  : cn("flex items-center justify-center", hasComposer && "sm:items-end sm:pb-8"),
               )}
             >
               {emptyState}
@@ -1130,12 +1135,12 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               }}
               className={cn(
                 "row-start-2 z-10 w-full",
-                hasMessages ? "thread-composer-dock relative" : "relative self-center",
+                hasThreadLayout ? "thread-composer-dock relative" : "relative self-center",
               )}
             >
               <div
                 className={cn(
-                  hasMessages
+                  hasThreadLayout
                     ? "px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4"
                     : "",
                 )}
