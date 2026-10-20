@@ -1,23 +1,22 @@
 import { expect, test, type Locator } from "@playwright/test";
 
-async function readMetrics(element: Locator) {
-  return element.evaluate((node) => {
-    if (!node.isConnected) return null;
+async function readMetrics(elements: Locator) {
+  return elements.evaluateAll((nodes) => nodes.map((node) => {
     const style = getComputedStyle(node);
     return {
       size: parseFloat(style.fontSize), line: parseFloat(style.lineHeight), weight: style.fontWeight,
       family: style.fontFamily, letterSpacing: style.letterSpacing,
       padding: style.padding, autospace: style.getPropertyValue("text-autospace"),
     };
-  });
+  }));
 }
 
-async function metrics(element: Locator): Promise<NonNullable<Awaited<ReturnType<typeof readMetrics>>>> {
-  let value: Awaited<ReturnType<typeof readMetrics>> = null;
+async function metrics(element: Locator): Promise<Awaited<ReturnType<typeof readMetrics>>[number]> {
+  let value: Awaited<ReturnType<typeof readMetrics>>[number] | undefined;
   // Streamdown may replace a paragraph while settling its first render.
   await expect.poll(async () => {
-    value = await readMetrics(element);
-    return value !== null && Number.isFinite(value.size) && Number.isFinite(value.line);
+    [value] = await readMetrics(element);
+    return value !== undefined && Number.isFinite(value.size) && Number.isFinite(value.line);
   }).toBe(true);
   return value!;
 }
@@ -145,28 +144,40 @@ test("touch composer keeps literal mention metrics and a safe editable minimum",
       }
     }
     const input = page.getByRole("textbox", { name: "Message input", exact: true });
+    const overlay = page.locator(".thread-composer-input > div[aria-hidden]");
+    const layers = page.locator(".thread-composer-input > :is(div[aria-hidden], textarea)");
+    const readingSizes = [
+      ["small", "Small reading text", 16],
+      ["standard", "Standard reading text", 16],
+      ["large", "Large reading text", 18],
+    ] as const;
     await input.fill("中文 English @typography 混排\n多行内容与光标保持一致，继续输入 more text.\n最后一行。");
-    for (const label of ["Small reading text", "Standard reading text", "Large reading text"]) {
-      await page.getByRole("radio", { name: label, exact: true }).click();
+    for (const [size, label, fontSize] of readingSizes) {
+      await readingGroup.getByRole("radio", { name: label, exact: true }).click();
+      await expect(page.locator("html")).toHaveAttribute("data-reading-text-size", size);
+      await expect(input).toHaveCSS("font-size", `${fontSize}px`);
       await input.focus();
-      const overlay = page.locator(".thread-composer-input > div[aria-hidden]");
       await expect(overlay).toContainText("@typography");
-      const text = await metrics(input);
-      expect(text.size).toBeGreaterThanOrEqual(16);
-      expect(await metrics(overlay)).toEqual(text);
+      // Sample both layers together; preference updates must not split the comparison.
+      const [decoration, text] = await readMetrics(layers);
+      expect(text.size).toBe(fontSize);
+      expect(decoration).toEqual(text);
       expect(text.autospace).toBe("no-autospace");
       expect(await input.evaluate(node => node.scrollHeight <= node.clientHeight + 1)).toBe(true);
       expect(await page.evaluate(() => visualViewport?.scale)).toBe(1);
     }
     await input.fill([...Array.from({ length: 18 }, (_, i) => `第 ${i + 1} 行 中文 English @typography 光标与装饰层。`), "最后一行。"].join("\n"));
-    for (const label of ["Small reading text", "Standard reading text", "Large reading text"]) {
-      await page.getByRole("radio", { name: label, exact: true }).click();
+    for (const [size, label, fontSize] of readingSizes) {
+      await readingGroup.getByRole("radio", { name: label, exact: true }).click();
+      await expect(page.locator("html")).toHaveAttribute("data-reading-text-size", size);
+      await expect(input).toHaveCSS("font-size", `${fontSize}px`);
       await input.focus();
       await input.press("Control+End");
-      const overlay = page.locator(".thread-composer-input > div[aria-hidden]");
       expect(await input.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
       await expect.poll(async () => Math.abs(await input.evaluate(node => node.scrollTop) - await overlay.evaluate(node => node.scrollTop))).toBeLessThanOrEqual(1);
-      expect(await metrics(overlay)).toEqual(await metrics(input));
+      const [decoration, text] = await readMetrics(layers);
+      expect(text.size).toBe(fontSize);
+      expect(decoration).toEqual(text);
     }
     await page.keyboard.press("End");
     await page.keyboard.type("追加文字");
