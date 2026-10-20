@@ -33,7 +33,7 @@ describe("Settings overview and appearance", () => {
       expect(await screen.findByRole("link", { name: "Installation guide" })).toBeVisible();
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(fetcher).toHaveBeenCalledWith("/api/settings/version-check", expect.any(Object));
-      expect(screen.queryByRole("button", { name: "Update", exact: true })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Update$/ })).not.toBeInTheDocument();
     },
   );
 
@@ -61,14 +61,14 @@ describe("Settings overview and appearance", () => {
       "https://github.com/HKUDS/nanobot/releases/tag/v0.3.7.dev2026101501");
     expect(requestUpdate).not.toHaveBeenCalled();
     expect(screen.queryByRole("link", { name: "Installation guide" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Update", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /^Update$/ }));
     expect(requestUpdate).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
     expect(dismiss).toHaveBeenCalledTimes(1);
 
     rerender(<VersionCheckRowView {...props} currentVersion="0.3.6"
       result={{ type: "up-to-date" }} hasPendingUpdate />);
-    expect(screen.queryByRole("button", { name: "Update", exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Update$/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "View details" }));
     expect(requestUpdate).toHaveBeenCalledTimes(2);
   });

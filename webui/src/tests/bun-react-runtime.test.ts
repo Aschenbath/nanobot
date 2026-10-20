@@ -2,7 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { expect, it } from "vitest";
 
 const root = process.cwd();
-const bunAvailable = spawnSync("bun", ["--version"], { timeout: 10_000 }).error?.code !== "ENOENT";
+const bunError = spawnSync("bun", ["--version"], { timeout: 10_000 }).error;
+const bunAvailable = !(bunError && "code" in bunError && bunError.code === "ENOENT");
 
 it.skipIf(!bunAvailable)("Bun loads React runtime code for the packaged Vite SSR build", () => {
   // Type-only aliases previously made Bun execute @types/react/index.d.ts.

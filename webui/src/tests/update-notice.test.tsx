@@ -56,14 +56,14 @@ describe("Sidebar update entry", () => {
     act(() => dismiss.focus());
     fireEvent.click(dismiss);
     expect(screen.queryByText("Update available")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Update", exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Update$/ })).toBeNull();
     const check = screen.getByRole("button", { name: "Check for updates" });
     expect(check).toHaveFocus();
     fireEvent.click(check);
     expect(screen.getByRole("button", { name: "Checking..." })).toBeDisabled();
     await act(async () => { await vi.advanceTimersByTimeAsync(600); });
     expect(screen.getByText("Update available")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Update", exact: true })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Update$/ })).toBeVisible();
     expect(screen.getByRole("button", { name: "Dismiss update notice" })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -119,7 +119,7 @@ describe("Sidebar update entry", () => {
     render(<ClientProvider client={client} token="about-update" checkUpdatesOnConnect>
       <AboutSettings settings={{ ...settingsPayload(), version: { current: "0.3.5" } }} onRequestUpdate={requestUpdate} />
     </ClientProvider>);
-    const button = await screen.findByRole("button", { name: "Update", exact: true });
+    const button = await screen.findByRole("button", { name: /^Update$/ });
     expect(screen.queryByRole("link", { name: "Installation guide" })).toBeNull();
     expect(requestUpdate).not.toHaveBeenCalled();
     fireEvent.click(button);
