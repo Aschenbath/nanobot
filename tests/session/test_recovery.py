@@ -8,6 +8,7 @@ import pytest
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import RecoveryStateEvent, SessionUpdatedEvent
 from nanobot.bus.queue import MessageBus
+from nanobot.providers.base import ProviderConversationState
 from nanobot.session.manager import Session, SessionManager
 from nanobot.session.recovery import (
     PENDING_FOLLOWUPS_KEY,
@@ -733,6 +734,58 @@ async def test_dismiss_does_not_queue_work(tmp_path: Path) -> None:
 
     assert result["status"] == "recovered"
     assert bus.inbound.empty()
+
+
+@pytest.mark.asyncio
+async def test_model_failure_waits_across_restart_and_rejects_duplicate_continue(tmp_path: Path) -> None:
+    coordinator, bus, sessions = _coordinator(tmp_path)
+    session = sessions.get_or_create("websocket:chat")
+    session.messages = [{"role": "user", "content": "finish this"}]
+    _persist(sessions, session)
+
+    await coordinator.turn_completed("websocket:chat", failure_kind="model", failure_error_kind="connection")
+    assert bus.inbound.empty()
+    coordinator, bus, sessions = _coordinator(tmp_path)
+    await coordinator.scan()
+    assert bus.inbound.empty()
+    state = sessions.get_or_create("websocket:chat").metadata[RECOVERY_METADATA_KEY]
+    assert state["failure_error_kind"] == "connection"
+    assert state["status"] == "awaiting_user"
+    payload = {"chat_id": "chat", "recovery_id": state["recovery_id"]}
+    await coordinator.handle_action("continue", payload)
+    with pytest.raises(RecoveryActionError):
+        await coordinator.handle_action("continue", payload)
+    continuation = bus.inbound.get_nowait()
+    assert continuation.metadata["_skip_user_persist"] is True
+    assert bus.inbound.empty()
+    await coordinator.turn_completed("websocket:chat", failure_kind="model", failure_error_kind="authentication")
+    failed_again = sessions.get_or_create("websocket:chat").metadata[RECOVERY_METADATA_KEY]
+    assert failed_again["status"] == "awaiting_user"
+    assert failed_again["failure_error_kind"] == "authentication"
+    with pytest.raises(RecoveryActionError, match="stale"):
+        await coordinator.handle_action("continue", payload)
+
+
+@pytest.mark.asyncio
+async def test_new_input_after_model_failure_does_not_change_saved_context(tmp_path: Path) -> None:
+    coordinator, _, sessions = _coordinator(tmp_path)
+    session = sessions.get_or_create("websocket:chat")
+    session.messages = [{"role": "user", "content": "finish this"}]
+    session.provider_state = ProviderConversationState(
+        kind="openai_responses", provider="openai_codex", model="test-model", version=1,
+        payload={"response_id": "saved-response"},
+    )
+    _persist(sessions, session)
+    await coordinator.turn_completed("websocket:chat", failure_kind="model")
+    before = sessions.get_or_create("websocket:chat")
+    assert before.provider_state is not None
+    await coordinator.admit(InboundMessage(
+        channel="websocket", sender_id="user", chat_id="chat", content="new request",
+    ))
+    after = sessions.get_or_create("websocket:chat")
+    assert after.messages == before.messages
+    assert after.provider_state == before.provider_state
+    assert after.metadata[RECOVERY_METADATA_KEY]["reason"] == "superseded"
 
 
 @pytest.mark.asyncio

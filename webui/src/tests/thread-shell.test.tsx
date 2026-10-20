@@ -5030,7 +5030,7 @@ describe("ThreadShell", () => {
     });
   });
 
-  it("keeps a terminal model failure visible until the next user action", async () => {
+  it.each([false, true])("keeps one terminal model failure visible until the next user action (recovery: %s)", async (recoverable) => {
     const client = makeClient();
     await act(async () => {
       await i18n.changeLanguage("zh-CN");
@@ -5066,14 +5066,40 @@ describe("ThreadShell", () => {
     const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent("无法连接模型提供商");
     expect(banner).toHaveTextContent(
-      "模型提供商请求在第 4 次尝试后仍然失败，已停止重试。请检查提供商配置或服务状态后重试。",
+      "已尝试 4 次，仍未成功。可稍后继续或切换模型。",
     );
     expect(banner).not.toHaveTextContent("Unlocalized server failure");
+    if (recoverable) {
+      act(() => {
+        client._emitChat("chat-model-failure", {
+          event: "recovery_state",
+          chat_id: "chat-model-failure",
+          recovery_id: "model-recovery",
+          status: "awaiting_user",
+          reason: "model_request_failed",
+          failure_error_kind: "connection",
+        });
+      });
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.getByRole("alert")).toHaveTextContent("无法连接模型提供商");
+      expect(screen.getByRole("button", { name: "继续" })).toBeEnabled();
+    }
 
     fireEvent.change(screen.getByLabelText("消息输入框"), {
       target: { value: "try again" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    if (recoverable) {
+      act(() => {
+        client._emitChat("chat-model-failure", {
+          event: "recovery_state",
+          chat_id: "chat-model-failure",
+          recovery_id: "model-recovery",
+          status: "recovered",
+          reason: "superseded",
+        });
+      });
+    }
 
     await waitFor(() => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();

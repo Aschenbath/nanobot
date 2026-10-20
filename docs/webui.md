@@ -163,6 +163,10 @@ Open the context indicator beside the composer model badge to see how much of th
 
 When nanobot compacts context, the timeline shows its progress and outcome. The model continues with a summary and any messages after it; messages covered by the summary remain in your chat history but are no longer sent to the model verbatim. Use `/compact` to compact the current topic's context manually. See [Memory](./memory.md) for compaction and Dream consolidation.
 
+### Model failures
+
+After a model request fails and automatic retries stop, the WebUI shows the failure category. Use **Continue** to resume from the saved conversation, or open model settings to change the model or correct its authorization. Review completed work before continuing: saved tool results are retained, but the model can choose to call tools again. Continuing does not resend the original message. Sending a new message or dismissing the notice clears the pending decision. Saved recovery decisions remain available after a refresh or gateway restart; temporary chats still follow their normal lifetime.
+
 ### Delegated work
 
 When nanobot delegates work to subagents, a work group appears under the request that started it. Progress continues to update after the main reply finishes. Completed tasks stay available for inspection, and refreshing or reopening the WebUI restores saved progress and results without restarting the work.

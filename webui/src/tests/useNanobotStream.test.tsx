@@ -726,6 +726,36 @@ describe("useNanobotStream", () => {
     expect(fake.client.finishRunLocally).toHaveBeenCalledWith("chat-recovery");
   });
 
+  it.each(["awaiting_user", "resuming"] as const)(
+    "reconciles a missed model recovery event after reconnecting to %s",
+    (status) => {
+      const fake = fakeClient();
+      const { result } = renderHook(() => useNanobotStream("chat-recovery", EMPTY_MESSAGES), {
+        wrapper: wrap(fake.client),
+      });
+      act(() => {
+        fake.emit("chat-recovery", {
+          event: "turn_end", chat_id: "chat-recovery",
+          outcome: "failed", failure_kind: "model", failure_error_kind: "connection",
+        });
+      });
+      expect(result.current.streamError?.kind).toBe("model_request_failed");
+      act(() => {
+        fake.emit("chat-recovery", {
+          event: "attached", chat_id: "chat-recovery",
+          recovery_state: {
+            recovery_id: "recovery-1", status,
+            reason: status === "resuming" ? "user_confirmed" : "model_request_failed",
+            failure_error_kind: "connection",
+          },
+        });
+      });
+      expect(result.current.streamError).toBeNull();
+      expect(result.current.recoveryState?.status).toBe(status);
+      expect(result.current.isStreaming).toBe(status === "resuming");
+    },
+  );
+
   it("does not let historical recovered state clear a later active turn", () => {
     const fake = fakeClient();
     const { result } = renderHook(

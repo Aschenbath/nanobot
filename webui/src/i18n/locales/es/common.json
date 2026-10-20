@@ -2473,6 +2473,8 @@
       "body": "El gateway rechazó este mensaje. Revisa el texto o los archivos adjuntos e inténtalo de nuevo."
     },
     "modelRequestFailed": {
+      "authenticationTitle": "Falló la autorización del proveedor del modelo",
+      "authenticationBody": "Vuelve a iniciar sesión o revisa la clave API en los ajustes del modelo.",
       "billingTitle": "La cuota del proveedor del modelo no está disponible",
       "billingBody": "Añade crédito o revisa la facturación de la cuenta del proveedor y vuelve a intentarlo.",
       "connectionTitle": "No se pudo conectar con el proveedor del modelo",
@@ -2480,8 +2482,8 @@
       "rateLimitTitle": "Se alcanzó el límite de solicitudes del proveedor del modelo",
       "serverTitle": "Error del servicio del proveedor del modelo",
       "unknownTitle": "La solicitud al proveedor del modelo falló",
-      "bodyWithAttempt": "La solicitud siguió fallando en el intento {{attempts}}, por lo que se detuvieron los reintentos. Revisa la configuración o el estado del proveedor y vuelve a intentarlo.",
-      "body": "Revisa la configuración o el estado del proveedor y vuelve a intentarlo."
+      "bodyWithAttempt": "Se detuvo tras {{attempts}} intentos. Inténtalo más tarde o elige otro modelo.",
+      "body": "Inténtalo más tarde o elige otro modelo."
     }
   },
   "workspace": {

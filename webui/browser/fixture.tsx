@@ -24,6 +24,7 @@ import "../src/globals.css";
 import { DiagramFixture } from "./diagram-fixture";
 import { TypographyFixture } from "./typography-fixture";
 import { HistoryBoundaryFixture } from "./history-boundary-fixture";
+import { ChatFailureFixture } from "./chat-failure-fixture";
 import { ThreadLoadingFixture } from "./thread-loading-fixture";
 
 const history: UIMessage[] = [
@@ -146,7 +147,9 @@ function AppsFixture() {
 if (parameters.get("case") === "skeleton-additions") installSkeletonPreviewApi();
 await initializeI18n();
 createRoot(document.getElementById("root")!).render(<TooltipProvider>
-  {parameters.get("case") === "typography"
+  {parameters.get("case") === "chat-failure"
+    ? <ChatFailureFixture parameters={parameters} />
+    : parameters.get("case") === "typography"
     ? <ClientProvider client={railClient} token="fixture"><TypographyFixture /></ClientProvider>
     : parameters.get("case") === "history-boundary"
     ? <ClientProvider client={railClient} token="fixture" webuiCapabilities={["webui.prompt-navigation.v1"]}><HistoryBoundaryFixture local={parameters.has("local")} navigate={parameters.has("navigate")} /></ClientProvider>
