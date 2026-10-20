@@ -89,7 +89,7 @@ it("keeps Preview update controls and translates feedback without executing an u
   await userEvent.click(toggle);
   expect(toggle).toBeChecked();
   expect(preview.getByText("Sample preference saved; nothing will be installed or restarted.")).toBeVisible();
-  await userEvent.click(preview.getByRole("button", { name: "Update", exact: true }));
+  await userEvent.click(preview.getByRole("button", { name: "Update" }));
   expect(preview.getByText("Update review selected; this preview does not install or restart anything.")).toBeVisible();
 
   await chooseChinese();
