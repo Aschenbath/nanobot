@@ -123,7 +123,7 @@ Open a topic's sidebar action menu and choose **Create group** to turn it into a
 
 Use **Pane layout** to choose columns, rows, a grid, BSP, or a main pane with a stack. Drag a divider to resize panes. Each pane has its own conversation; select one to direct the shared composer to that topic. Group membership and layout persist across refreshes. Grouping topics does not merge their histories.
 
-To bring another topic's work into a conversation, select it from the `@` menu or drag it from the sidebar into the composer. The agent can read the selected session and exchange messages with other saved sessions. See [Composer](#composer) for the distinction between an attached reference and plain text.
+To use work from another topic, mention it with `@` and tell nanobot what you need. See [Composer](#composer) for how to add a topic reference.
 
 ### Activity and context usage
 
@@ -215,13 +215,17 @@ In Restricted mode, ordinary file and shell work stays inside the selected proje
 
 With voice transcription configured, the idle composer uses one button for voice input when empty and Send when text or attachments are present; speech is transcribed into the draft before sending.
 
-The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or persisted topics. Topics have short, pronounceable handles such as `@luma`; titles are display text rather than addresses. Select a topic from the menu, or drag it from the sidebar, to attach its structured reference. Typing the same text without selecting it remains plain text.
+The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or saved topics.
+
+To reference another topic, type or paste its complete handle (such as `@luma`), choose it from the `@` menu, or drag it from the sidebar into the composer. Recognized handles are highlighted; unknown handles remain plain text. You can reference up to eight different topics in one message.
+
+Ask nanobot to find, read, or send messages to other saved topics, including those in other projects. For example, “Summarize @luma” or “Send this update to @luma.” Mentioning a topic alone does not send a message to it.
 
 On touch-primary phones and tablets, **Enter** inserts a newline; tap the send arrow to submit. This also applies when a coarse-pointer tablet has a hardware keyboard attached. On desktop, **Enter** sends and **Shift+Enter** adds a newline. An open slash-command or mention menu takes precedence: Enter selects its item.
 
-While a response is running, the send arrow delivers a ready draft as guidance for the active turn; it does not issue a stop command. Other messages already waiting in the queue stay there. On desktop, Enter queues guidance and a second Enter with an empty input sends that queued message immediately. Queued messages also have a **Send now** action. The primary button shows **Stop** when there is no sendable draft; clear the draft or use `/stop` to stop instead of sending it.
+While a response is running, desktop Enter adds your input to one waiting message. Further inputs append in order, separated by newlines, with their attachments and references retained. The complete message is sent once the current response finishes. Press Enter again with an empty input or choose **Send now** to insert it immediately as guidance for the active turn. The send arrow also includes any waiting content when submitting a new draft. Use **Edit message** to revise the complete message or **Delete message** to discard it. If an addition would exceed the message limits, it stays in the input so you can revise it. The primary button shows **Stop** when there is no sendable draft; stopping or a failed send keeps the waiting message for manual sending.
 
-The agent can inspect an attached topic with `read_session`. It can discover other persisted topics with `list_sessions` and send asynchronous messages with `send_session_message`; topic messaging is not limited by workspace scope. The model badge shows the current model or preset and links to model settings when setup is incomplete.
+The model badge shows the current model or preset and links to model settings when setup is incomplete.
 
 For image generation, configure an image provider first and then use the WebUI image mode from the composer. See [`image-generation.md`](./image-generation.md) for provider setup and output behavior.
 
