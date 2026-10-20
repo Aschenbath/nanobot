@@ -2364,6 +2364,8 @@
       "body": "Gateway đã từ chối tin nhắn này. Hãy kiểm tra nội dung hoặc tệp đính kèm rồi thử lại."
     },
     "modelRequestFailed": {
+      "authenticationTitle": "Xác thực nhà cung cấp mô hình thất bại",
+      "authenticationBody": "Đăng nhập lại hoặc kiểm tra khóa API trong cài đặt mô hình.",
       "billingTitle": "Hạn mức của nhà cung cấp mô hình không khả dụng",
       "billingBody": "Hãy nạp thêm tín dụng hoặc kiểm tra thanh toán của tài khoản nhà cung cấp rồi thử lại.",
       "connectionTitle": "Không thể kết nối với nhà cung cấp mô hình",
@@ -2371,8 +2373,8 @@
       "rateLimitTitle": "Đã đạt giới hạn yêu cầu của nhà cung cấp mô hình",
       "serverTitle": "Lỗi dịch vụ nhà cung cấp mô hình",
       "unknownTitle": "Yêu cầu tới nhà cung cấp mô hình không thành công",
-      "bodyWithAttempt": "Yêu cầu vẫn thất bại ở lần thử {{attempts}}, nên hệ thống đã dừng thử lại. Hãy kiểm tra cấu hình hoặc trạng thái dịch vụ của nhà cung cấp rồi thử lại.",
-      "body": "Hãy kiểm tra cấu hình hoặc trạng thái dịch vụ của nhà cung cấp rồi thử lại."
+      "bodyWithAttempt": "Đã dừng sau {{attempts}} lần thử. Hãy thử lại sau hoặc chọn mô hình khác.",
+      "body": "Hãy thử lại sau hoặc chọn mô hình khác."
     }
   },
   "workspace": {

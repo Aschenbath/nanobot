@@ -166,9 +166,10 @@ class RecoveryCoordinator:
         state = recovery_state_from_metadata(session.metadata)
         if state and state["status"] in {"resuming", "awaiting_user", "failed"}:
             await self._cancel_active_recovery(message.session_key)
-            restore_runtime_checkpoint(session)
-            if not restore_pending_interruption(session, superseded=True):
-                append_recovery_interruption(session, superseded=True)
+            if state.get("reason") != "model_request_failed":
+                restore_runtime_checkpoint(session)
+                if not restore_pending_interruption(session, superseded=True):
+                    append_recovery_interruption(session, superseded=True)
             recovered = self._set_state(
                 session,
                 status="recovered",
@@ -180,14 +181,32 @@ class RecoveryCoordinator:
             await self._publish(message.chat_id, recovered)
         return True
 
-    async def turn_completed(self, session_key: str) -> None:
-        """Resolve a resuming state after the recovered turn commits."""
+    async def turn_completed(
+        self, session_key: str, *, failure_kind: str | None = None,
+        failure_error_kind: str | None = None,
+    ) -> None:
+        """Offer explicit continuation of committed model failures or resolve recovery."""
         session = await self.sessions.state.get(session_key)
         state = recovery_state_from_metadata(session.metadata)
-        if not state or state["status"] != "resuming":
-            return
         route = self._websocket_route(session)
         if route is None:
+            return
+        if failure_kind == "model":
+            # The turn has already saved its transcript and tool results. Use
+            # that context, never resend the user's message or replay tools.
+            waiting = self._set_state(
+                session,
+                status="awaiting_user",
+                recovery_id=uuid4().hex,
+                attempts=cast(int, state.get("attempts", 0)) if state else 0,
+                reason="model_request_failed",
+                can_continue=any(message.get("role") == "user" for message in session.messages),
+            )
+            waiting["failure_error_kind"] = failure_error_kind or "unknown"
+            await self.sessions.state.restore_interruption(session)
+            await self._publish(route[1], waiting)
+            return
+        if not state or state["status"] != "resuming":
             return
         recovered = self._set_state(
             session,
@@ -445,6 +464,7 @@ class RecoveryCoordinator:
                     reason=cast(str | None, state.get("reason")),
                     attempts=cast(int, state.get("attempts", 0)),
                     can_continue=cast(bool | None, state.get("can_continue")),
+                    failure_error_kind=cast(str | None, state.get("failure_error_kind")),
                 ),
             )
         )

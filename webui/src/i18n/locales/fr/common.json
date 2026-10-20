@@ -2364,6 +2364,8 @@
       "body": "La passerelle a refusé ce message. Vérifiez le texte ou les pièces jointes, puis réessayez."
     },
     "modelRequestFailed": {
+      "authenticationTitle": "Échec de l’autorisation du fournisseur du modèle",
+      "authenticationBody": "Reconnectez-vous ou vérifiez la clé API dans les paramètres du modèle.",
       "billingTitle": "Quota du fournisseur du modèle indisponible",
       "billingBody": "Ajoutez du crédit ou vérifiez la facturation du compte fournisseur, puis réessayez.",
       "connectionTitle": "Impossible de se connecter au fournisseur du modèle",
@@ -2371,8 +2373,8 @@
       "rateLimitTitle": "Limite de requêtes du fournisseur du modèle atteinte",
       "serverTitle": "Erreur du service du fournisseur du modèle",
       "unknownTitle": "Échec de la requête au fournisseur du modèle",
-      "bodyWithAttempt": "La requête a encore échoué à la tentative {{attempts}} ; les nouvelles tentatives ont donc été arrêtées. Vérifiez la configuration ou l’état du fournisseur, puis réessayez.",
-      "body": "Vérifiez la configuration ou l’état du fournisseur, puis réessayez."
+      "bodyWithAttempt": "Arrêt après {{attempts}} tentatives. Réessayez plus tard ou choisissez un autre modèle.",
+      "body": "Réessayez plus tard ou choisissez un autre modèle."
     }
   },
   "workspace": {

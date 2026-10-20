@@ -209,12 +209,12 @@ describe("MessageBubble", () => {
     const pill = screen.getByText("hello");
 
     expect(row).toHaveClass("ml-auto", "flex");
-    expect(row).toHaveAttribute("data-user-text-bubble", "true");
+    expect(pill.parentElement).toHaveAttribute("data-user-text-bubble", "true");
     expect(pill).toHaveClass("ml-auto", "w-fit", "rounded-floating");
     expect(pill).toHaveTextContent("hello");
   });
 
-  it("aligns the context trigger to the first text line only when text leads the user block", () => {
+  it("anchors the context trigger to the text even below an image or quote", () => {
     const message: UIMessage = {
       id: "u-alignment", role: "user", content: "first line\nsecond line", createdAt: 0,
     };
@@ -222,15 +222,17 @@ describe("MessageBubble", () => {
     const { container, rerender } = render(
       <MessageBubble message={message} contextMenu={contextMenu} />,
     );
-    const row = container.firstElementChild!;
-    expect(row).toHaveAttribute("data-user-text-bubble", "true");
-    expect(screen.getByRole("button", { name: "Message actions" }).parentElement).toBe(row);
+    const anchor = container.querySelector("[data-user-text-bubble]")!;
+    expect(anchor).toHaveClass("relative");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement).toBe(anchor);
 
     rerender(<MessageBubble message={{ ...message, images: [{ name: "image.png" }] }} contextMenu={contextMenu} />);
-    expect(row).not.toHaveAttribute("data-user-text-bubble");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement)
+      .toBe(container.querySelector("[data-user-text-bubble]"));
 
     rerender(<MessageBubble message={{ ...message, content: "> [!QUOTE]\n> excerpt\n\nreply" }} contextMenu={contextMenu} />);
-    expect(row).not.toHaveAttribute("data-user-text-bubble");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement)
+      .toBe(screen.getByText("reply").parentElement);
   });
 
   it("renders cross-session input with its public handle", () => {

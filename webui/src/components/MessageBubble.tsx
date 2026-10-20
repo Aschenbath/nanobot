@@ -483,10 +483,9 @@ export function MessageBubble({
     );
     return (
       <div
-        data-user-text-bubble={hasText && !hasImages && !hasMedia && !quotedContext || undefined}
         className="group relative ml-auto flex w-fit max-w-[min(85%,36rem)] flex-col items-end gap-1.5"
       >
-        {contextMenu}
+        {!hasText ? contextMenu : null}
         {hasImages ? <ImageGallery images={images} align="right" size="compact" /> : null}
         {!hasImages && hasMedia ? (
           <MessageMedia media={media} align="right" />
@@ -498,18 +497,21 @@ export function MessageBubble({
           />
         ) : null}
         {hasText ? (
-          <p
-            data-temporary-message={temporary ? "true" : undefined}
-            className={cn(
-              "ml-auto w-fit max-w-full min-w-0 rounded-floating px-4 py-2",
-              "text-left text-reading whitespace-pre-wrap [overflow-wrap:anywhere]",
-              temporary
-                ? "border border-dashed border-muted-foreground/40 bg-transparent"
-                : "bg-secondary/70",
-            )}
-          >
-            {messageText}
-          </p>
+          <div data-user-text-bubble className="relative ml-auto w-fit max-w-full min-w-0">
+            {contextMenu}
+            <p
+              data-temporary-message={temporary ? "true" : undefined}
+              className={cn(
+                "ml-auto w-fit max-w-full min-w-0 rounded-floating px-4 py-2",
+                "text-left text-reading whitespace-pre-wrap [overflow-wrap:anywhere]",
+                temporary
+                  ? "border border-dashed border-muted-foreground/40 bg-transparent"
+                  : "bg-secondary/70",
+              )}
+            >
+              {messageText}
+            </p>
+          </div>
         ) : null}
         {showDeliveryStatus ? (
             <div className="flex min-h-8 items-center justify-end gap-1.5 text-muted-foreground">

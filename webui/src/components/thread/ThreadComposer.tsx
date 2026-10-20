@@ -2565,8 +2565,8 @@ export function ThreadComposer({
           "thread-composer-surface group/composer relative mx-auto flex w-full flex-col overflow-visible transition-all duration-200",
           paletteBeside && "col-start-1 row-start-1",
           isHero
-            ? "max-w-[58rem] rounded-prominent bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]"
-            : "max-w-[49.5rem] rounded-panel bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]",
+            ? "max-w-[var(--composer-content-width,58rem)] rounded-prominent bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]"
+            : "max-w-[var(--composer-content-width,49.5rem)] rounded-panel bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]",
           compactWhenIdle && "thread-composer-collapsible transition-colors motion-reduce:transition-none",
           interactionDisabled && "opacity-60",
           sessionDragPreview && "ring-1 ring-primary/25",

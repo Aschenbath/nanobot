@@ -589,7 +589,7 @@ describe("ThreadComposer", () => {
     expect(input.className).toContain("pt-[27px]");
     fireEvent.change(input, { target: { value: "1" } });
     expect(input.className).toContain("pt-[27px]");
-    expect(input.parentElement?.parentElement?.className).toContain("max-w-[58rem]");
+    expect(input.parentElement?.parentElement?.className).toContain("max-w-[var(--composer-content-width,58rem)]");
   });
 
   it("defers textarea autosizing until IME composition commits", () => {
@@ -821,7 +821,7 @@ describe("ThreadComposer", () => {
     const input = screen.getByPlaceholderText("Type your message...");
     expect(input.className).toContain("min-h-[50px]");
     expect(input.className).toContain("text-composer");
-    expect(input.parentElement?.parentElement?.className).toContain("max-w-[49.5rem]");
+    expect(input.parentElement?.parentElement?.className).toContain("max-w-[var(--composer-content-width,49.5rem)]");
     expect(input.parentElement?.parentElement?.className).toContain("rounded-panel");
     expect(input.parentElement?.parentElement?.className).not.toContain("shadow-");
     expect(screen.getByRole("button", { name: "Send message" }).className).toContain("bg-foreground");

@@ -733,7 +733,11 @@ class WebuiTurnCoordinator:
             failure_attempts=event.failure_attempts,
         )
         if self.recovery is not None:
-            await self.recovery.turn_completed(event.context.session_key)
+            await self.recovery.turn_completed(
+                event.context.session_key,
+                failure_kind=event.failure_kind,
+                failure_error_kind=event.failure_error_kind,
+            )
         if event.outcome == "completed" and is_webui_session_key(event.context.session_key):
             turn_id = event.context.metadata.get(WEBUI_TURN_METADATA_KEY)
             if isinstance(turn_id, str) and turn_id:

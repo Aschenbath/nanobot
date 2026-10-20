@@ -2564,6 +2564,8 @@
       "body": "The gateway rejected this message. Review its text or attachments, then try again."
     },
     "modelRequestFailed": {
+      "authenticationTitle": "Model provider authorization failed",
+      "authenticationBody": "Sign in again or check the provider’s API key in model settings.",
       "billingTitle": "Model provider quota is unavailable",
       "billingBody": "Add credit or check billing for the provider account, then try again.",
       "connectionTitle": "Could not connect to the model provider",
@@ -2571,8 +2573,8 @@
       "rateLimitTitle": "Model provider rate limit reached",
       "serverTitle": "Model provider service error",
       "unknownTitle": "Model provider request failed",
-      "bodyWithAttempt": "The request still failed on attempt {{attempts}}, so retries stopped. Check the provider configuration or service status, then try again.",
-      "body": "Check the provider configuration or service status, then try again."
+      "bodyWithAttempt": "Stopped after {{attempts}} attempts. Try again later or choose another model.",
+      "body": "Try again later or choose another model."
     }
   },
   "workspace": {

@@ -2,6 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Notices and the input share one width, including the compact screen inset. */
+.thread-composer-stack {
+  --composer-content-width: 49.5rem;
+}
+.thread-composer-stack.is-hero {
+  --composer-content-width: 58rem;
+}
+.thread-composer-notice {
+  width: calc(100% - 0.5rem);
+  max-width: var(--composer-content-width, 49.5rem);
+  margin-inline: auto;
+}
+.thread-composer-stack.is-hero .thread-composer-notice {
+  width: 100%;
+}
+@media (min-width: 640px) {
+  .thread-composer-notice {
+    width: 100%;
+  }
+}
+
 @supports (content-visibility: auto) {
   .apps-catalog-row {
     content-visibility: auto;
