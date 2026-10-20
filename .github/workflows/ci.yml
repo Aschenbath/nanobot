@@ -141,7 +141,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.python_required == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Windows runs real isolated update jobs before the complete compatibility
+    # suite; that suite was still progressing at the former 20-minute job cap.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     env:
       PYTEST_ADDOPTS: "-o tmp_path_retention_policy=failed"
     strategy:
