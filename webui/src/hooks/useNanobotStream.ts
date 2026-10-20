@@ -598,7 +598,11 @@ export function useNanobotStream(
         setMessages((prev) => {
           if (ev.turn_id && prev.some((message) => (
             message.role === "user" && message.turnId === ev.turn_id
-          ))) return prev;
+          ))) return ev.media_urls?.length ? prev.map((message) => (
+            message.role === "user" && message.turnId === ev.turn_id
+              ? { ...message, media: ev.media_urls }
+              : message
+          )) : prev;
           return [
             ...prev,
             {
