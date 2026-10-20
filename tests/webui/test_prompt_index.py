@@ -7,6 +7,7 @@ import pytest
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
+from nanobot.agent.execution import ExecutionLifecycle
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import WebSocketConfig
 from nanobot.session.manager import SessionManager
@@ -67,8 +68,9 @@ def test_oversized_turn_keeps_matching_navigation_identity(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_navigation_public_routes_auth_validation_and_old_reads(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    bus = MessageBus()
     gateway = build_gateway_services(
-        config=WebSocketConfig(), bus=MessageBus(), session_manager=None,
+        config=WebSocketConfig(), bus=bus, executions=ExecutionLifecycle(bus), session_manager=None,
         static_dist_path=None, workspace_path=tmp_path, config_path=tmp_path / "config.json",
         default_restrict_to_workspace=False, runtime_model_name=None,
         runtime_surface="browser", runtime_capabilities_overrides=None,
@@ -168,8 +170,9 @@ async def test_recovered_public_index_and_page_validators_include_canonical_time
     manager.save(session)
     for event in ({"event": "message", "text": "answer"}, {"event": "turn_end"}):
         transcript.append_transcript_object(key, event)
+    bus = MessageBus()
     gateway = build_gateway_services(
-        config=WebSocketConfig(), bus=MessageBus(), session_manager=manager,
+        config=WebSocketConfig(), bus=bus, executions=ExecutionLifecycle(bus), session_manager=manager,
         static_dist_path=None, workspace_path=tmp_path, config_path=tmp_path / "config.json",
         default_restrict_to_workspace=False, runtime_model_name=None,
         runtime_surface="browser", runtime_capabilities_overrides=None,
@@ -223,8 +226,9 @@ async def test_cached_history_routes_skip_replay_and_canonical_reads(tmp_path, m
         transcript.append_transcript_object(key, {"event": "message", "text": f"answer {i}"})
         transcript.append_transcript_object(key, {"event": "turn_end"})
     manager.save(session)
+    bus = MessageBus()
     gateway = build_gateway_services(
-        config=WebSocketConfig(), bus=MessageBus(), session_manager=manager,
+        config=WebSocketConfig(), bus=bus, executions=ExecutionLifecycle(bus), session_manager=manager,
         static_dist_path=None, workspace_path=tmp_path, config_path=tmp_path / "config.json",
         default_restrict_to_workspace=False, runtime_model_name=None,
         runtime_surface="browser", runtime_capabilities_overrides=None,
@@ -283,8 +287,9 @@ async def test_canonical_change_during_recovery_is_not_cached(tmp_path, monkeypa
     manager.save(session)
     for event in ({"event": "message", "text": "answer"}, {"event": "turn_end"}):
         transcript.append_transcript_object(key, event)
+    bus = MessageBus()
     gateway = build_gateway_services(
-        config=WebSocketConfig(), bus=MessageBus(), session_manager=manager,
+        config=WebSocketConfig(), bus=bus, executions=ExecutionLifecycle(bus), session_manager=manager,
         static_dist_path=None, workspace_path=tmp_path, config_path=tmp_path / "config.json",
         default_restrict_to_workspace=False, runtime_model_name=None,
         runtime_surface="browser", runtime_capabilities_overrides=None,

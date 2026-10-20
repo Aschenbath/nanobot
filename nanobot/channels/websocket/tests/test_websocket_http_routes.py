@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from nanobot.agent.execution import ExecutionLifecycle
 from nanobot.agent.skills import SkillsLoader
 from nanobot.bus.events import OutboundMessage
+from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.websocket.runtime import WebSocketChannel, WebSocketConfig
 from nanobot.config.loader import load_config, save_config
@@ -92,6 +94,7 @@ def _make_handler(
     return build_gateway_services(
         config=config,
         bus=bus,
+        executions=ExecutionLifecycle(bus),
         session_manager=session_manager,
         static_dist_path=static_dist_path,
         workspace_path=workspace,
@@ -157,7 +160,7 @@ def _ch(
 
 @pytest.fixture()
 def bus() -> MagicMock:
-    b = MagicMock()
+    b = MagicMock(spec=MessageBus)
     b.publish_inbound = AsyncMock()
     return b
 

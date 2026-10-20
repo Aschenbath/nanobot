@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nanobot.agent.execution import ExecutionLifecycle
+from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import (
     WebSocketChannel,
     WebSocketConfig,
@@ -20,13 +22,14 @@ from nanobot.webui.gateway_services import build_gateway_services
 
 
 def _make_channel(session_manager: SessionManager | None = None) -> WebSocketChannel:
-    bus = MagicMock()
+    bus = MagicMock(spec=MessageBus)
     bus.publish_inbound = AsyncMock()
     cfg = {"enabled": True, "allowFrom": ["*"], "websocketRequiresToken": False}
     parsed = WebSocketConfig.model_validate(cfg)
     gateway = build_gateway_services(
         config=parsed,
         bus=bus,
+        executions=ExecutionLifecycle(bus),
         session_manager=session_manager,
         static_dist_path=None,
         workspace_path=Path.cwd(),

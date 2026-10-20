@@ -17,6 +17,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 
+from nanobot.agent.execution import ExecutionLifecycle
 from nanobot.bus.events import (
     INBOUND_META_RUNTIME_CONTROL,
     INBOUND_META_USER_SHELL,
@@ -148,6 +149,7 @@ def _ch(bus: Any, **kw: Any) -> WebSocketChannel:
     gateway = build_gateway_services(
         config=parsed,
         bus=bus,
+        executions=ExecutionLifecycle(bus),
         session_manager=None,
         static_dist_path=None,
         workspace_path=Path.cwd(),
@@ -170,6 +172,7 @@ def _basic_handler(bus: Any, **kw: Any) -> GatewayServices:
     return build_gateway_services(
         config=cfg,
         bus=bus,
+        executions=ExecutionLifecycle(bus),
         session_manager=kw.get("session_manager"),
         static_dist_path=None,
         workspace_path=kw.get("workspace_path", Path.cwd()),
@@ -275,7 +278,7 @@ async def test_stop_treats_cancelled_server_task_as_shutdown() -> None:
 
 @pytest.fixture()
 def bus() -> MagicMock:
-    b = MagicMock()
+    b = MagicMock(spec=MessageBus, wraps=MessageBus())
     b.publish_inbound = AsyncMock()
     return b
 
@@ -4745,14 +4748,14 @@ async def test_image_settings_hot_reload_without_restart(
     runtime_bus = MessageBus()
     provider = MagicMock(aclose=AsyncMock())
     provider.get_default_model.return_value = "test-model"
-    agent = AgentLoop(bus=runtime_bus, provider=provider, workspace=tmp_path)
-
     async def image_reload() -> dict[str, Any]:
         return await reload_image_generation_tool(
             config_path=config_path, workspace=agent.workspace, registry=agent.tools,
         )
 
     channel = _ch(runtime_bus, port=port, image_generation_reload=image_reload)
+    agent = AgentLoop(bus=runtime_bus, provider=provider, workspace=tmp_path,
+                      executions=channel.gateway.executions)
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
     port, server_task = await start_listener(channel)
     webui_client = None
