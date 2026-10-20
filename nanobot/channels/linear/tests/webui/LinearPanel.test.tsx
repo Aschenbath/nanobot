@@ -787,7 +787,7 @@ describe("Linear channel UI", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Remove workspace" }));
     const confirm = await screen.findByRole("alertdialog", { name: "Remove nanobot?" });
     fireEvent.click(within(confirm).getByRole("button", { name: "Remove workspace" }));
-    expect(await screen.findByRole("button", { name: "Connect Linear" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connect Linear" })).toBeEnabled());
     expect(screen.queryByText("Linear authorization cancelled.")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Continue in Linear" })).not.toBeInTheDocument();
   });
