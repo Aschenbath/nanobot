@@ -586,7 +586,16 @@ export function useNanobotStream(
       if (turnId) {
         setMessages((prev) => transitionTurnDelivery(prev, turnId, "accepted"));
       }
-      if (ev.event === "message_accepted") return;
+      if (ev.event === "message_accepted") {
+        if (ev.media_urls?.length) {
+          setMessages((prev) => prev.map((message) => (
+            message.role === "user" && message.turnId === ev.turn_id
+              ? { ...message, media: ev.media_urls }
+              : message
+          )));
+        }
+        return;
+      }
       if (ev.event === "user_message") {
         if (ev.provenance?.session_message) {
           flushPendingStreamEvents({ closeAnswerSegment: true });
@@ -935,7 +944,11 @@ export function useNanobotStream(
       const turnId = crypto.randomUUID();
       const userMessageId = crypto.randomUUID();
       if (sideChannel) sideChannelTurnIdsRef.current.add(turnId);
-      const previews = hasAttachments ? images!.map((i) => i.preview) : undefined;
+      const previews = hasAttachments ? images!.map(({ preview }) => (
+        preview.kind === "video" && preview.url?.startsWith("data:")
+          ? { kind: preview.kind, name: preview.name }
+          : preview
+      )) : undefined;
       setMessages((prev) => {
         let projection = { ...projectionRef.current, messages: prev };
         if ((!sideChannel && !continueActiveTurn) || finalizeActiveTurn) {
