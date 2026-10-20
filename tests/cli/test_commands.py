@@ -2764,6 +2764,7 @@ def test_launch_browser_uses_unix_launcher_on_linux(monkeypatch) -> None:
 def test_webui_dock_lifetime_wraps_the_attached_client(monkeypatch, tmp_path, no_dock):
     config_file = tmp_path / "config.json"
     config_file.write_text("{}")
+    _patch_gateway_ports_free(monkeypatch)
     _patch_webui_provider_ready(monkeypatch)
     _patch_webui_managed_gateway(monkeypatch)
     events = []

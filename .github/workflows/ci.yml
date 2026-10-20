@@ -154,14 +154,14 @@ jobs:
             os: ubuntu-latest
             python-version: "3.11"
             coverage: false
-            # CLI command tests assert exact Rich terminal output; run them
-            # serially below so xdist cannot change terminal-width rendering.
-            pytest_args: "-n auto --dist loadfile --ignore=tests/cli/test_commands.py"
+            # Keep exact Rich output and real prompt_toolkit pipes in a fresh
+            # CLI process: long-lived workers can exceed select()'s fd limit.
+            pytest_args: "-n auto --dist loadfile --ignore=tests/cli/test_commands.py --ignore=tests/cli/test_cli_input.py"
           - name: latest, 3.14 + coverage
             os: ubuntu-latest
             python-version: "3.14"
             coverage: true
-            pytest_args: "-n auto --dist loadfile --ignore=tests/cli/test_commands.py"
+            pytest_args: "-n auto --dist loadfile --ignore=tests/cli/test_commands.py --ignore=tests/cli/test_cli_input.py"
           - name: Windows, 3.14
             os: windows-latest
             python-version: "3.14"
@@ -169,7 +169,7 @@ jobs:
             # Process identities run serially; isolated update jobs use case-level
             # scheduling below so one file cannot serialize all real venv work.
             # PowerShell/process-tree tests also keep their separate console job.
-            pytest_args: "-n 2 --dist loadfile --ignore=tests/cli/test_commands.py --ignore=tests/tools/test_exec_platform.py --ignore=tests/cli/test_wsl_browser.py --ignore=tests/test_install_scripts.py --ignore=tests/test_update_jobs.py --ignore=tests/test_update_profiles.py"
+            pytest_args: "-n 2 --dist loadfile --ignore=tests/cli/test_commands.py --ignore=tests/cli/test_cli_input.py --ignore=tests/tools/test_exec_platform.py --ignore=tests/cli/test_wsl_browser.py --ignore=tests/test_install_scripts.py --ignore=tests/test_update_jobs.py --ignore=tests/test_update_profiles.py"
 
     steps:
       - uses: actions/checkout@v4
@@ -248,11 +248,11 @@ jobs:
           -vv -o faulthandler_timeout=60
           --durations=25 --durations-min=1.0
 
-      - name: Run serial CLI command tests with coverage
+      - name: Run serial CLI input and command tests with coverage
         if: matrix.coverage
         run: >-
           uv run --no-sync python -m pytest
-          tests/cli/test_commands.py
+          tests/cli/test_cli_input.py tests/cli/test_commands.py
           --cov=nanobot --cov-append --cov-report=term-missing:skip-covered
           --durations=25 --durations-min=1.0
 
@@ -263,11 +263,11 @@ jobs:
           ${{ matrix.pytest_args }}
           --durations=25 --durations-min=1.0
 
-      - name: Run serial CLI command compatibility tests
+      - name: Run serial CLI input and command compatibility tests
         if: ${{ !matrix.coverage }}
         run: >-
           uv run --no-sync python -m pytest
-          tests/cli/test_commands.py
+          tests/cli/test_cli_input.py tests/cli/test_commands.py
           --durations=25 --durations-min=1.0
 
   windows_process:
