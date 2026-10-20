@@ -649,6 +649,11 @@
       "failed": "任務失敗，點選查看詳情。",
       "interrupted": "任務需要處理，點選繼續。"
     },
+    "readingTextSize": {
+      "small": "閱讀字級：小",
+      "standard": "閱讀字級：標準",
+      "large": "閱讀字級：大"
+    },
     "rows": {
       "theme": "主題",
       "language": "語言",
@@ -662,6 +667,7 @@
       "pendingChanges": "待生效項",
       "selectedPreset": "所選預設",
       "presetModel": "預設模型",
+      "readingTextSize": "閱讀字級",
       "activityMode": "處理過程",
       "fileEditDisplay": "修改預覽",
       "codeWrap": "程式碼換行",
@@ -2100,8 +2106,8 @@
     "loadEarlier": "載入更早訊息",
     "history": {
       "loading": "正在載入更早的訊息…",
-      "error": "載入失敗",
-      "retry": "重試"
+      "exhausted": "沒有更早的訊息",
+      "retryLabel": "載入失敗，重試"
     },
     "forkedFromHistory": "從歷史訊息建立分支",
     "promptNavigator": {

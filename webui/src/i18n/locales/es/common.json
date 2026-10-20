@@ -649,6 +649,11 @@
       "failed": "La tarea falló. Haz clic para ver los detalles.",
       "interrupted": "La tarea necesita atención. Haz clic para continuar."
     },
+    "readingTextSize": {
+      "small": "Texto de lectura pequeño",
+      "standard": "Texto de lectura estándar",
+      "large": "Texto de lectura grande"
+    },
     "rows": {
       "theme": "Tema",
       "language": "Idioma",
@@ -662,6 +667,7 @@
       "pendingChanges": "Cambios pendientes",
       "selectedPreset": "Preajuste seleccionado",
       "presetModel": "Modelo del preajuste",
+      "readingTextSize": "Tamaño del texto de lectura",
       "activityMode": "Detalles de actividad",
       "fileEditDisplay": "Vista previa de cambios",
       "codeWrap": "Ajuste de línea del código",
@@ -2101,8 +2107,8 @@
     "loadEarlier": "Cargar mensajes anteriores",
     "history": {
       "loading": "Cargando mensajes anteriores…",
-      "error": "Error al cargar.",
-      "retry": "Reintentar"
+      "exhausted": "No hay mensajes anteriores",
+      "retryLabel": "Error al cargar. Reintentar"
     },
     "forkedFromHistory": "Bifurcado desde el historial",
     "promptNavigator": {

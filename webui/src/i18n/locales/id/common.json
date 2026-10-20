@@ -649,6 +649,11 @@
       "failed": "Tugas gagal. Klik untuk melihat detailnya.",
       "interrupted": "Tugas perlu perhatian. Klik untuk melanjutkan."
     },
+    "readingTextSize": {
+      "small": "Teks bacaan kecil",
+      "standard": "Teks bacaan standar",
+      "large": "Teks bacaan besar"
+    },
     "rows": {
       "theme": "Tema",
       "language": "Bahasa",
@@ -662,6 +667,7 @@
       "pendingChanges": "Perubahan tertunda",
       "selectedPreset": "Preset dipilih",
       "presetModel": "Model prasetel",
+      "readingTextSize": "Ukuran teks bacaan",
       "activityMode": "Detail aktivitas",
       "fileEditDisplay": "Pratinjau perubahan",
       "codeWrap": "Bungkus baris kode",
@@ -2100,8 +2106,8 @@
     "loadEarlier": "Muat pesan sebelumnya",
     "history": {
       "loading": "Memuat pesan sebelumnya…",
-      "error": "Gagal memuat.",
-      "retry": "Coba lagi"
+      "exhausted": "Tidak ada pesan sebelumnya",
+      "retryLabel": "Gagal memuat. Coba lagi"
     },
     "forkedFromHistory": "Cabang dari riwayat",
     "promptNavigator": {

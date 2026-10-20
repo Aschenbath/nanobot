@@ -904,6 +904,11 @@
       "failed": "Task failed. Click for details.",
       "interrupted": "Task needs attention. Click to continue."
     },
+    "readingTextSize": {
+      "small": "Small reading text",
+      "standard": "Standard reading text",
+      "large": "Large reading text"
+    },
     "rows": {
       "theme": "Theme",
       "language": "Language",
@@ -918,6 +923,7 @@
       "currentModel": "Current configuration",
       "selectedPreset": "Selected preset",
       "presetModel": "Preset model",
+      "readingTextSize": "Reading text size",
       "activityMode": "Activity details",
       "fileEditDisplay": "Edit preview",
       "codeWrap": "Code wrapping",
@@ -2300,8 +2306,8 @@
     "loadEarlier": "Load earlier messages",
     "history": {
       "loading": "Loading earlier messages…",
-      "error": "Loading failed.",
-      "retry": "Retry"
+      "exhausted": "No earlier messages",
+      "retryLabel": "Loading failed. Retry"
     },
     "forkedFromHistory": "Forked from history",
     "promptNavigator": {

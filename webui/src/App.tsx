@@ -59,6 +59,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useAppViewport } from "@/hooks/useAppViewport";
 import type { SendAttachment, SendOptions } from "@/hooks/useNanobotStream";
 import { ThemeProvider, useTheme } from "@/hooks/useTheme";
+import { useReadingTypography } from "@/hooks/useReadingTypography";
 import { logoFallbackUrls } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import {
@@ -942,6 +943,7 @@ function resolveRuntimeSurface(
 export default function App() {
   useAppViewport();
   useBrowserNotificationLifecycle();
+  useReadingTypography();
   const { t } = useTranslation();
   const [state, setState] = useState<BootState>({ status: "loading" });
   const bootstrapSecretRef = useRef("");

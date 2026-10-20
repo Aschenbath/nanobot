@@ -904,6 +904,11 @@
       "failed": "任务失败，点击查看详情。",
       "interrupted": "任务需要处理，点击继续。"
     },
+    "readingTextSize": {
+      "small": "阅读字号：小",
+      "standard": "阅读字号：标准",
+      "large": "阅读字号：大"
+    },
     "rows": {
       "theme": "主题",
       "language": "语言",
@@ -918,6 +923,7 @@
       "currentModel": "当前配置",
       "selectedPreset": "所选预设",
       "presetModel": "预设模型",
+      "readingTextSize": "阅读字号",
       "activityMode": "处理过程",
       "fileEditDisplay": "修改预览",
       "codeWrap": "代码换行",
@@ -2300,8 +2306,8 @@
     "loadEarlier": "加载更早消息",
     "history": {
       "loading": "正在加载更早的消息…",
-      "error": "加载失败",
-      "retry": "重试"
+      "exhausted": "没有更早的消息",
+      "retryLabel": "加载失败，重试"
     },
     "forkedFromHistory": "从历史消息分叉",
     "promptNavigator": {

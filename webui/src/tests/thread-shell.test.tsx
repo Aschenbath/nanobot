@@ -5232,7 +5232,13 @@ describe("ThreadShell", () => {
     });
 
     expect(screen.queryByText("from chat a")).not.toBeInTheDocument();
-    expect(screen.getByText("Loading conversation…")).toBeInTheDocument();
+    const loading = screen.getByRole("status", { name: "Loading conversation…" });
+    expect(loading).toHaveAttribute("aria-busy", "true");
+    expect(loading.querySelector("[aria-hidden]")).not.toBeEmptyDOMElement();
+    expect(screen.getByRole("textbox", { name: "Message input" })).toBeEnabled();
+    const header = screen.getByTestId("thread-header");
+    const composer = screen.getByTestId("thread-composer-motion");
+    expect(composer.closest("[data-layout]")).toHaveAttribute("data-layout", "thread");
 
     await act(async () => {
       resolveChatB?.(
@@ -5242,6 +5248,44 @@ describe("ThreadShell", () => {
 
     await waitFor(() => expect(screen.getByText("from chat b")).toBeInTheDocument());
     expect(screen.queryByText("from chat a")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Loading conversation…" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("thread-header")).toBe(header);
+    expect(screen.getByTestId("thread-composer-motion")).toBe(composer);
+  });
+
+  it.each([false, true])("replaces the initial history skeleton with welcome when no visible history remains (systemOnly=%s)", async (systemOnly) => {
+    let resolveHistory!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementation((input) => String(input).includes("/webui-thread")
+      ? new Promise<Response>((resolve) => { resolveHistory = resolve; })
+      : Promise.resolve(new Response(null, { status: 404 })));
+    render(wrap(makeClient(), <ThreadShell session={session("empty-topic")} title="Empty topic"
+      onToggleSidebar={() => {}} />));
+
+    expect(screen.getByRole("status", { name: "Loading conversation…" })).toHaveAttribute("aria-busy", "true");
+    await act(async () => {
+      resolveHistory(httpJson(transcriptFromSimpleMessages(systemOnly
+        ? [{ role: "assistant", content: "Model selected", turnId: "webui-system:model-preset" }]
+        : [])));
+    });
+
+    expect(await screen.findByText(HERO_GREETING_PATTERN)).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Loading conversation…" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("thread-welcome-layout")).toHaveAttribute("data-layout", "hero");
+  });
+
+  it("keeps cached messages visible while the first history revalidation is pending", async () => {
+    webuiThreadCache.set("websocket:cached-topic", transcriptFromSimpleMessages([
+      { role: "assistant", content: "Cached answer" },
+    ]));
+    vi.mocked(fetch).mockImplementation((input) => String(input).includes("/webui-thread")
+      ? new Promise<Response>(() => {})
+      : Promise.resolve(new Response(null, { status: 404 })));
+    render(wrap(makeClient(), <ThreadShell session={session("cached-topic")} title="Cached topic"
+      onToggleSidebar={() => {}} />));
+
+    expect(await screen.findByText("Cached answer")).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Loading conversation…" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message input" })).toBeEnabled();
   });
 
   it("loads mention catalogs only on demand and ignores window focus", async () => {
