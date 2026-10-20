@@ -2242,8 +2242,8 @@ function Shell({
   }, [client, onModelNameChange]);
 
   useEffect(() => {
-    return client.onRunStatus((chatId, startedAt) => {
-      if (startedAt != null) {
+    return client.onRunStatus((chatId, state) => {
+      if (state.active) {
         const nextRunning = new Set(runningChatIdsRef.current);
         nextRunning.add(chatId);
         runningChatIdsRef.current = nextRunning;
