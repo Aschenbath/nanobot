@@ -32,8 +32,8 @@ async function openMessageActions(text: string): Promise<HTMLElement> {
   return screen.findByRole("dialog", { name: "Message actions" });
 }
 
-function makeClient() {
-  const { client: lifecycle, receive } = createStreamClient();
+function makeClient(options?: Parameters<typeof createStreamClient>[0]) {
+  const { client: lifecycle, receive, receiveRaw, updateRuns, setConnected, adoptSnapshot } = createStreamClient(options);
   const errorHandlers = new Set<(err: StreamError) => void>();
   const statusHandlers = new Set<(status: ConnectionStatus) => void>();
   const runtimeModelHandlers = new Set<
@@ -82,11 +82,17 @@ function makeClient() {
       };
     },
     getRunState: lifecycle.getRunState.bind(lifecycle),
-    restorePendingRun: lifecycle.restorePendingRun.bind(lifecycle),
     getRunStartedAt: lifecycle.getRunStartedAt.bind(lifecycle),
     getRunTurnId: lifecycle.getRunTurnId.bind(lifecycle),
     isRunCompleted: lifecycle.isRunCompleted.bind(lifecycle),
-    finishRunLocally: vi.fn(lifecycle.finishRunLocally.bind(lifecycle)),
+    requestStop: vi.fn(lifecycle.requestStop.bind(lifecycle)),
+    ingestRunSnapshot(chatId: string, value: unknown) {
+      const accepted = lifecycle.ingestRunSnapshot(chatId, value);
+      if (accepted) adoptSnapshot(chatId, value);
+      return accepted;
+    },
+    _receiveRaw: receiveRaw,
+    _updateRuns: updateRuns,
     hasUnsettledRun: lifecycle.hasUnsettledRun.bind(lifecycle),
     getRunGeneration: lifecycle.getRunGeneration.bind(lifecycle),
     canReconcileCanonicalCompletion,
@@ -114,6 +120,7 @@ function makeClient() {
       for (const h of errorHandlers) h(err);
     },
     _emitStatus(nextStatus: ConnectionStatus) {
+      setConnected(nextStatus === "open");
       status = nextStatus;
       for (const h of statusHandlers) h(status);
     },
@@ -193,6 +200,10 @@ function transcriptFromSimpleMessages(
       createdAt: 1000 + i,
     })),
   })!;
+}
+
+function idleRunState() {
+  return { instance_id: "fixture-host", revision: 100, runs: [], completed: [] };
 }
 
 function httpJson(body: unknown) {
@@ -2160,6 +2171,55 @@ describe("ThreadShell", () => {
     });
   });
 
+  it.each(["/model", "/history"])("replays the browser diagnostic canonical %s turn without confusing hidden commands with lost results", async (command) => {
+    // From the isolated browser diagnostic: the complete result is present in
+    // HTTP 200. /model is intentionally hidden by thread-display-projection,
+    // while the otherwise equivalent non-hidden command must survive reload.
+    const instanceId = "4a3287ad-5e8e-41e4-a13c-51f20077bc51";
+    const chatId = "cff9246c-7972-4298-ad98-a3f635f57c1a";
+    const turnId = "1e49da79-0c7f-44a7-96f9-0671532b6c6a";
+    const answer = command === "/model"
+      ? "## Model\n- Current model: `verify-model`\n- Current preset: `default`\n- Available presets: `default`"
+      : "The ordinary command result is preserved.";
+    const body = {
+      schemaVersion: 3, sessionKey: `websocket:${chatId}`, projection: "events",
+      completed_turn_ids: [turnId], has_pending_tool_calls: false, active_turn_id: null,
+      events: [
+        { event: "user_message", chat_id: chatId, turn_id: turnId, projection_id: "history-e63ed91cc5c5ac1a83a1",
+          turn_phase: "user", turn_seq: 1, created_at_ms: 1792502123876, text: command, starts_turn: true },
+        { event: "message", chat_id: chatId, turn_id: turnId, projection_id: "history-5f2bbaafec4e0ff027d1",
+          turn_phase: "answer", turn_seq: 2, created_at_ms: 1792502123899, text: answer },
+        { event: "turn_end", chat_id: chatId, turn_id: turnId, projection_id: "history-dba9016e6786888b13ca",
+          turn_phase: "complete", turn_seq: 3, created_at_ms: 1792502123904 },
+      ],
+      page: { before_cursor: null, has_more_before: false, after_cursor: null, has_more_after: false,
+        loaded_event_count: 3, user_message_offset: 0 },
+      run_state: { instance_id: instanceId, revision: 6, runs: [],
+        completed: [{ run_id: "5c27927cf18740e896d9c1ad9b51e652", turn_id: turnId, outcome: "completed" }] },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/webui-thread")
+      ? httpJson(body) : { ok: false, status: 404, json: async () => ({}) }));
+    const view = () => wrap(makeClient({ instanceId }), <ThreadShell session={session(chatId)} title="Diagnostic replay"
+      onToggleSidebar={() => {}} onNewChat={() => {}} />);
+    const assertResult = async () => {
+      await waitFor(() => expect(webuiThreadCache.get(`websocket:${chatId}`)?.events).toEqual(body.events));
+      if (command === "/model") {
+        expect(screen.queryByText("/model")).not.toBeInTheDocument();
+        expect(screen.queryByText(/verify-model/)).not.toBeInTheDocument();
+        expect(screen.getByTestId("hero-greeting")).toBeInTheDocument();
+      } else {
+        await screen.findByText(answer);
+        expect(screen.getByText(command)).toBeInTheDocument();
+        expect(screen.queryByTestId("hero-greeting")).not.toBeInTheDocument();
+      }
+    };
+    const initial = render(view());
+    await assertResult();
+    initial.unmount();
+    render(view());
+    await assertResult();
+  });
+
   it("keeps the empty thread landing focused on the composer", async () => {
     const client = makeClient();
     render(
@@ -2453,6 +2513,35 @@ describe("ThreadShell", () => {
     await waitFor(() => expect(screen.getByText("live assistant reply")).toBeInTheDocument());
   });
 
+  it.each(["syncing", "unavailable", "fresh"] as const)("keeps pending history separate from %s runtime and local delivery", async (freshness) => {
+    const client = makeClient(freshness === "unavailable" ? { instanceId: null }
+      : freshness === "syncing" ? { autoRunSnapshots: false } : {});
+    const chatId = "pending-not-runtime";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/webui-thread")
+      ? httpJson({
+          ...transcriptFromSimpleMessages([{ role: "user", content: "Old unfinished request", turnId: "old-turn" }]),
+          has_pending_tool_calls: true, active_turn_id: "old-turn", completed_turn_ids: [],
+        }) : { ok: false, status: 404, json: async () => ({}) }));
+    const view = render(wrap(client, <ThreadShell session={session(chatId)} title="Pending history"
+      onToggleSidebar={() => {}} onNewChat={() => {}} />));
+    await screen.findByText("Old unfinished request");
+    expect(client.getRunState(chatId)).toMatchObject({ freshness, active: false });
+    expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Message input"), { target: { value: "A new request" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(client.sendMessage).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Sending message…" })).toBeDisabled();
+    expect(client.getRunState(chatId)).toMatchObject({ active: false, delivery: "sending" });
+    if (freshness !== "fresh") {
+      expect(view.container.querySelector(`[data-run-status="${freshness}"] [data-message-delivery="sending"]`))
+        .toHaveTextContent("Sending message…");
+    }
+    if (freshness === "unavailable") expect(screen.getByText(/Update nanobot on this host/)).toBeInTheDocument();
+    act(() => client._receiveRaw({ event: "goal_status", chat_id: chatId, turn_id: "old-turn", status: "running", started_at: 123 }));
+    expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+    expect(client.getRunState(chatId).active).toBe(false);
+  });
+
   it("restores the stop control when returning to a running chat", async () => {
     const client = makeClient();
     const view = (chatId: string) => wrap(
@@ -2565,16 +2654,19 @@ describe("ThreadShell", () => {
         const url = String(input);
         if (url.includes("websocket%3Aresume-chat/webui-thread")) {
           historyCalls += 1;
-          return httpJson(
-            transcriptFromSimpleMessages(
+          return httpJson({
+            ...transcriptFromSimpleMessages(
               historyCalls === 1
-                ? [{ role: "user", content: "question" }]
+                ? [{ role: "user", content: "question", turnId: "fixture-turn:resume-chat" }]
                 : [
-                    { role: "user", content: "question" },
-                    { role: "assistant", content: "partial answer completed while away" },
+                    { role: "user", content: "question", turnId: "fixture-turn:resume-chat" },
+                    { role: "assistant", content: "partial answer completed while away", turnId: "fixture-turn:resume-chat" },
                   ],
             ),
-          );
+            has_pending_tool_calls: historyCalls === 1,
+            completed_turn_ids: historyCalls === 1 ? [] : ["fixture-turn:resume-chat"],
+            ...(historyCalls > 1 ? { run_state: idleRunState() } : {}),
+          });
         }
         return {
           ok: false,
@@ -2615,7 +2707,8 @@ describe("ThreadShell", () => {
     expect(historyCalls).toBe(1);
 
     act(() => client._emitStatus("reconnecting"));
-    expect(screen.getByRole("button", { name: "Stop response" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+    expect(screen.getByText("Task status unknown. Reconnect to check.")).toBeInTheDocument();
     act(() => client._emitStatus("open"));
 
     await waitFor(() => expect(historyCalls).toBe(2));
@@ -2663,6 +2756,7 @@ describe("ThreadShell", () => {
     act(() => webuiThreadCache.set(`websocket:${chatId}`, canonicalThreadPayload({
       schemaVersion: 3,
       revision: "completed-revision",
+      run_state: idleRunState(),
       has_pending_tool_calls: false,
       completed_turn_ids: [turnId],
       messages: [
@@ -2672,7 +2766,9 @@ describe("ThreadShell", () => {
     })!));
     act(() => client._emitStatus("open"));
     await screen.findByText("full cached answer");
-    expect(historyCalls).toBe(2);
+    // The authenticated baseline lets the cached runtime snapshot confirm exit.
+    // That terminal fact invalidates the older revalidation, so one fresh 304 read follows.
+    expect(historyCalls).toBe(3);
     expect(screen.queryByText("cached prefix")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
   });
@@ -2718,6 +2814,7 @@ describe("ThreadShell", () => {
         { role: "assistant", content: "externally published final answer", turnId },
       ]),
       revision: "completed-revision",
+      run_state: idleRunState(),
       has_pending_tool_calls: false,
       completed_turn_ids: [turnId],
     })!;
@@ -2819,6 +2916,7 @@ describe("ThreadShell", () => {
                   ],
             ),
             has_pending_tool_calls: false,
+            completed_turn_ids: historyCalls === 1 ? [] : [canonicalTurnId],
           });
         }
         return {
@@ -2859,7 +2957,7 @@ describe("ThreadShell", () => {
         observedTurnIds: [canonicalTurnId],
         hasPendingToolCalls: false,
         activeTurnId: null,
-        completionIdsProvided: false,
+        completionIdsProvided: true,
       },
     );
   });
@@ -3233,6 +3331,8 @@ describe("ThreadShell", () => {
           return httpJson({
             ...transcriptFromSimpleMessages(rows),
             has_pending_tool_calls: false,
+            completed_turn_ids: chatACalls <= 2 ? [oldTurnId] : [oldTurnId, newTurnId],
+            ...(chatACalls > 2 ? { run_state: idleRunState() } : {}),
           });
         }
         if (url.includes("websocket%3Achat-version-b/webui-thread")) {
@@ -3737,6 +3837,8 @@ describe("ThreadShell", () => {
                   ],
             ),
             has_pending_tool_calls: false,
+            completed_turn_ids: chatACalls === 1 ? [] : [turnId],
+            ...(chatACalls > 1 ? { run_state: idleRunState() } : {}),
           });
         }
         if (url.includes("websocket%3Avisibility-complete-b/webui-thread")) {
@@ -3801,6 +3903,7 @@ describe("ThreadShell", () => {
             ]),
             has_pending_tool_calls: historyCalls === 1,
             completed_turn_ids: historyCalls === 1 ? [] : [turnId],
+            ...(historyCalls > 1 ? { run_state: idleRunState() } : {}),
           });
         }
         return {
@@ -3990,6 +4093,8 @@ describe("ThreadShell", () => {
           return httpJson({
             ...transcript,
             has_pending_tool_calls: historyCalls === 2,
+            completed_turn_ids: historyCalls >= 3 ? [turnId] : [],
+            ...(historyCalls >= 3 ? { run_state: idleRunState() } : {}),
           });
         }
         return {
@@ -4086,7 +4191,10 @@ describe("ThreadShell", () => {
           return httpJson(
             historyCalls === 1
               ? transcript
-              : { ...transcript, has_pending_tool_calls: historyCalls === 2 },
+              : { ...transcript, has_pending_tool_calls: historyCalls === 2,
+                  completed_turn_ids: historyCalls >= 3 ? [turnId] : [],
+                  ...(historyCalls >= 3 ? { run_state: idleRunState() } : {}),
+                },
           );
         }
         return {
@@ -4259,6 +4367,7 @@ describe("ThreadShell", () => {
             ),
             has_pending_tool_calls: historyCalls === 1,
             completed_turn_ids: historyCalls === 1 ? [] : [turnId],
+            ...(historyCalls > 1 ? { run_state: idleRunState() } : {}),
           });
         }
         return {
@@ -5484,7 +5593,9 @@ describe("ThreadShell", () => {
 
     expect(screen.queryByText("Restoring interrupted task…")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Stop response" }));
-    expect(client.sendMessage).toHaveBeenCalledWith("resuming-chat", "/stop");
+    expect(client.requestStop).toHaveBeenCalledWith("resuming-chat");
+    expect(screen.getByRole("button", { name: "Stop requested. Waiting for the task to exit…" })).toBeDisabled();
+    expect(client.getRunState("resuming-chat")).toMatchObject({ active: true, cancelPending: true });
   });
 
   it.each(["awaiting_user", "failed", "recovered"] as const)("allows a new turn after a %s recovery state", async (status) => {
@@ -5512,6 +5623,12 @@ describe("ThreadShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(client.sendMessage).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sending message…" })).toBeDisabled();
+    const turnId = client.sendMessage.mock.calls[0][3]?.turnId ?? null;
+    act(() => client._updateRuns("recovered-chat", [{
+      run_id: "next-owner", turn_id: turnId, phase: "queued", started_at: null,
+    }]));
     expect(screen.getByRole("button", { name: "Stop response" })).toBeInTheDocument();
   });
 

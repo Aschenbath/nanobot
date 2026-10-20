@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from loguru import logger
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import ExecutionAdmission, InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.pairing import (
     PAIRING_CODE_META_KEY,
@@ -270,6 +270,7 @@ class BaseChannel(ABC):
         authorization_id: str | None = None,
         require_existing_session: bool = False,
         session_generation: str | None = None,
+        execution_admission: ExecutionAdmission | None = None,
     ) -> None:
         """Handle a message after checking its authorization subject.
 
@@ -330,6 +331,7 @@ class BaseChannel(ABC):
             session_key_override=session_key,
             session_generation=session_generation,
             require_existing_session=require_existing_session,
+            execution_admission=execution_admission,
         )
 
         await self.bus.publish_inbound(msg)

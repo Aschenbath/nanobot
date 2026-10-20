@@ -221,7 +221,7 @@ describe("merged waiting messages", () => {
       { id: "second", text: "", images: [DOCUMENT], autoAfterTurnId: "turn-a" },
     ]));
     const onSend = vi.fn();
-    render(<ThreadComposer onSend={onSend} pendingQueueKey="chat-a" completedTurnIds={["turn-a"]} />);
+    render(<ThreadComposer onSend={onSend} pendingQueueKey="chat-a" completedTurnIds={["turn-a"]} queueAutoSendAllowed />);
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend).toHaveBeenCalledWith("", [
       expect.objectContaining({ media: expect.objectContaining({ name: "first.png" }) }),

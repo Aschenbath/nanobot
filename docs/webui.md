@@ -119,7 +119,11 @@ To use work from another topic, mention it with `@` and tell nanobot what you ne
 
 The message timeline shows replies and agent activity. Expand the **Worked for** section to inspect the reasoning and tool activity for a completed turn.
 
-If the connection drops, the host control shows **Reconnecting**. Tasks in persistent topics can continue during the interruption. After reconnecting, task indicators and completed replies update automatically, including topics you have switched away from. Some text generated while disconnected may appear only after the task finishes. [Temporary chats](#temporary-chats) end when their connection is lost.
+Task indicators follow the gateway's confirmed state, including work waiting to start and requests to stop. Sending a message or uploading an attachment does not itself mean the agent is running. **Stop** remains pending until the gateway confirms that the requested work has ended; a finished task can still be synchronizing its reply.
+
+If the connection drops, task state becomes unconfirmed and the host control shows **Reconnecting**. Tasks in persistent topics can continue during the interruption. After reconnecting, task indicators and completed replies update automatically, including topics you have switched away from. Some text generated while disconnected may appear only after the task finishes. Queued messages wait for confirmed idle state and the previous result before sending automatically; an unconfirmed message receipt is not automatically resent. [Temporary chats](#temporary-chats) end when their connection is lost.
+
+Older compatible hosts can still exchange chat messages. If live task state is unavailable, update the host to enable confirmed task indicators, Stop controls and automatic queued sending.
 
 When the agent writes or edits files, the activity item shows the target path, status, and changed line counts. Choose **Settings → Appearance → File edit display** to control the detail: **Summary** shows the change summary, **Diff** shows available unified patches inline, and **Collapsed diff** lets you expand them with **View diff**. Large diffs may hide unchanged lines or truncate the inline preview. Select the filename in the activity row to open the read-only file preview panel.
 

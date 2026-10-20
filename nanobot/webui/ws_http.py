@@ -96,6 +96,7 @@ from nanobot.webui.http_utils import (
 from nanobot.webui.ingress_policy import WebUIIngressPolicy
 from nanobot.webui.media_gateway import WebUIMediaGateway
 from nanobot.webui.recovery import RecoveryActionError
+from nanobot.webui.run_state import RunStateAuthority
 from nanobot.webui.session_automations import (
     all_automations_payload,
     serialize_automation_jobs,
@@ -384,6 +385,7 @@ class GatewayHTTPHandler:
         ) = None,
         subagent_manager: SubagentManager | None = None,
         discard_session: Callable[[str], Awaitable[None]] | None = None,
+        runs: RunStateAuthority | None = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -392,6 +394,7 @@ class GatewayHTTPHandler:
         self.runtime_model_name = runtime_model_name
         self.bus = bus
         self.tokens = tokens
+        self.runs = runs if runs is not None else RunStateAuthority(bus, tokens.instance_id)
         self.media = media
         self.ingress = ingress
         self.workspaces = workspaces
@@ -1018,6 +1021,7 @@ class GatewayHTTPHandler:
             if row.get("recovery_state") is None:
                 row.pop("recovery_state", None)
             chat_id = key.split(":", 1)[1]
+            row["run_state"] = self.runs.snapshot(key)
             started_at = websocket_turn_wall_started_at(chat_id)
             if started_at is not None:
                 row["run_started_at"] = started_at
@@ -1257,6 +1261,7 @@ class GatewayHTTPHandler:
         if data is None:
             return _http_error(404, "webui thread not found")
         data["workspace_scope"] = scope.payload()
+        data["run_state"] = self.runs.snapshot(decoded_key)
         revision_variant["session_version"] = self._read_session_version(decoded_key)
         final_revision = webui_transcript_revision(decoded_key, variant=revision_variant)
         response_headers = list(_NO_STORE_HEADERS)

@@ -75,7 +75,8 @@ import type {
 import { projectThreadEvents } from "@/lib/thread-event-projection";
 import { projectWebuiThreadMessages } from "@/lib/thread-display-projection";
 import { ThreadMessageCache } from "@/lib/thread-message-cache";
-import { canonicalRunSnapshot, completedAssistantTurnIds } from "@/lib/canonical-run-snapshot";
+import { canonicalRunSnapshot } from "@/lib/canonical-run-snapshot";
+import { webuiThreadCache } from "@/lib/webui-thread-cache";
 import { providerDisplayLabel } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import { useClient } from "@/providers/ClientProvider";
@@ -889,6 +890,11 @@ export function ThreadShell({
   const skipLayoutCacheRef = useRef(false);
   const pendingCanonicalHydrateRef = useRef<Map<string, PendingCanonicalHydrate>>(new Map());
   const pendingCanonicalCommitRef = useRef<Map<string, PendingCanonicalCommit>>(new Map());
+  const pendingCanonicalFenceRef = useRef(new Map<string, { messages: UIMessage[]; turnIds: string[] }>());
+  const [committedCanonicalCompletion, setCommittedCanonicalCompletion] = useState<{
+    chatId: string;
+    turnIds: readonly string[];
+  } | null>(null);
   const pendingHistoryLineageCommitRef = useRef<Map<string, PendingHistoryLineageCommit>>(
     new Map(),
   );
@@ -922,6 +928,7 @@ export function ThreadShell({
     messages,
     messagesReady,
     isStreaming,
+    runState,
     runStartedAt,
     retryStatus,
     goalState,
@@ -936,8 +943,14 @@ export function ThreadShell({
     streamError,
     dismissStreamError,
   } = useNanobotStream(
-    chatId, initial, hasPendingToolCalls, handleTurnEnd, handleStreamDetach, completedTurnIds, historyActiveTurnId,
+    chatId, initial, handleTurnEnd, handleStreamDetach,
   );
+  useEffect(() => {
+    if (!chatId || !historyKey) return;
+    const body = webuiThreadCache.get(historyKey);
+    if (body?.run_state) client.ingestRunSnapshot(chatId, body.run_state);
+  }, [chatId, client, historyKey, historyVersion, runState?.freshness]);
+
   const displayMessages = useMemo(() => projectWebuiThreadMessages(messages), [messages]);
   const normalizedHistory = useMemo(() => projectWebuiThreadMessages(historical), [historical]);
   // The response can arrive one commit before its messages reach the viewport.
@@ -1061,8 +1074,23 @@ export function ThreadShell({
   // Recovery decisions gate queued input, not the ledger-owned run state.
   const recoveryNeedsDecision = recoveryState?.status === "awaiting_user"
     || recoveryState?.status === "failed";
+  const currentRunState = messagesReady ? runState : null;
   const currentRunStartedAt = messagesReady ? runStartedAt : null;
   const turnActive = messagesReady && isStreaming;
+  const queueAutoSendAllowed = !!currentRunState
+    && currentRunState.freshness === "fresh"
+    && !currentRunState.active
+    && currentRunState.delivery === "none"
+    && !currentRunState.cancelPending
+    && !currentRunState.unsettled
+    && !recoveryNeedsDecision;
+  const runtimeStatusKey = !currentRunState ? "syncing"
+    : currentRunState.freshness !== "fresh" ? currentRunState.freshness
+    : currentRunState.cancelPending ? "cancelPending"
+    : currentRunState.active ? currentRunState.phase
+    : currentRunState.delivery === "sending" ? "sending"
+    : currentRunState.delivery === "unknown" ? "deliveryUnknown"
+    : currentRunState.unsettled ? "resultUnknown" : null;
   const restoredViewportTurnId = useMemo(
     () => turnActive ? latestActiveTurnId(displayMessages, currentRunStartedAt) : null,
     [currentRunStartedAt, displayMessages, turnActive],
@@ -1266,22 +1294,19 @@ export function ThreadShell({
     // its history response can race with another send or running event.
   }, [chatId, client, historyKey]);
 
-  const canonicalCompletedTurnIds = useMemo(() => Array.from(new Set([
-    ...completedTurnIds,
-    ...(!completionIdsProvided && !hasPendingToolCalls && historyActiveTurnId === null
-      ? completedAssistantTurnIds(normalizedHistory)
-      : []),
-  ])), [completedTurnIds, completionIdsProvided, hasPendingToolCalls, normalizedHistory, historyActiveTurnId]);
+  const canonicalCompletedTurnIds = completedTurnIds;
+  const committedCanonicalTurnIds = useMemo(() => committedCanonicalCompletion?.chatId === chatId
+    ? committedCanonicalCompletion.turnIds : [], [chatId, committedCanonicalCompletion]);
 
   const lastRunTurnId = chatId ? client.getRunTurnId(chatId) : null;
   const completedRunTurnId = chatId && lastRunTurnId && client.isRunCompleted(chatId, lastRunTurnId)
     ? lastRunTurnId : null;
   const queueCompletedTurnIds = useMemo(() => {
-    const canonical = hasPendingToolCalls ? [] : canonicalCompletedTurnIds;
+    const canonical = committedCanonicalTurnIds;
     // Live terminal facts can release the queue before the history refresh finishes.
     return completedRunTurnId && !canonical.includes(completedRunTurnId)
       ? [...canonical, completedRunTurnId] : canonical;
-  }, [canonicalCompletedTurnIds, completedRunTurnId, hasPendingToolCalls]);
+  }, [committedCanonicalTurnIds, completedRunTurnId]);
 
   useEffect(() => {
     if (!historyKey || !chatId || loading) return;
@@ -1294,13 +1319,15 @@ export function ThreadShell({
         pendingCanonicalHydrate.source === "refresh"
         || (
           (historical.length > 0 || completedTurnIds.length > 0)
-          && client.getRunState(chatId).active
+          && client.hasUnsettledRun(chatId)
         )
       )
     );
-    // Completion is a fact about a turn, even when a newer local turn prevents
-    // this snapshot from settling the conversation's current run.
-    client.fenceCanonicalCompletedTurns(chatId, canonicalCompletedTurnIds);
+    const commitCanonicalRows = (next: UIMessage[]) => {
+      // Fences and queued dispatch wait for these rows to commit to the UI/cache.
+      pendingCanonicalFenceRef.current.set(chatId, { messages: next, turnIds: canonicalCompletedTurnIds });
+      return next;
+    };
     const keepLiveMessages = (current: UIMessage[]) => {
       const reconciled = projectWebuiThreadMessages(
         replaceCanonicalCompletedTurns(current, normalizedHistory, canonicalCompletedTurnIds),
@@ -1339,7 +1366,7 @@ export function ThreadShell({
           ? resetDropsRenderedTail
           : isStaleThreadSnapshot(messages, normalizedHistory, true)
       ) {
-        setMessages((current) => keepLiveMessages(current));
+        setMessages((current) => commitCanonicalRows(keepLiveMessages(current)));
         return;
       }
       const canonicalSnapshot = canonicalRunSnapshot(
@@ -1354,7 +1381,7 @@ export function ThreadShell({
         canonicalCompletedTurnIds,
         canonicalSnapshot,
       )) {
-        setMessages((current) => keepLiveMessages(current));
+        setMessages((current) => commitCanonicalRows(keepLiveMessages(current)));
         return;
       }
       pendingCanonicalCommitRef.current.set(chatId, {
@@ -1374,9 +1401,9 @@ export function ThreadShell({
             ? resetDropsRenderedTail
             : isStaleThreadSnapshot(current, normalizedHistory, true)
         ) {
-          return keepLiveMessages(current);
+          return commitCanonicalRows(keepLiveMessages(current));
         }
-        return normalizedHistory;
+        return commitCanonicalRows(normalizedHistory);
       });
       return;
     }
@@ -1393,10 +1420,10 @@ export function ThreadShell({
     }
     setMessages((current) => {
       const reconciled = keepLiveMessages(current);
-      return (hasPendingToolCalls && current.length > 0)
+      return commitCanonicalRows((hasPendingToolCalls && current.length > 0)
         || isStaleThreadSnapshot(reconciled, normalizedHistory, true)
           ? reconciled
-          : normalizedHistory;
+          : normalizedHistory);
     });
   }, [
     loading,
@@ -1431,6 +1458,8 @@ export function ThreadShell({
       pendingCanonicalCommitRef.current.delete(chatId);
       return;
     }
+    // The result must survive navigation before reconciliation can prune replay.
+    messageCacheRef.current.set(chatId, projectWebuiThreadMessages(messages));
     if (
       uiRevisionRef.current !== commit.expectedUiRevision
       || !client.reconcileCanonicalCompletion(
@@ -1455,6 +1484,16 @@ export function ThreadShell({
     committedHistoryLineageRef.current.set(chatId, historyLineage);
     completedCanonicalHydrateVersionRef.current.set(chatId, historyVersion);
   }, [chatId, client, historyKey, historyLineage, historyVersion, messages, setMessages]);
+
+  useLayoutEffect(() => {
+    if (!chatId || !messagesReady) return;
+    const pending = pendingCanonicalFenceRef.current.get(chatId);
+    if (!pending || pending.messages !== messages) return;
+    pendingCanonicalFenceRef.current.delete(chatId);
+    messageCacheRef.current.set(chatId, projectWebuiThreadMessages(messages));
+    client.fenceCanonicalCompletedTurns(chatId, pending.turnIds);
+    setCommittedCanonicalCompletion({ chatId, turnIds: pending.turnIds });
+  }, [chatId, client, messages, messagesReady]);
 
   useEffect(() => {
     if (!historyKey || !chatId || hasPendingToolCalls) return;
@@ -1883,6 +1922,14 @@ export function ThreadShell({
           onDismiss={dismissStreamError}
         />
       ) : null}
+      {session && runtimeStatusKey ? (
+        <p role="status" data-run-status={runtimeStatusKey} className="px-3 pb-2 text-xs text-muted-foreground">
+          {currentRunState?.delivery === "sending" && runtimeStatusKey !== "sending" ? (
+            <span data-message-delivery="sending">{t("thread.runStatus.sending")} </span>
+          ) : null}
+          {t(`thread.runStatus.${runtimeStatusKey}`)}
+        </p>
+      ) : null}
       {session ? (
         <ThreadComposer
           key={draftKey}
@@ -1893,9 +1940,11 @@ export function ThreadShell({
           disabled={!chatId}
           inputAriaLabel={composerInputAriaLabel}
           isStreaming={turnActive}
-          activeTurnId={turnActive && chatId ? client.getRunTurnId(chatId) ?? historyActiveTurnId : null}
-          completedTurnIds={messagesReady && !recoveryNeedsDecision
-            && chatId && !client.hasUnsettledRun(chatId) ? queueCompletedTurnIds : undefined}
+          isSending={currentRunState?.delivery === "sending"}
+          cancelPending={currentRunState?.cancelPending}
+          queueAutoSendAllowed={queueAutoSendAllowed}
+          activeTurnId={turnActive && chatId ? client.getRunTurnId(chatId) : null}
+          completedTurnIds={queueCompletedTurnIds}
           placeholder={
             composerVariant === "hero"
               ? t("thread.composer.placeholderHero")

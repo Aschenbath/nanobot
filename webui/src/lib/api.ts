@@ -55,6 +55,7 @@ import type {
 } from "./types";
 import { fetchWithTimeout } from "./http";
 import { isSubagentTask } from "./subagent-tasks";
+import { decodeRunSnapshot } from "./server-run-state";
 
 const API_READ_TIMEOUT_MS = 20_000;
 const API_MUTATION_TIMEOUT_MS = 20_000;
@@ -203,6 +204,7 @@ export async function listSessions(
     preview?: string;
     model_preset?: string | null;
     run_started_at?: number | null;
+    run_state?: unknown;
     recovery_state?: RecoveryState | null;
     workspace_scope?: WorkspaceScopePayload | null;
     handle?: SessionHandle | null;
@@ -224,6 +226,7 @@ export async function listSessions(
       preview: s.preview ?? "",
       modelPreset: s.model_preset ?? null,
       runStartedAt: s.run_started_at ?? null,
+      ...(s.run_state !== undefined ? { runState: decodeRunSnapshot(s.run_state) ?? undefined } : {}),
       recoveryState: s.recovery_state ?? null,
       workspaceScope: s.workspace_scope ?? null,
       handle,
