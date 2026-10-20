@@ -84,7 +84,8 @@ it("keeps Preview update controls and translates feedback without executing an u
   vi.stubGlobal("fetch", fetch);
   render(<Gallery />);
   const preview = within(await screen.findByRole("region", { name: "Component preview" }));
-  await userEvent.selectOptions(preview.getByRole("combobox", { name: "Version state" }), "preview");
+  await userEvent.click(preview.getByRole("combobox", { name: "Version state" }));
+  await userEvent.click(await screen.findByRole("option", { name: "preview" }));
   const toggle = preview.getByRole("switch", { name: "Receive preview updates" });
   await userEvent.click(toggle);
   expect(toggle).toBeChecked();
