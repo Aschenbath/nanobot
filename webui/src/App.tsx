@@ -73,6 +73,7 @@ import {
 import { displayTitle, sortSessions } from "@/lib/chat-groups";
 import { deriveTitle } from "@/lib/format";
 import { NanobotClient } from "@/lib/nanobot-client";
+import { BrowserNotifications, useBrowserNotificationLifecycle } from "@/components/BrowserNotifications";
 import { ThreadMessageCache } from "@/lib/thread-message-cache";
 import { FilePreviewStore } from "@/hooks/useFilePreviewState";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
@@ -177,6 +178,7 @@ const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   "overview",
   "about",
   "appearance",
+  "notifications",
   "models",
   "image",
   "voice",
@@ -939,6 +941,7 @@ function resolveRuntimeSurface(
 
 export default function App() {
   useAppViewport();
+  useBrowserNotificationLifecycle();
   const { t } = useTranslation();
   const [state, setState] = useState<BootState>({ status: "loading" });
   const bootstrapSecretRef = useRef("");
@@ -1139,6 +1142,7 @@ export default function App() {
       checkUpdatesOnConnect={state.runtimeSurface !== "native" && state.webuiCapabilities.includes("webui.core.v1")}
       allowUpdateFlow={state.runtimeSurface !== "native"}
     >
+      <BrowserNotifications client={state.client} />
       <RemoteInstances><Shell
         runtimeSurface={state.runtimeSurface}
         onModelNameChange={handleModelNameChange}
