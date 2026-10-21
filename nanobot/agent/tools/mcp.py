@@ -18,6 +18,7 @@ from loguru import logger
 
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import tool_log_content_allowed
+from nanobot.agent.tools.mcp_result import mcp_host_data, mcp_model_visible
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.security.network import (
     PinnedDNSAsyncTransport,
@@ -612,6 +613,7 @@ class MCPToolWrapper(_MCPWrapperBase):
     ):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
+        self._tool_def = tool_def
         self._name = _sanitize_mcp_tool_name(f"mcp_{server_name}_{tool_def.name}")
         self._description = tool_def.description or tool_def.name
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
@@ -693,9 +695,11 @@ class MCPToolWrapper(_MCPWrapperBase):
                 # Success — extract text and persist any image content as artifacts.
                 try:
                     rendered = self._render_call_result(result.content, kwargs)
-                    if getattr(result, "isError", False):
-                        return ToolResult.error(rendered)
-                    return rendered
+                    return ToolResult(
+                        rendered,
+                        is_error=bool(getattr(result, "isError", False)),
+                        data=mcp_host_data(self._server_name, self._tool_def, result),
+                    )
                 except Exception as exc:
                     logger.opt(exception=tool_log_content_allowed()).error(
                         "MCP tool '{}' failed while rendering result: {}: {}",
@@ -1182,15 +1186,22 @@ async def connect_mcp_servers(
                         name,
                     )
                     continue
-                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
-                registry.register(wrapper)
-                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
-                registered_count += 1
                 if enabled_tools:
                     if tool_def.name in enabled_tools:
                         matched_enabled_tools.add(tool_def.name)
                     if wrapped_name in enabled_tools:
                         matched_enabled_tools.add(wrapped_name)
+                if not mcp_model_visible(tool_def):
+                    logger.debug(
+                        "MCP: skipping tool '{}' from server '{}' (not model-visible)",
+                        wrapped_name,
+                        name,
+                    )
+                    continue
+                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
+                registry.register(wrapper)
+                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
+                registered_count += 1
 
             if enabled_tools and not allow_all_tools:
                 unmatched_enabled_tools = sorted(enabled_tools - matched_enabled_tools)

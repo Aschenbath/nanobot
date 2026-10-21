@@ -59,6 +59,32 @@ Restart nanobot, then ask a question that needs the MCP tool.
 - Stdio MCP servers run local processes; review their command and arguments.
 - Do not pass secrets in command-line args when environment variables or headers are available.
 
+## Structured MCP results for backend integrations
+
+MCP observations remain text or compact image-artifact references in the model context. Previously, other MCP result fields were discarded. Backend integrations can now inspect a string-compatible `ToolResult.data["mcp"]` in `AgentHook.after_execute_tool` or `AgentHook.on_execute_tool_error`, while `str(result)` keeps the existing model-facing output.
+
+The optional payload retains the originating `server_name` and raw `tool_name`, tool `_meta` as `tool_meta`, `outputSchema`, annotations, and the result's `content`, `structuredContent`, `_meta`, and `isError`. SDK objects are converted with their wire field names, and retained JSON is copied so later changes to the MCP response do not mutate a captured result. Error guidance added by the registry or runner preserves this payload.
+
+```python
+from nanobot.agent.hook import AgentHook
+from nanobot.agent.tools.base import ToolResult
+
+
+class StructuredResultHook(AgentHook):
+    async def after_execute_tool(self, context, tool_call, tool, params, result):
+        if isinstance(result, ToolResult) and result.data is not None:
+            mcp_result = result.data.get("mcp")
+            if mcp_result is not None:
+                # Consume explicitly in your trusted backend integration.
+                structured = mcp_result.get("structuredContent")
+```
+
+Each MCP payload is limited to 64 KiB of serialized UTF-8 JSON, 16 levels of nesting, and 4096 values. Optional fields are considered in the order listed above; a field that is invalid or would exceed the shared budget is omitted whole, with no change to the model-facing result or error status. Consumers must tolerate absent fields, including `content` for large images, and treat retained metadata as untrusted server data. The structured payload is not automatically added to model messages, runtime checkpoints, logs, or WebUI events; publishing or persisting it is the integration's responsibility. Existing image artifact storage remains unchanged.
+
+Tools with explicit `_meta.ui.visibility` that excludes `"model"`, including app-only tools, are not registered for agent execution. This restriction also applies when `enabledTools` explicitly names the tool. When visibility is omitted, ordinary MCP tool behavior is preserved.
+
+This backend result interface does not advertise the MCP Apps extension, read `ui://` resources, or render an embedded app. Browser hosting and authenticated app-to-server tool routing require a separate opt-in bridge and sandbox policy. The backend tests cover result retention, error hooks, size limits, visibility, and a real in-memory MCP session running through `AgentRunner`; they do not establish browser-host conformance.
+
 ## Troubleshooting
 
 - Check MCP startup logs on the running gateway; use `--verbose` when restarting it for diagnosis.
