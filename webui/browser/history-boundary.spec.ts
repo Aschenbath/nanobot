@@ -921,6 +921,29 @@ test("cross-path older errors never float after latest or a loaded rail jump, bu
 });
 
 
+test("network loading waits for native scrolling to reach the actual top", async ({ page }) => {
+  const history = await installHistory(page);
+  const { body, header } = await openSettledHistory(page);
+  // Home can emit this penultimate position before its native scroll reaches zero.
+  await body.evaluate((node) => {
+    node.tabIndex = 0;
+    node.focus({ preventScroll: true });
+    node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    node.scrollTop = 1;
+    node.dispatchEvent(new Event("scroll"));
+  });
+  await stableLayout(body);
+  expect(history.reads).toHaveLength(0);
+  await page.keyboard.press("Home");
+  await expect.poll(() => history.reads.length).toBe(1);
+  await expect(header).toHaveAttribute("data-state", "loading");
+  const held = await expectHeld(body, "Question 40");
+  expect(held.scrollTop).toBe(0);
+  expect(held.headerTop).toBeCloseTo(held.frameTop, 0);
+  await completePrepend(history, body, "Question 28", "Question 40", held.anchorTop);
+});
+
+
 test("bounded navigation retains three pages and reclaims each completed wheel or keyboard boundary slot", async ({ page }) => {
   const history = await installHistory(page);
   await page.setViewportSize({ width: 1440, height: 900 });
