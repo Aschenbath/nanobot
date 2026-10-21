@@ -299,7 +299,6 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   const restoreScrollAfterPrependRef =
     useRef<{ height: number; top: number } | null>(null);
   const historyScrollAnchorRef = useRef<HistoryScrollAnchor | null>(null);
-  const composerInputScrollTopRef = useRef<number | null>(null);
   const composerDockHeightRef = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
   const [atHistoryTop, setAtHistoryTop] = useState(false);
@@ -1116,21 +1115,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               data-testid="thread-composer-dock"
               onInputCapture={(event) => {
                 if (event.target instanceof HTMLTextAreaElement) {
-                  composerInputScrollTopRef.current = scrollRef.current?.scrollTop ?? null;
                   threadMotionRef.current?.handleComposerInput();
-                }
-              }}
-              onInput={(event) => {
-                if (!(event.target instanceof HTMLTextAreaElement)) return;
-                const previousScrollTop = composerInputScrollTopRef.current;
-                composerInputScrollTopRef.current = null;
-                const scrollEl = scrollRef.current;
-                if (scrollEl && previousScrollTop !== null) {
-                  // Textarea autosizing briefly collapses to `height: auto` while
-                  // measuring. Chrome can clamp the sibling thread scrollport in
-                  // that intermediate layout; restore it before paint, then let
-                  // ResizeObserver handle any real final composer height change.
-                  scrollEl.scrollTop = previousScrollTop;
                 }
               }}
               className={cn(
