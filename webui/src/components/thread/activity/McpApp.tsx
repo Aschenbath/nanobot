@@ -80,44 +80,49 @@ export function McpAppCard({ host, appId, title }: { host: AppHost; appId: strin
     let requestPending = false;
     let bridge: AppBridge | undefined;
     const start = async () => {
-    const { AppBridge, PostMessageTransport } = await import("@modelcontextprotocol/ext-apps/app-bridge");
-    if (!active || !frame.current?.contentWindow) return;
-    const connection = new AppBridge(null, { name: "nanobot", version: "1" }, { serverTools: {} });
-    bridge = connection;
-    connection.oncalltool = async (params) => {
-      if (!active || requestPending) throw new Error("An app action is already awaiting approval");
-      requestPending = true;
-      try {
-        const prepared = await hostTransport.requestMutation<{ approval_id: string; name: string; arguments: Record<string, unknown> }>(
-          "mcp_apps.prepare", { app_id: appId, session_key: sessionKey, name: params.name, arguments: params.arguments ?? {} },
-        );
-        if (!active) throw new Error("The app has closed");
-        const approved = await new Promise<boolean>((resolve) => {
-          const item = { name: prepared.name, arguments: prepared.arguments, resolve };
-          approvalRef.current = item;
-          setApproval(item);
-        });
-        approvalRef.current = null;
-        if (active) setApproval(null);
-        if (!active) throw new Error("The app has closed");
-        return await hostTransport.requestMutation<ToolResult>("mcp_apps.confirm", {
-          app_id: appId, session_key: sessionKey, approval_id: prepared.approval_id, approved,
-        }, 120_000);
-      } finally {
-        requestPending = false;
-      }
-    };
-    connection.oninitialized = () => {
-      void connection.sendToolInput({ arguments: payload.arguments });
-      void connection.sendToolResult({ ...payload.result, content: payload.result.content ?? [] });
-    };
-    connection.onsizechange = ({ height: requested }) => {
-      if (active && typeof requested === "number" && Number.isFinite(requested)) setHeight(Math.max(180, Math.min(900, requested)));
-    };
-    connection.onerror = () => { if (active) setError(t("mcpApp.failed")); };
-    const transport = new PostMessageTransport(frame.current.contentWindow, frame.current.contentWindow);
-    await connection.connect(transport);
-    if (active && frame.current) frame.current.srcdoc = sandboxedMcpHtml(payload.html);
+      const { AppBridge, PostMessageTransport } = await import("@modelcontextprotocol/ext-apps/app-bridge");
+      if (!active || !frame.current?.contentWindow) return;
+      const connection = new AppBridge(null, { name: "nanobot", version: "1" }, { serverTools: {} });
+      bridge = connection;
+      connection.oncalltool = async (params, extra) => {
+        if (!active || requestPending) throw new Error("An app action is already awaiting approval");
+        requestPending = true;
+        try {
+          const signal = extra.mcpReq.signal;
+          const prepared = await hostTransport.requestMutation<{ approval_id: string; name: string; arguments: Record<string, unknown> }>(
+            "mcp_apps.prepare", { app_id: appId, session_key: sessionKey, name: params.name, arguments: params.arguments ?? {} },
+          );
+          if (!active || signal.aborted) throw new Error("The app request was cancelled");
+          let cancelApproval = () => {};
+          const approved = await new Promise<boolean>((resolve) => {
+            const item = { name: prepared.name, arguments: prepared.arguments, resolve };
+            cancelApproval = () => resolve(false);
+            signal.addEventListener("abort", cancelApproval, { once: true });
+            approvalRef.current = item;
+            setApproval(item);
+          });
+          signal.removeEventListener("abort", cancelApproval);
+          approvalRef.current = null;
+          if (active) setApproval(null);
+          if (!active || signal.aborted) throw new Error("The app request was cancelled");
+          return await hostTransport.requestMutation<ToolResult>("mcp_apps.confirm", {
+            app_id: appId, session_key: sessionKey, approval_id: prepared.approval_id, approved,
+          }, 120_000);
+        } finally {
+          requestPending = false;
+        }
+      };
+      connection.oninitialized = () => {
+        void connection.sendToolInput({ arguments: payload.arguments });
+        void connection.sendToolResult({ ...payload.result, content: payload.result.content ?? [] });
+      };
+      connection.onsizechange = ({ height: requested }) => {
+        if (active && typeof requested === "number" && Number.isFinite(requested)) setHeight(Math.max(180, Math.min(900, requested)));
+      };
+      connection.onerror = () => { if (active) setError(t("mcpApp.failed")); };
+      const transport = new PostMessageTransport(frame.current.contentWindow, frame.current.contentWindow);
+      await connection.connect(transport);
+      if (active && frame.current) frame.current.srcdoc = sandboxedMcpHtml(payload.html);
     };
     void start().catch(() => { if (active) setError(t("mcpApp.failed")); });
     return () => {
