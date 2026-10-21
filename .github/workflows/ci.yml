@@ -143,7 +143,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
-      PYTEST_ADDOPTS: "-o tmp_path_retention_policy=failed"
+      PYTEST_ADDOPTS: "-o tmp_path_retention_policy=failed -p scripts.pytest_timing"
     strategy:
       fail-fast: false
       matrix:
@@ -204,7 +204,7 @@ jobs:
       # later uv run sync pruning the packages installed by the previous step.
       - name: Lint with ruff
         if: matrix.coverage
-        run: uv run --no-sync ruff check nanobot tests conftest.py scripts/check_import_boundaries.py
+        run: uv run --no-sync ruff check nanobot tests conftest.py scripts/check_import_boundaries.py scripts/pytest_timing.py
 
       - name: Type check with BasedPyright (strict)
         if: matrix.coverage
@@ -216,7 +216,8 @@ jobs:
           uv run --no-sync python -m pytest
           ${{ matrix.pytest_args }}
           --cov=nanobot --cov-report=term-missing:skip-covered
-          -vv -o faulthandler_timeout=60
+          -o faulthandler_timeout=60
+          --junitxml=test-results/main.xml --timing-report=test-results/main.json
           --durations=25 --durations-min=1.0
 
       - name: Run serial CLI command tests with coverage
@@ -225,6 +226,7 @@ jobs:
           uv run --no-sync python -m pytest
           tests/cli/test_commands.py
           --cov=nanobot --cov-append --cov-report=term-missing:skip-covered
+          --junitxml=test-results/cli.xml --timing-report=test-results/cli.json
           --durations=25 --durations-min=1.0
 
       - name: Run compatibility tests
@@ -232,6 +234,7 @@ jobs:
         run: >-
           uv run --no-sync python -m pytest
           ${{ matrix.pytest_args }}
+          --junitxml=test-results/main.xml --timing-report=test-results/main.json
           --durations=25 --durations-min=1.0
 
       - name: Run serial CLI command compatibility tests
@@ -239,10 +242,21 @@ jobs:
         run: >-
           uv run --no-sync python -m pytest
           tests/cli/test_commands.py
+          --junitxml=test-results/cli.xml --timing-report=test-results/cli.json
           --durations=25 --durations-min=1.0
+
+      - name: Upload Python test timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-timings-${{ matrix.os }}-${{ matrix.python-version }}
+          path: test-results/
+          retention-days: 7
 
   windows_process:
     name: Python (Windows process compatibility)
+    env:
+      PYTEST_ADDOPTS: "-o tmp_path_retention_policy=failed -p scripts.pytest_timing"
     needs: changes
     if: needs.changes.outputs.python_required == 'true'
     runs-on: windows-latest
@@ -276,7 +290,16 @@ jobs:
           uv run --no-sync python -m pytest
           tests/tools/test_exec_platform.py
           tests/cli/test_wsl_browser.py
+          --junitxml=test-results/process.xml --timing-report=test-results/process.json
           --durations=25 --durations-min=1.0
+
+      - name: Upload Windows process test timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-timings-windows-process
+          path: test-results/
+          retention-days: 7
 
   webui_checks:
     name: WebUI checks and build

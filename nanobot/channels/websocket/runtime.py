@@ -646,9 +646,12 @@ class WebSocketChannel(BaseChannel):
                         "WebSocket listener is no longer accepting connections"
                     )
 
-    async def _close_server(self, server: Server, socket_path: str) -> None:
+    async def _close_server(
+        self, server: Server, socket_path: str, bridge: BinaryHTTPBridge,
+    ) -> None:
         server.close()
         try:
+            await bridge.shutdown()
             await server.wait_closed()
         except OSError as exc:
             self.logger.warning("WebSocket server close failed: {}", exc)
@@ -701,8 +704,6 @@ class WebSocketChannel(BaseChannel):
         async def handler(connection: ServerConnection) -> None:
             await self._connection_loop(connection)
 
-        bridge = BinaryHTTPBridge(self._uploads.handle)
-
         async def prune_uploads() -> None:
             while not stop_event.is_set():
                 self._uploads.store.prune()
@@ -718,6 +719,7 @@ class WebSocketChannel(BaseChannel):
             failures = 0
             while not stop_event.is_set():
                 server: Server | None = None
+                bridge = BinaryHTTPBridge(self._uploads.handle)
                 was_serving = False
                 started_at = 0.0
                 try:
@@ -797,7 +799,9 @@ class WebSocketChannel(BaseChannel):
                 finally:
                     self._running = False
                     if server is not None:
-                        await self._close_server(server, socket_path)
+                        await self._close_server(server, socket_path, bridge)
+                    else:
+                        await bridge.shutdown()
                     if self._server is server:
                         self._server = None
 
@@ -808,7 +812,6 @@ class WebSocketChannel(BaseChannel):
         finally:
             prune_task.cancel()
             await asyncio.gather(prune_task, return_exceptions=True)
-            await bridge.shutdown()
             self._uploads.store.clear()
             self._running = False
             if self._server_task is task:
