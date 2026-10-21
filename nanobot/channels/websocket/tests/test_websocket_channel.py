@@ -235,7 +235,9 @@ async def test_shutdown_closes_undecided_connections_before_waiting_for_server(
             writer.write(b"P")
             await writer.drain()
             async with asyncio.timeout(2):
-                while not bridges[0].pending_connections:
+                while not any(
+                    connection._prefix == b"P" for connection in bridges[0].pending_connections
+                ):
                     await asyncio.sleep(0)
             async with asyncio.timeout(2):
                 await channel.stop()

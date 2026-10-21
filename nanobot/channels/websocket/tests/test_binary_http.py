@@ -91,7 +91,7 @@ async def test_fragmented_method_and_shutdown_of_undecided_connection():
         idle_writer.write(b"P")
         await idle_writer.drain()
         async with asyncio.timeout(2):
-            while not bridge.pending_connections:
+            while not any(connection._prefix == b"P" for connection in bridge.pending_connections):
                 await asyncio.sleep(0)
         server.close()
         await bridge.shutdown()
