@@ -194,6 +194,8 @@ First-run WebUI setup binds to `127.0.0.1` by default. Use manual configuration 
 | `nanobot gateway install-service --dry-run` | Preview the generated service file and system commands |
 | `nanobot gateway uninstall-service` | Remove the installed system service |
 
+On Windows, `gateway stop` waits up to `--timeout` seconds (default: 20) for the gateway to stop normally. If a forced stop is needed, the command displays a warning. Forced stops can interrupt active work.
+
 For custom instances, pass the same selector flags after the management subcommand, as shown below. `--config` and `--workspace` before a management subcommand are rejected with a usage error; they are not inherited.
 
 ```bash

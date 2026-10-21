@@ -900,6 +900,7 @@ export function ThreadShell({
   activeHistoryKeyRef.current = historyKey;
   const currentUiMessagesRef = useRef<UIMessage[] | null>(null);
   const uiRevisionRef = useRef(0);
+  const olderPageStartRef = useRef<{ historyKey: string; client: typeof client; visibleFirstId: string | null } | null>(null);
   const showTemporaryChatControl =
     !hideHeader && !session && !loading && !!onTemporaryChatEnabledChange;
 
@@ -944,6 +945,35 @@ export function ThreadShell({
   const initialHistoryLoading = loading || (normalizedHistory.length > 0 && displayMessages.length === 0);
   const promptNavigation = usePromptHistory(historyKey, historyVersion, displayMessages);
   const updateNavigationMessages = promptNavigation.updateMessages;
+
+  const olderPageProjectionPending = Boolean(
+    olderPageStartRef.current?.historyKey === historyKey
+    && olderPageStartRef.current.client === client
+    && !loadingOlder
+    && !olderError
+    && normalizedHistory[0]?.id !== olderPageStartRef.current.visibleFirstId
+    && displayMessages[0]?.id !== normalizedHistory[0]?.id,
+  );
+  useLayoutEffect(() => {
+    const pending = olderPageStartRef.current;
+    if (pending && (pending.historyKey !== historyKey || pending.client !== client)) {
+      olderPageStartRef.current = null;
+    }
+    if (!historyKey) {
+      olderPageStartRef.current = null;
+    } else if (loadingOlder) {
+      // The request may finish before this shell commits the rendered projection.
+      if (!olderPageStartRef.current) {
+        olderPageStartRef.current = {
+          historyKey,
+          client,
+          visibleFirstId: normalizedHistory[0]?.id ?? null,
+        };
+      }
+    } else if (olderError || !olderPageProjectionPending) {
+      olderPageStartRef.current = null;
+    }
+  }, [client, displayMessages, historyKey, loadingOlder, olderError, olderPageProjectionPending, normalizedHistory]);
 
   const loadTraceDetails = useCallback(async (refs: string[]) => {
     const requestKey = historyKey;
@@ -2101,7 +2131,7 @@ export function ThreadShell({
             slashCommands={availableSlashCommands}
             forkBoundaryMessageCount={forkBoundaryMessageCount}
             hasMoreBefore={hasMoreBefore}
-            loadingOlder={loadingOlder}
+            loadingOlder={loadingOlder || olderPageProjectionPending}
             olderError={olderError}
             userMessageOffset={userMessageOffset}
             onLoadOlder={loadOlder}

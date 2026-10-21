@@ -1024,6 +1024,20 @@ function GoalStateStrip({
   );
 }
 
+function autosizeTextarea(input: HTMLTextAreaElement) {
+  const container = input.parentElement!;
+  const previousMinHeight = container.style.minHeight;
+  // Measuring the one-row textarea must not expand the sibling transcript and
+  // clamp its native scroll offset, even temporarily before paint.
+  container.style.minHeight = `${container.getBoundingClientRect().height}px`;
+  try {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
+  } finally {
+    container.style.minHeight = previousMinHeight;
+  }
+}
+
 export function ThreadComposer({
   onSend,
   disabled,
@@ -1130,10 +1144,7 @@ export function ThreadComposer({
       previousWidth = width;
       setCompactControls(width <= 512);
       const input = textareaRef.current;
-      if (input) {
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
-      }
+      if (input) autosizeTextarea(input);
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
@@ -1735,27 +1746,22 @@ export function ThreadComposer({
     };
   }, [filteredMentionCandidates.length, filteredSlashCommands.length, showAnyPalette]);
 
-  const resizeTextarea = useCallback((restoreFocus = true) => {
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-      if (restoreFocus) el.focus();
-    });
+  const focusTextarea = useCallback(() => {
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el || mentionInput.isComposing) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
+    autosizeTextarea(el);
     if (mentionOverlayRef.current) mentionOverlayRef.current.scrollTop = el.scrollTop;
   }, [compactControls, mentionInput.isComposing, mentionInput.value]);
 
   useEffect(() => {
-    resizeTextarea(false);
-  }, [readingTextSize, resizeTextarea]);
+    // The parent projects typography tokens in its layout effect; measure after it.
+    const input = textareaRef.current;
+    if (input) autosizeTextarea(input);
+  }, [readingTextSize]);
 
   // Runs before paint so switching sessions never flashes stale draft text.
   useLayoutEffect(() => {
@@ -1768,12 +1774,6 @@ export function ThreadComposer({
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
     clear();
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-    });
   }, [clear, pendingQueueKey]);
 
   const appendTranscription = useCallback((text: string) => {
@@ -1788,8 +1788,8 @@ export function ThreadComposer({
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setInlineError(null);
-    resizeTextarea();
-  }, [resizeTextarea]);
+    focusTextarea();
+  }, [focusTextarea]);
 
   const clearVoiceErrorTimers = useCallback(() => {
     if (voiceErrorFadeTimerRef.current !== null) clearTimeout(voiceErrorFadeTimerRef.current);
@@ -1872,7 +1872,7 @@ export function ThreadComposer({
         setSlashMenuDismissed(true);
         setCliAppMenuDismissed(false);
         setInlineError(null);
-        resizeTextarea();
+        focusTextarea();
         return;
       }
 
@@ -1895,9 +1895,9 @@ export function ThreadComposer({
       setSlashMenuDismissed(true);
       setCliAppMenuDismissed(false);
       setInlineError(null);
-      resizeTextarea();
+      focusTextarea();
     },
-    [handleStop, isStreaming, onStop, recentSlashCommands, replaceMentionInput, resizeTextarea, skillQuery, value],
+    [handleStop, isStreaming, onStop, recentSlashCommands, replaceMentionInput, focusTextarea, skillQuery, value],
   );
 
   const insertMention = useCallback(
@@ -1907,9 +1907,9 @@ export function ThreadComposer({
       setCliAppMenuDismissed(true);
       setSlashMenuDismissed(false);
       setInlineError(null);
-      resizeTextarea();
+      focusTextarea();
     },
-    [replaceMentionInput, resizeTextarea, value],
+    [replaceMentionInput, focusTextarea, value],
   );
 
   const chooseMentionCandidate = useCallback(
@@ -1982,8 +1982,8 @@ export function ThreadComposer({
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
-    resizeTextarea(restoreFocus);
-  }, [resizeTextarea]);
+    if (restoreFocus) focusTextarea();
+  }, [focusTextarea]);
 
   const queuedPromptError = useCallback((prompt: QueuedPrompt): string | null => {
     if (utf8Bytes(formatQuotedUserMessage(prompt.text, prompt.quotedContext)) > maxTextBytes) {
@@ -2053,8 +2053,8 @@ export function ThreadComposer({
     } else {
       clear();
     }
-    resizeTextarea();
-  }, [clear, collectGuidancePrompt, hasComposerContent, normalizedQuotedContext, onQuotedContextChange, replaceMentionInput, resizeTextarea, restoreReadyImages, setQueuedPrompt]);
+    focusTextarea();
+  }, [clear, collectGuidancePrompt, hasComposerContent, normalizedQuotedContext, onQuotedContextChange, replaceMentionInput, focusTextarea, restoreReadyImages, setQueuedPrompt]);
 
   const sendQueuedPrompt = useCallback(
     (prompt: QueuedPrompt, extraOptions?: SendOptions) => {
@@ -2335,13 +2335,6 @@ export function ThreadComposer({
       secondEnterPromptIdRef.current = null;
       submit();
     }
-  };
-
-  const onInput: React.FormEventHandler<HTMLTextAreaElement> = (e) => {
-    if ((e.nativeEvent as InputEvent).isComposing) return;
-    const el = e.currentTarget;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
   };
 
   const onFilePick: React.ChangeEventHandler<HTMLInputElement> = (e) => {
@@ -2665,7 +2658,6 @@ export function ThreadComposer({
             onBlur={() => {
               secondEnterPromptIdRef.current = null;
             }}
-            onInput={onInput}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCursorPosition(rawSelection().start)}
             onSelect={() => setCursorPosition(rawSelection().start)}
