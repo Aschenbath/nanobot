@@ -90,8 +90,23 @@ def test_windowless_gateway_stop_runs_application_cleanup(tmp_path: Path) -> Non
 
 
 def _event_security(handle: int) -> str:
+    """Verify the native owner identity and return the event's rendered security."""
     security = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    security.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
+    ]
+    security.OpenProcessToken.restype = wintypes.BOOL
+    security.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    security.GetTokenInformation.restype = wintypes.BOOL
+    security.EqualSid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    security.EqualSid.restype = wintypes.BOOL
     security.GetSecurityInfo.argtypes = [
         wintypes.HANDLE, ctypes.c_int, wintypes.DWORD,
         wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID,
@@ -106,9 +121,22 @@ def _event_security(handle: int) -> str:
     kernel.LocalFree.argtypes = [wintypes.LPVOID]
     kernel.LocalFree.restype = wintypes.LPVOID
     descriptor = wintypes.LPVOID()
+    owner = wintypes.LPVOID()
     text = wintypes.LPWSTR()
+    token = wintypes.HANDLE()
     try:
-        assert security.GetSecurityInfo(handle, 6, 5, None, None, None, None, ctypes.byref(descriptor)) == 0
+        assert security.GetSecurityInfo(
+            handle, 6, 5, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor),
+        ) == 0
+        assert security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token))
+        size = wintypes.DWORD()
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
+        assert size.value > 0
+        user = ctypes.create_string_buffer(size.value)
+        assert security.GetTokenInformation(token, 1, user, len(user), ctypes.byref(size))
+        current_user = ctypes.cast(user, ctypes.POINTER(wintypes.LPVOID))[0]
+        # SDDL may abbreviate account SIDs (for example LA); compare their identities.
+        assert security.EqualSid(owner, current_user)
         assert security.ConvertSecurityDescriptorToStringSecurityDescriptorW(
             descriptor, 1, 5, ctypes.byref(text), None,
         )
@@ -119,6 +147,8 @@ def _event_security(handle: int) -> str:
             kernel.LocalFree(text)
         if descriptor:
             kernel.LocalFree(descriptor)
+        if token:
+            kernel.CloseHandle(token)
 
 
 def test_shutdown_signal_is_private_process_bound_and_latched(tmp_path: Path) -> None:
@@ -132,7 +162,6 @@ def test_shutdown_signal_is_private_process_bound_and_latched(tmp_path: Path) ->
         signal = runtime._shutdown_signal
         assert signal is not None and signal._handle is not None
         owner, dacl = _event_security(signal._handle)[2:].split("D:", 1)
-        assert owner.startswith("S-")
         assert dacl.startswith("P(A;;") and dacl.endswith(f";;;{owner})")
         assert dacl.count("(") == 1  # One owner-only allow ACE, no inherited grants.
         assert request_windows_shutdown(pid + 1, identity, token) is False
