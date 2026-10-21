@@ -79,7 +79,7 @@ class StructuredResultHook(AgentHook):
                 structured = mcp_result.get("structuredContent")
 ```
 
-Each MCP payload is limited to 64 KiB of serialized UTF-8 JSON, 16 levels of nesting, and 4096 values. Optional fields are considered in the order listed above; a field that is invalid or would exceed the shared budget is omitted whole, with no change to the model-facing result or error status. Consumers must tolerate absent fields, including `content` for large images, and treat retained metadata as untrusted server data. The structured payload is not automatically added to model messages, runtime checkpoints, logs, or WebUI events; publishing or persisting it is the integration's responsibility. Existing image artifact storage remains unchanged.
+Each MCP payload is limited to 64 KiB of serialized UTF-8 JSON, 16 levels of nesting, and 4096 values. Source identity and `isError` are reserved first; optional fields are considered in the order listed above. A field that is invalid or would exceed the shared budget is omitted whole, with no change to the model-facing result or error status. Consumers must tolerate absent fields, including `content` for large images, and treat retained metadata as untrusted server data. The structured payload is not automatically added to model messages, runtime checkpoints, logs, or ordinary WebUI events; publishing or persisting it is the integration's responsibility. The opt-in App host explicitly consumes this interface. Existing image artifact storage remains unchanged.
 
 Tools with explicit `_meta.ui.visibility` that excludes `"model"`, including app-only tools, are not registered for agent execution. This restriction also applies when `enabledTools` explicitly names the tool. When visibility is omitted, ordinary MCP tool behavior is preserved.
 
@@ -109,7 +109,7 @@ For an active app, `await app.call_tool(raw_name, arguments)` permits only tools
 
 Closing the app revokes its access. Connection shutdown or reload revokes all app objects tied to that connection, including calls still awaiting approval. Reopen from a newly discovered wrapper after reconnecting. The bridge applies the configured `toolTimeout` to reads and calls, propagates cancellation, and performs no application-level retries of possibly committed tool actions. A result too large for the 64 KiB JSON budget fails explicitly after the tool finishes; do not retry the action merely to recover its output. This is not an exactly-once execution guarantee.
 
-These backend interfaces do not advertise the MCP Apps extension or render an embedded app. Browser hosting, authenticated event routing, confirmation UI, and CSP/sandbox enforcement remain separate work. Tests cover result retention, error hooks, limits, visibility, source-bound discovery over a real MCP session, authorization, timeout/cancellation, and revocation; they do not establish browser-host conformance.
+The backend interfaces do not themselves advertise or render an App. The [opt-in WebUI host](../webui.md#interactive-mcp-apps-opt-in) supplies the browser bridge, explicit approvals, and restricted sandbox. When that host is enabled, gateway MCP connections declare `io.modelcontextprotocol/ui` with `text/html;profile=mcp-app` in their initialization capabilities; disabled installations keep their existing initialization behavior. App sessions are ephemeral, remain tied to the original connection, and are never automatically resumed across a gateway restart.
 
 ## Troubleshooting
 

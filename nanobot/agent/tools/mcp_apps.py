@@ -162,8 +162,8 @@ class MCPAppSession:
             meta=snapshot_mcp_json(meta, _MAX_MESSAGE_BYTES),
         )
 
-    async def call_tool(self, name: str, arguments: object) -> types.CallToolResult:
-        """Authorize one app-visible tool; never retry a possibly committed call."""
+    def prepare_tool_call(self, name: str, arguments: object) -> MCPAppToolCall:
+        """Validate a source-bound call without dispatching it or granting approval."""
         self._require_open()
         definition = self._connection.tools.get(name)
         if definition is None or not _app_visible(definition):
@@ -171,11 +171,16 @@ class MCPAppSession:
         if not isinstance(arguments, dict):
             raise ValueError("MCP App tool arguments must be a JSON object")
         params: dict[str, Any] = snapshot_mcp_json(arguments, _MAX_MESSAGE_BYTES)
-        request = MCPAppToolCall(
+        return MCPAppToolCall(
             server_name=self._connection.server_name,
             tool_name=name,
             arguments=snapshot_mcp_json(params, _MAX_MESSAGE_BYTES),
         )
+
+    async def call_tool(self, name: str, arguments: object) -> types.CallToolResult:
+        """Authorize one app-visible tool; never retry a possibly committed call."""
+        request = self.prepare_tool_call(name, arguments)
+        params = snapshot_mcp_json(request.arguments, _MAX_MESSAGE_BYTES)
         if await self._authorize(request) is not True:
             raise PermissionError("MCP App tool execution was not approved")
         self._require_open()

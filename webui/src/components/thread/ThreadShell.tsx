@@ -79,6 +79,7 @@ import { canonicalRunSnapshot, completedAssistantTurnIds } from "@/lib/canonical
 import { providerDisplayLabel } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import { useClient } from "@/providers/ClientProvider";
+import { McpAppHostProvider } from "@/components/thread/activity/McpApp";
 
 type MessageShape = Pick<UIMessage, "role" | "kind" | "content" | "isStreaming" | "turnId">;
 
@@ -2109,6 +2110,7 @@ export function ThreadShell({
         >
           <FileActionsProvider value={previewSessionKey ? fileActions : undefined}>
           <WebPreviewContext.Provider value={previewSessionKey ? openWebPreview : undefined}>
+          <McpAppHostProvider host={!temporary && historyKey && webuiCapabilities.includes("webui.mcp-apps.v1") ? { transport: client, sessionKey: historyKey } : null}>
           <ThreadViewport
             ref={viewportRef}
             messages={displayMessages}
@@ -2141,6 +2143,7 @@ export function ThreadShell({
             onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
             onQuoteSelection={session ? handleQuoteSelection : undefined}
           />
+          </McpAppHostProvider>
           </WebPreviewContext.Provider>
           </FileActionsProvider>
         </FilePreviewAvailabilityProvider>

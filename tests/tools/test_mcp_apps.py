@@ -187,12 +187,15 @@ async def test_app_never_retries_a_possibly_committed_call(bridge, failure):
     session.call_tool.assert_awaited_once()
 
 
-async def test_discovery_bridge_uses_real_mcp_session_allowlist_and_connection_lifetime(monkeypatch):
+@pytest.mark.parametrize("apps_enabled", [False, True])
+async def test_discovery_bridge_uses_real_mcp_session_allowlist_and_connection_lifetime(monkeypatch, apps_enabled):
     server = Server("weather")
     calls = []
 
     @server.list_tools()
     async def list_tools():
+        capabilities = server.request_context.session.client_params.capabilities.model_dump()
+        assert ("io.modelcontextprotocol/ui" in capabilities.get("extensions", {})) is apps_enabled
         return [
             types.Tool(name="dashboard", inputSchema={}, _meta={"ui": {"resourceUri": _URI}}),
             types.Tool(name="filter", inputSchema={}, _meta={"ui": {"visibility": ["app"]}}),
@@ -225,7 +228,7 @@ async def test_discovery_bridge_uses_real_mcp_session_allowlist_and_connection_l
     registry = ToolRegistry()
     connections = await connect_mcp_servers({
         "weather": MCPServerConfig(command="synthetic", enabled_tools=["dashboard", "filter"]),
-    }, registry)
+    }, registry, mcp_apps_enabled=apps_enabled)
     try:
         wrapper = registry.get("mcp_weather_dashboard")
         assert isinstance(wrapper, MCPToolWrapper)

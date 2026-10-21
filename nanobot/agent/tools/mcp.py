@@ -11,7 +11,7 @@ import shutil
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import AsyncExitStack, suppress
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict, cast
 
 import httpx
 from loguru import logger
@@ -64,6 +64,10 @@ _SANITIZE_RE = re.compile(r"_+")
 _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 MCPServerLoader = Callable[[], Mapping[str, "MCPServerConfig"]]
 MCPRuntimeStatus = Literal["connecting", "connected", "failed"]
+
+
+class _MCPConnectOptions(TypedDict, total=False):
+    mcp_apps_enabled: bool
 
 
 class MCPConnection(Protocol):
@@ -1022,6 +1026,7 @@ async def connect_mcp_servers(
     registry: ToolRegistry,
     *,
     oauth_handlers: Mapping[str, MCPOAuthHandlers] | None = None,
+    mcp_apps_enabled: bool = False,
 ) -> dict[str, MCPConnection]:
     """Connect to configured MCP servers and register their tools, resources, prompts.
 
@@ -1160,7 +1165,12 @@ async def connect_mcp_servers(
                 return False
 
             read = _filter_malformed_mcp_progress_notifications(read, name)
-            session = await server_stack.enter_async_context(ClientSession(read, write))
+            session_class = ClientSession
+            if mcp_apps_enabled:
+                from nanobot.agent.tools.mcp_apps_session import MCPAppsClientSession
+
+                session_class = MCPAppsClientSession
+            session = await server_stack.enter_async_context(session_class(read, write))
             initialization = await session.initialize()
 
             # Finish discovery before registering tools so a failed page leaves no partial set.
@@ -1444,6 +1454,7 @@ class MCPProvider:
         self._runtime_statuses: dict[str, MCPRuntimeStatus] = {}
         self._lock = asyncio.Lock()
         self._closing = False
+        self.mcp_apps_enabled = False
 
     @classmethod
     def from_config(
@@ -1462,6 +1473,9 @@ class MCPProvider:
     @property
     def configured_server_names(self) -> set[str]:
         return set(self._servers)
+
+    def _connect_options(self) -> _MCPConnectOptions:
+        return {"mcp_apps_enabled": True} if self.mcp_apps_enabled else {}
 
     @property
     def connected_server_names(self) -> set[str]:
@@ -1528,7 +1542,10 @@ class MCPProvider:
                 return
             self._set_runtime_status(missing_servers, "connecting")
             try:
-                connected = await connect_mcp_servers(missing_servers, self._registry)
+                connected = await connect_mcp_servers(
+                    missing_servers, self._registry,
+                    **self._connect_options(),
+                )
                 if self._closing:
                     await _close_mcp_connections(connected)
                     return
@@ -1617,7 +1634,10 @@ class MCPProvider:
             if to_connect:
                 self._set_runtime_status(to_connect, "connecting")
                 try:
-                    connected = await connect_mcp_servers(to_connect, self._registry)
+                    connected = await connect_mcp_servers(
+                        to_connect, self._registry,
+                        **self._connect_options(),
+                    )
                 except BaseException:
                     self._set_runtime_status(to_connect, "failed")
                     raise
@@ -1732,6 +1752,7 @@ class MCPProvider:
             connected = await connect_mcp_servers(
                 {server_name: cfg},
                 self._registry,
+                **self._connect_options(),
             )
             if self._closing:
                 await _close_mcp_connections(connected)

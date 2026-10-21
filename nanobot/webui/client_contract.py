@@ -19,6 +19,7 @@ SUBAGENT_HISTORY_CAPABILITY = "webui.subagents.history.v1"
 AUTOMATION_CHAT_CAPABILITY = "webui.automation-chat.v1"
 BINARY_ATTACHMENTS_CAPABILITY = "webui.attachments.binary.v1"
 PROMPT_NAVIGATION_CAPABILITY = "webui.prompt-navigation.v1"
+MCP_APPS_CAPABILITY = "webui.mcp-apps.v1"
 
 
 class Compatibility(TypedDict):
@@ -27,7 +28,7 @@ class Compatibility(TypedDict):
     host_version: str
 
 
-def webui_contract() -> dict[str, object]:
+def webui_contract(*, mcp_apps: bool = False) -> dict[str, object]:
     return {
         "version": __version__,
         "min_protocol": WEBUI_PROTOCOL,
@@ -36,14 +37,15 @@ def webui_contract() -> dict[str, object]:
             CORE_CAPABILITY, SUBAGENT_CAPABILITY, SUBAGENT_EVENTS_CAPABILITY,
             SUBAGENT_HISTORY_CAPABILITY, AUTOMATION_CHAT_CAPABILITY,
             BINARY_ATTACHMENTS_CAPABILITY, PROMPT_NAVIGATION_CAPABILITY,
+            *([MCP_APPS_CAPABILITY] if mcp_apps else []),
         ],
     }
 
 
-def gateway_identity(gateway_id: str) -> dict[str, object]:
+def gateway_identity(gateway_id: str, *, mcp_apps: bool = False) -> dict[str, object]:
     # protocolVersion belongs to the pre-existing terminal transport contract.
     # Do not overload it with the version of the independently shipped WebUI.
-    return {"protocolVersion": 1, "gatewayId": gateway_id, "webui": webui_contract()}
+    return {"protocolVersion": 1, "gatewayId": gateway_id, "webui": webui_contract(mcp_apps=mcp_apps)}
 
 
 def assess_webui_contract(value: object) -> Compatibility:

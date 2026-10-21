@@ -66,7 +66,11 @@ def mcp_host_data(server_name: str, tool_def: Any, result: Any) -> dict[str, Any
     The source identities and wire field names are retained for backend hooks.
     This does not authorize resource reads, tool calls, or browser rendering.
     """
-    data: dict[str, Any] = {"server_name": server_name, "tool_name": tool_def.name}
+    data: dict[str, Any] = {
+        "server_name": server_name,
+        "tool_name": tool_def.name,
+        "isError": bool(getattr(result, "isError", False)),
+    }
     fields: tuple[tuple[str, Any], ...] = (
         ("tool_meta", getattr(tool_def, "meta", None)),
         ("outputSchema", getattr(tool_def, "outputSchema", None)),
@@ -74,7 +78,6 @@ def mcp_host_data(server_name: str, tool_def: Any, result: Any) -> dict[str, Any
         ("structuredContent", getattr(result, "structuredContent", None)),
         ("_meta", getattr(result, "meta", None)),
         ("content", getattr(result, "content", None)),
-        ("isError", bool(getattr(result, "isError", False))),
     )
     for name, value in fields:
         if value is None:
