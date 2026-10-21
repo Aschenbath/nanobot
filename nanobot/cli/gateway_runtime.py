@@ -981,6 +981,10 @@ def _run_gateway(
 
             tasks.extend([
                 asyncio.create_task(
+                    gateway_runtime.wait_for_shutdown_request(shutdown_event),
+                    name="nanobot-gateway-stop-request",
+                ),
+                asyncio.create_task(
                     watch_config_file(
                         Path(config_path),
                         lambda: agent.invalidate_runtime_config(),
