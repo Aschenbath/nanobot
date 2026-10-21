@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import time
 from pathlib import Path
@@ -57,6 +58,7 @@ class _TimingReport:
         path.write_text(json.dumps({
             "python": platform.python_version(),
             "platform": platform.platform(),
+            "cpu_count": os.cpu_count(),
             "worker": self.worker,
             "args": self.args,
             "exitstatus": int(exitstatus),
