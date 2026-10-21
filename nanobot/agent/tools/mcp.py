@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from mcp.types import Prompt, Resource
     from mcp.types import Tool as MCPToolDefinition
 
+    from nanobot.agent.tools.mcp_apps import MCPAppAuthorization, MCPAppServer, MCPAppSession
     from nanobot.agent.tools.mcp_oauth import MCPOAuthHandlers
     from nanobot.config.schema import Config, MCPServerConfig
 
@@ -610,10 +611,13 @@ class MCPToolWrapper(_MCPWrapperBase):
         server_name: str,
         tool_def: MCPToolDefinition,
         tool_timeout: int = 30,
+        *,
+        app_server: MCPAppServer | None = None,
     ):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
         self._tool_def = tool_def
+        self._app_server = app_server
         self._name = _sanitize_mcp_tool_name(f"mcp_{server_name}_{tool_def.name}")
         self._description = tool_def.description or tool_def.name
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
@@ -631,6 +635,12 @@ class MCPToolWrapper(_MCPWrapperBase):
     @property
     def parameters(self) -> dict[str, Any]:
         return self._parameters
+
+    def open_app(self, *, authorize: MCPAppAuthorization) -> MCPAppSession:
+        """Explicitly open the declared UI against this tool's allowlisted source."""
+        if self._app_server is None:
+            raise RuntimeError("An MCP app requires a catalog from connection discovery")
+        return self._app_server.open_app(self._original_name, authorize=authorize)
 
     async def execute(self, **kwargs: Any) -> str:
         retried_transient = False
@@ -1169,6 +1179,20 @@ async def connect_mcp_servers(
 
             enabled_tools = set(cfg.enabled_tools)
             allow_all_tools = "*" in enabled_tools
+            from nanobot.agent.tools.mcp_apps import MCPAppServer
+
+            app_server = MCPAppServer(
+                session,
+                name,
+                {
+                    definition.name: definition
+                    for definition in tool_defs
+                    if allow_all_tools or definition.name in enabled_tools
+                    or _sanitize_mcp_tool_name(f"mcp_{name}_{definition.name}") in enabled_tools
+                },
+                timeout=cfg.tool_timeout,
+            )
+            server_stack.callback(app_server.close)
             registered_count = 0
             matched_enabled_tools: set[str] = set()
             available_raw_names = [tool_def.name for tool_def in tool_defs]
@@ -1198,7 +1222,9 @@ async def connect_mcp_servers(
                         name,
                     )
                     continue
-                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
+                wrapper = MCPToolWrapper(
+                    session, name, tool_def, tool_timeout=cfg.tool_timeout, app_server=app_server,
+                )
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1

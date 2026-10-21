@@ -12,7 +12,7 @@ _MAX_DEPTH = 16
 _MAX_VALUES = 4096
 
 
-def _json_snapshot(value: Any, max_bytes: int) -> Any:
+def snapshot_mcp_json(value: Any, max_bytes: int) -> Any:
     pending: list[tuple[Any, int]] = [(value, 0)]
     remaining = _MAX_VALUES
     while pending:
@@ -93,10 +93,10 @@ def mcp_host_data(server_name: str, tool_def: Any, result: Any) -> dict[str, Any
                     if isinstance(block, BaseModel) else block
                     for block in blocks
                 ]
-            data = _json_snapshot({"mcp": {**data, name: value}}, _MAX_BYTES)["mcp"]
+            data = snapshot_mcp_json({"mcp": {**data, name: value}}, _MAX_BYTES)["mcp"]
         except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
             continue
     try:
-        return _json_snapshot({"mcp": data}, _MAX_BYTES)
+        return snapshot_mcp_json({"mcp": data}, _MAX_BYTES)
     except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
         return None

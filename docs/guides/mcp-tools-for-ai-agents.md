@@ -83,7 +83,33 @@ Each MCP payload is limited to 64 KiB of serialized UTF-8 JSON, 16 levels of nes
 
 Tools with explicit `_meta.ui.visibility` that excludes `"model"`, including app-only tools, are not registered for agent execution. This restriction also applies when `enabledTools` explicitly names the tool. When visibility is omitted, ordinary MCP tool behavior is preserved.
 
-This backend result interface does not advertise the MCP Apps extension, read `ui://` resources, or render an embedded app. Browser hosting and authenticated app-to-server tool routing require a separate opt-in bridge and sandbox policy. The backend tests cover result retention, error hooks, size limits, visibility, and a real in-memory MCP session running through `AgentRunner`; they do not establish browser-host conformance.
+### Explicit backend App bridge
+
+The result interface preserves data without reading UI resources. A trusted host integration can separately opt into a source-bound bridge by calling `MCPToolWrapper.open_app(authorize=...)` on a tool obtained from connection discovery. The authorization callback is held by the backend; it must not be an app-supplied boolean or trust an MCP tool's annotation as proof that an operation is safe.
+
+```python
+from nanobot.agent.tools.mcp import MCPToolWrapper
+from nanobot.agent.tools.mcp_apps import MCPAppAuthorization, MCPAppResource
+
+
+async def read_declared_app(
+    tool: MCPToolWrapper,
+    authorize: MCPAppAuthorization,
+) -> MCPAppResource:
+    app = tool.open_app(authorize=authorize)
+    try:
+        return await app.read_resource()
+    finally:
+        app.close()
+```
+
+`read_resource()` reads only the `ui://` URI declared by that tool, through its original MCP connection. It requires exactly one matching resource with MIME type `text/html;profile=mcp-app`, accepts UTF-8 text or base64-encoded UTF-8, and rejects HTML larger than 1 MiB. Resource `_meta`, including UI CSP declarations, is retained as detached JSON within the 64 KiB message budget. The bridge returns the HTML to trusted host code; it does not execute it.
+
+For an active app, `await app.call_tool(raw_name, arguments)` permits only tools from the originating connection that also pass `enabledTools` and include `"app"` in their visibility (or omit visibility). Thus app-only tools can be used by an approved app without entering the model registry. Every call requires an affirmative result from the host's `MCPAppAuthorization` callback, which receives the server name, raw tool name, and a detached argument snapshot. Invalid or oversized arguments fail before dispatch. A denied request never reaches the MCP server. The host must bind the app object and approval flow to its authenticated chat; this Python interface does not establish that browser authentication contract.
+
+Closing the app revokes its access. Connection shutdown or reload revokes all app objects tied to that connection, including calls still awaiting approval. Reopen from a newly discovered wrapper after reconnecting. The bridge applies the configured `toolTimeout` to reads and calls, propagates cancellation, and performs no application-level retries of possibly committed tool actions. A result too large for the 64 KiB JSON budget fails explicitly after the tool finishes; do not retry the action merely to recover its output. This is not an exactly-once execution guarantee.
+
+These backend interfaces do not advertise the MCP Apps extension or render an embedded app. Browser hosting, authenticated event routing, confirmation UI, and CSP/sandbox enforcement remain separate work. Tests cover result retention, error hooks, limits, visibility, source-bound discovery over a real MCP session, authorization, timeout/cancellation, and revocation; they do not establish browser-host conformance.
 
 ## Troubleshooting
 
