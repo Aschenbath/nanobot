@@ -353,7 +353,7 @@ def _verified_release_archive(raw: bytes, asset: str) -> dict[str, bytes]:
             if set(names) != expected_names:
                 raise TuiUnavailableError("TUI release archive is incomplete")
             for entry in entries:
-                limit = 150 * 1024 * 1024 if entry.filename == asset else _TUI_RELEASE_LIMITS[
+                limit = 160 * 1024 * 1024 if entry.filename == asset else _TUI_RELEASE_LIMITS[
                     entry.filename
                 ]
                 if entry.file_size == 0 or entry.file_size > limit:

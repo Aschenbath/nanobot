@@ -95,6 +95,8 @@ uv run python -m scripts.build_tui_wheels \
 
 The script checks Python version/RECORD and native checksums, architecture, notices and source against the checkout, then writes five bundled wheels with regenerated RECORDs. It refuses existing candidates; `--target <target>` selects one platform. Minimum tags are macOS 13, manylinux glibc 2.17 and Windows x64; x64 uses Bun's baseline SSE4.2 runtime, not AVX2. Recheck Bun/OpenTUI requirements when upgrading either. There are no musl or Windows ARM64 wheels; tags do not substitute for native execution.
 
+Native archive verification permits an unpacked executable up to 160 MiB. This accommodates the supported Windows baseline build, which can exceed the former 150 MiB ceiling. The compressed download remains capped at 200 MiB; per-file notice/source limits, nonempty-file requirements and checksum verification still apply.
+
 PyPI receives **five platform wheels and one sdist**, not the intermediate universal wheel or native ZIPs. Keep the same build's platform-neutral sdist for Python/classic and WebUI on other platforms. Record source commit, version, files, hashes, checks and remaining gates; source changes require rebuilding and rechecking.
 
 Final releases also require `release-manifest.json` for `stable`. Run `scripts.release_candidate assemble` as shown below from the clean final-version checkout, using that final commit as `--source-commit` without Preview preparation. GitHub receives the same wheels/sdist, ten archive/checksum files and manifest; PyPI receives only wheels/sdist. Verify final source and public bytes before catalogue advancement. A TUI-only GitHub Release cannot deliver the final release to Preview subscribers.

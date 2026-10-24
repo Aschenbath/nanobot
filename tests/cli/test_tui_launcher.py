@@ -695,6 +695,28 @@ def test_release_tui_rejects_an_archive_without_required_notices(
         _download_release_tui(asset)
 
 
+@pytest.mark.parametrize(
+    ("binary_size", "accepted"),
+    [(150 * 1024 * 1024 + 512, True), (160 * 1024 * 1024 + 1, False)],
+    ids=["current-windows-baseline", "above-unpacked-limit"],
+)
+def test_release_archive_bounds_the_current_windows_binary(
+    binary_size: int,
+    accepted: bool,
+) -> None:
+    # The supported Bun baseline build is 512 bytes above the old 150 MiB ceiling.
+    # Use real compressed entries so ZIP metadata, decompression and hashes agree.
+    asset = "nanobot-tui-win32-x64.exe"
+    archive, _checksum = _release_archive(asset, binary=b"\0" * binary_size)
+    if not accepted:
+        with pytest.raises(TuiUnavailableError, match="invalid size"):
+            tui_launcher._verified_release_archive(archive, asset)
+        return
+
+    files = tui_launcher._verified_release_archive(archive, asset)
+    assert len(files[asset]) == binary_size
+
+
 def test_release_tui_rejects_an_empty_required_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
