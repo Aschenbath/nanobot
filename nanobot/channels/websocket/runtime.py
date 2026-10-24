@@ -29,6 +29,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.websocket.binary_http import BinaryHTTPBridge
 from nanobot.config_base import Base
+from nanobot.runtime_admission import RuntimeMaintenanceError
 from nanobot.session.webui_turns import (
     clear_websocket_turn_if_current,
     mark_websocket_turn_transcript_persistence_failed,
@@ -684,6 +685,7 @@ class WebSocketChannel(BaseChannel):
             )
 
     async def start(self) -> None:
+        await self._transcripts.initialize()
         self.gateway.http.remote_instances.resume()
         from nanobot.utils.logging_bridge import redirect_lib_logging
 
@@ -705,6 +707,15 @@ class WebSocketChannel(BaseChannel):
         async def handler(connection: ServerConnection) -> None:
             await self._connection_loop(connection)
 
+        from aiohttp import web
+
+        async def handle_binary(request: web.BaseRequest) -> web.StreamResponse:
+            try:
+                with self.bus.admission.activity():
+                    return await self._uploads.handle(request)
+            except RuntimeMaintenanceError:
+                return web.json_response({"error": "Gateway update is being verified"}, status=503)
+
         async def prune_uploads() -> None:
             while not stop_event.is_set():
                 self._uploads.store.prune()
@@ -720,7 +731,7 @@ class WebSocketChannel(BaseChannel):
             failures = 0
             while not stop_event.is_set():
                 server: Server | None = None
-                bridge = BinaryHTTPBridge(self._uploads.handle)
+                bridge = BinaryHTTPBridge(handle_binary)
                 was_serving = False
                 started_at = 0.0
                 try:
@@ -971,6 +982,16 @@ class WebSocketChannel(BaseChannel):
             name=f"websocket-outbound-{id(connection):x}",
         )
 
+    @property
+    def has_pending_delivery(self) -> bool:
+        # send() only enqueues a frame. buffered_bytes includes the frame that
+        # a writer has removed from its queue but has not finished transmitting.
+        return bool(self._outbound_retire_tasks) or any(
+            state.buffered_bytes or not state.queue.empty()
+            or (state.writer is not None and not state.writer.done())
+            for state in self._connection_outbound.values()
+        )
+
     async def _drain_connection_outbound(
         self,
         connection: ServerConnection,
@@ -1122,7 +1143,7 @@ class WebSocketChannel(BaseChannel):
         # Give an idle writer a chance to start without waiting for physical I/O.
         await asyncio.sleep(0)
 
-    def _persist_turn_transcript_event(
+    async def _persist_turn_transcript_event(
         self,
         chat_id: str,
         event: dict[str, Any],
@@ -1141,7 +1162,7 @@ class WebSocketChannel(BaseChannel):
                 chat_id, event, metadata=metadata, phase=phase, include_source=include_source,
             )
             return True
-        persisted = self._transcripts.prepare_and_append(
+        persisted = await self._transcripts.prepare_and_append(
             chat_id,
             event,
             metadata=metadata,
@@ -1172,7 +1193,7 @@ class WebSocketChannel(BaseChannel):
             )
         return persisted
 
-    def _persist_turn_stream_event(
+    async def _persist_turn_stream_event(
         self,
         chat_id: str,
         event: dict[str, Any],
@@ -1188,7 +1209,7 @@ class WebSocketChannel(BaseChannel):
                 chat_id, event, metadata=metadata, phase=phase, include_source=include_source,
             )
             return True
-        persisted = self._transcripts.prepare_and_append_stream_event(
+        persisted = await self._transcripts.prepare_and_append_stream_event(
             chat_id,
             event,
             completed_text=completed_text,
@@ -1250,7 +1271,7 @@ class WebSocketChannel(BaseChannel):
         elif progress_event:
             payload["kind"] = "progress"
         phase = "activity" if payload.get("kind") in ("tool_hint", "progress") else "answer"
-        self._persist_turn_transcript_event(
+        await self._persist_turn_transcript_event(
             msg.chat_id,
             payload,
             metadata=msg.metadata,
@@ -1290,7 +1311,7 @@ class WebSocketChannel(BaseChannel):
             body["stream_id"] = stream_id
         stream_key = (chat_id, str(stream_id or ""))
         self._reasoning_text_buffers.setdefault(stream_key, []).append(delta)
-        self._persist_turn_stream_event(
+        await self._persist_turn_stream_event(
             chat_id,
             body,
             completed_text=None,
@@ -1321,7 +1342,7 @@ class WebSocketChannel(BaseChannel):
             body["stream_id"] = stream_id
         stream_key = (chat_id, str(stream_id or ""))
         reasoning_text = "".join(self._reasoning_text_buffers.pop(stream_key, []))
-        self._persist_turn_stream_event(
+        await self._persist_turn_stream_event(
             chat_id,
             body,
             completed_text=reasoning_text or None,
@@ -1346,7 +1367,7 @@ class WebSocketChannel(BaseChannel):
             "chat_id": chat_id,
             "edits": edits,
         }
-        self._persist_turn_transcript_event(
+        await self._persist_turn_transcript_event(
             chat_id,
             payload,
             metadata=metadata,
@@ -1400,7 +1421,7 @@ class WebSocketChannel(BaseChannel):
             body["resuming"] = True
         if stream_end and merge_next:
             body["merge_next"] = True
-        self._persist_turn_stream_event(
+        await self._persist_turn_stream_event(
             chat_id,
             body,
             completed_text=completed_text,
@@ -1427,7 +1448,7 @@ class WebSocketChannel(BaseChannel):
         conns = list(self._subs.get(chat_id, ()))
         body: dict[str, Any] = dict(payload)
         if persistence == "turn_activity":
-            self._persist_turn_transcript_event(
+            await self._persist_turn_transcript_event(
                 chat_id,
                 body,
                 metadata=metadata,
@@ -1439,7 +1460,7 @@ class WebSocketChannel(BaseChannel):
                 canonical_webui_turn
                 and websocket_turn_transcript_persistence_failed(chat_id, turn_owner)
             )
-            persisted = self._persist_turn_transcript_event(
+            persisted = await self._persist_turn_transcript_event(
                 chat_id,
                 body,
                 metadata=metadata,

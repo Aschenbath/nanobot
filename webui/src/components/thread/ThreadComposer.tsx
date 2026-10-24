@@ -1,3 +1,4 @@
+import { pastedFilePath, PastedPathRange, isLocalAttachment, type LocalAttachment } from "../../../../packages/client-events/attachments";
 import {
   NewChatIcon,
   CompactIcon,
@@ -15,7 +16,6 @@ import {
   HelpIcon,
   HistoryIcon,
   ConversationIcon,
-  VoiceIcon,
   AttachIcon,
   RestartIcon,
   RestrictedAccessIcon,
@@ -52,11 +52,11 @@ import {
 } from "@/lib/composer-mention-text";
 import { INLINE_TOKEN_HIGHLIGHT_COLOR } from "@/components/InlineTokenHighlight";
 import {
-  ArrowUp,
   ChevronDown,
   ChevronUp,
   CornerDownRight,
   FileText,
+  Video,
   ImageIcon,
   Loader2,
   Quote,
@@ -67,6 +67,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { ComposerActionIcon, type ComposerActionState } from "@/components/thread/ComposerActionIcon";
 import {
   floatingItemClassName,
   floatingItemFocusClassName,
@@ -80,7 +81,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  WorkspaceAccessToggle,
+  WorkspaceAccessMenu,
   WorkspaceProjectPicker,
 } from "@/components/thread/WorkspaceControls";
 import {
@@ -94,13 +95,15 @@ import {
 } from "@/components/thread/ComposerUsagePopover";
 import {
   ACCEPT_ATTR,
+  acceptedAttachmentKind,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_ATTACHMENT_BYTES,
   MAX_TOTAL_ATTACHMENT_BYTES,
+  MAX_VIDEO_BYTES,
+  MAX_VIDEOS_PER_MESSAGE,
   useAttachedImages,
   type AttachedImage,
   type AttachmentError,
-  type AttachmentKind,
   type RestoredReadyImage,
 } from "@/hooks/useAttachedImages";
 import { useClipboardAndDrop } from "@/hooks/useClipboardAndDrop";
@@ -142,7 +145,7 @@ import {
 } from "@/lib/session-drag";
 import { formatQuotedUserMessage } from "@/lib/user-message-quote";
 import { cn } from "@/lib/utils";
-import type { ComposerDraftStore } from "@/lib/composer-draft";
+import type { ComposerDraft, ComposerDraftStore } from "@/lib/composer-draft";
 import { useLocalPreferences } from "@/hooks/useLocalPreferences";
 
 const VOICE_SHORTCUT_CODE = "KeyD";
@@ -153,8 +156,8 @@ type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function utf8Bytes(value: string): number {
@@ -244,6 +247,7 @@ interface ThreadComposerProps {
   onStop?: () => void;
   surfaceRef?: Ref<HTMLDivElement>;
   onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
+  onInspectAttachment?: (path: string) => Promise<LocalAttachment>;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
   goalState?: GoalStateWsPayload;
   workspaceScope?: WorkspaceScopePayload | null;
@@ -252,6 +256,7 @@ interface ThreadComposerProps {
   workspaceDefaultScope?: WorkspaceScopePayload | null;
   workspaceControls?: WorkspacesPayload["controls"] | null;
   workspaceScopeDisabled?: boolean;
+  workspaceProjectLocked?: boolean;
   workspaceError?: string | null;
   onFavoriteWorkspaceProject?: (path: string, pinned: boolean) => Promise<ProjectDirectory[]>;
   onResolveWorkspaceProject?: (path: string) => Promise<ProjectDirectory>;
@@ -361,10 +366,21 @@ interface QueuedPrompt {
   sessionMentions?: SessionMention[];
   autoAfterTurnId?: string;
   autoPaused?: boolean;
+  autoSendPageId?: string;
+}
+
+let queuedPromptPageId: string | undefined;
+
+function getQueuedPromptPageId(): string {
+  return queuedPromptPageId ??= crypto.randomUUID();
+}
+
+function canAutoSendQueuedPrompt(prompt: QueuedPrompt): boolean {
+  return !prompt.autoPaused && prompt.autoSendPageId === getQueuedPromptPageId();
 }
 
 function pauseQueuedPrompt(prompt: QueuedPrompt): QueuedPrompt {
-  return { ...prompt, autoAfterTurnId: undefined, autoPaused: true };
+  return { ...prompt, autoAfterTurnId: undefined, autoSendPageId: undefined, autoPaused: true };
 }
 
 function mergeQueuedPrompt(first: QueuedPrompt, next: QueuedPrompt): QueuedPrompt {
@@ -383,20 +399,19 @@ function mergeQueuedPrompt(first: QueuedPrompt, next: QueuedPrompt): QueuedPromp
     sessionMentions: [...mentions.values()],
     autoAfterTurnId: first.autoAfterTurnId,
     autoPaused: prompts.some((prompt) => prompt.autoPaused),
+    autoSendPageId: first.autoSendPageId,
   };
 }
 
-function queuedAttachmentBytes(image: QueuedPromptImage): number {
-  const base64 = image.dataUrl.slice(image.dataUrl.indexOf(",") + 1);
+function queuedUploadBytes(image: QueuedPromptImage): number {
+  if (image.local) return 0;
+  const dataUrl = image.dataUrl ?? "";
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
   const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
   return Math.floor(base64.length * 3 / 4) - padding;
 }
 
-interface QueuedPromptImage {
-  dataUrl: string;
-  name?: string;
-  kind?: AttachmentKind;
-}
+type QueuedPromptImage = RestoredReadyImage;
 
 interface CliAppMentionQuery {
   query: string;
@@ -543,13 +558,16 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
   if (typeof record.text !== "string") return null;
   const text = record.text.trim();
   const images = Array.isArray(record.images)
-    ? record.images.flatMap((image) => {
+    ? record.images.flatMap((image): QueuedPromptImage[] => {
         if (!image || typeof image !== "object") return [];
         const candidate = image as Partial<QueuedPromptImage>;
+        if (isLocalAttachment(candidate.local)) {
+          return [{ local: candidate.local, kind: candidate.local.kind, name: candidate.local.name }];
+        }
         if (typeof candidate.dataUrl !== "string" || !candidate.dataUrl.startsWith("data:")) {
           return [];
         }
-        const kind = candidate.kind === "file" || candidate.kind === "image"
+        const kind = candidate.kind === "file" || candidate.kind === "image" || candidate.kind === "video"
           ? candidate.kind
           : candidate.dataUrl.startsWith("data:image/")
             ? "image"
@@ -571,7 +589,7 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
   const id = typeof record.id === "string" && record.id.trim()
     ? record.id
     : `queued-prompt-restored-${index}`;
-  return {
+  const prompt: QueuedPrompt = {
     id,
     text,
     ...(images.length > 0 ? { images } : {}),
@@ -581,7 +599,9 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
       ? { autoAfterTurnId: record.autoAfterTurnId.trim() }
       : {}),
     ...(record.autoPaused === true ? { autoPaused: true } : {}),
+    ...(typeof record.autoSendPageId === "string" ? { autoSendPageId: record.autoSendPageId } : {}),
   };
+  return canAutoSendQueuedPrompt(prompt) ? prompt : pauseQueuedPrompt(prompt);
 }
 
 function readQueuedPrompt(storageKey: string): QueuedPrompt | null {
@@ -693,11 +713,25 @@ function queuedPromptStoreFor(storageKey: string | null): QueuedPromptStore {
   return store;
 }
 
+function expireQueuedPromptAuthorization(): void {
+  queuedPromptPageId = undefined;
+  for (const store of queuedPromptStores.values()) {
+    store.set((prompt) => prompt && !prompt.autoPaused ? pauseQueuedPrompt(prompt) : prompt);
+  }
+}
+
+// Saved content survives a page's lifetime; permission to execute it does not.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", expireQueuedPromptAuthorization);
+  document.addEventListener("freeze", expireQueuedPromptAuthorization);
+}
+
 function readyImagesToQueuedImages(
-  images: Array<AttachedImage & { dataUrl: string }>,
+  images: AttachedImage[],
 ): QueuedPromptImage[] {
   return images.map((img) => ({
     dataUrl: img.dataUrl,
+    local: img.local,
     kind: img.kind,
     name: img.file.name,
   }));
@@ -705,17 +739,20 @@ function readyImagesToQueuedImages(
 
 function queuedImagesToSendImages(images?: QueuedPromptImage[]): SendAttachment[] | undefined {
   if (!images?.length) return undefined;
-  return images.map((img) => ({
-    media: {
-      data_url: img.dataUrl,
-      ...(img.name ? { name: img.name } : {}),
-    },
-    preview: {
-      kind: img.kind ?? (img.dataUrl.startsWith("data:image/") ? "image" : "file"),
-      url: img.dataUrl,
-      ...(img.name ? { name: img.name } : {}),
-    },
-  }));
+  return images.flatMap((img): SendAttachment[] => {
+    if (img.local) return [{
+      media: { path: img.local.path, name: img.local.name },
+      preview: { kind: img.local.kind, url: img.local.url, name: img.local.name },
+    }];
+    if (!img.dataUrl) return [];
+    return [{
+      media: { data_url: img.dataUrl, ...(img.name ? { name: img.name } : {}) },
+      preview: {
+        kind: img.kind ?? (img.dataUrl.startsWith("data:image/") ? "image" : img.dataUrl.startsWith("data:video/") ? "video" : "file"),
+        url: img.dataUrl, ...(img.name ? { name: img.name } : {}),
+      },
+    }];
+  });
 }
 
 function queuedPromptLabel(prompt: QueuedPrompt): string {
@@ -941,7 +978,7 @@ function GoalStateStrip({
           id="nanobot-goal-panel-root"
           role="dialog"
           aria-modal="false"
-          aria-labelledby="nanobot-goal-panel-title"
+          aria-label={t("thread.composer.goalStateSheetTitle")}
           tabIndex={-1}
           className={cn(
             "absolute bottom-[calc(100%+8px)] left-3 right-3 z-[50] flex max-w-none flex-col overflow-hidden",
@@ -950,29 +987,9 @@ function GoalStateStrip({
           )}
           style={{ maxHeight: `${Math.round(panelMaxPx)}px` }}
         >
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-black/[0.06] px-3 py-2 dark:border-white/[0.08]">
-            <h2
-              id="nanobot-goal-panel-title"
-              className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-foreground"
-            >
-              {t("thread.composer.goalStateSheetTitle")}
-            </h2>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                "text-muted-foreground transition-colors hover:text-foreground",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              )}
-              aria-label={t("thread.composer.goalStateCloseAria")}
-              onClick={() => setGoalPanelOpen(false)}
-            >
-              <X className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
           <div
             id="nanobot-goal-panel-scroll"
-            className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-3 pb-3 pt-2"
+            className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-3"
           >
             <MarkdownText className="max-w-none text-foreground/90">
               {markdownBody}
@@ -1069,6 +1086,7 @@ export function ThreadComposer({
   onStop,
   surfaceRef,
   onTranscribeAudio,
+  onInspectAttachment,
   goalState,
   workspaceScope = null,
   workspaceControlsHidden = false,
@@ -1076,6 +1094,7 @@ export function ThreadComposer({
   workspaceDefaultScope = null,
   workspaceControls = null,
   workspaceScopeDisabled = false,
+  workspaceProjectLocked = false,
   workspaceError = null,
   onLoadWorkspaceProjects,
   onResolveWorkspaceProject,
@@ -1107,6 +1126,14 @@ export function ThreadComposer({
   } | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [sendPending, setSendPending] = useState(false);
+  const [pathInspection, setPathInspection] = useState<{
+    generation: number; scope: string; range: PastedPathRange; attachment?: LocalAttachment;
+  } | null>(null);
+  const pathCheckGeneration = useRef(0);
+  const pathCheckScope = useRef("");
+  const scopeIdentity = `${workspaceScope?.project_path ?? ""}:${workspaceScope?.access_mode ?? ""}`;
+  pathCheckScope.current = scopeIdentity;
+  useEffect(() => () => { pathCheckGeneration.current += 1; }, []);
   const [modelSetupAttentionRequest, setModelSetupAttentionRequest] = useState(0);
   const queuedPromptStorageKey = queuedPromptsStorageKey(pendingQueueKey);
   const queuedPromptStore = useMemo(() => queuedPromptStoreFor(queuedPromptStorageKey), [queuedPromptStorageKey]);
@@ -1128,6 +1155,7 @@ export function ThreadComposer({
   // Coarser than hasTouchPrimaryPointer on purpose: tablets with a physical
   // keyboard still get the newline-on-Enter behavior.
   const hasCoarsePointer = useMediaQuery("(pointer: coarse)");
+  const mobileWorkspaceControls = useMediaQuery("(max-width: 639px)");
   const { readingTextSize } = useLocalPreferences();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionOverlayRef = useRef<HTMLDivElement>(null);
@@ -1167,7 +1195,7 @@ export function ThreadComposer({
   const isHero = variant === "hero";
   const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
   const projectPickerAvailable =
-    isHero
+    !workspaceProjectLocked
     && !!workspaceDefaultScope
     && !!onWorkspaceScopeChange
     && !!onLoadWorkspaceProjects
@@ -1190,39 +1218,49 @@ export function ThreadComposer({
     ));
   }, [activeTurnId, isStreaming, pendingQueueKey, setQueuedPrompt]);
 
-  const resolvedPlaceholder = isStreaming
-    ? t("thread.composer.placeholderStreaming")
-    : placeholder ?? t("thread.composer.placeholderThread");
+  const resolvedPlaceholder = placeholder ?? t("thread.composer.placeholderThread");
 
   const maxAttachments = ingressLimits?.attachments.max_count
     ?? MAX_ATTACHMENTS_PER_MESSAGE;
+  const maxFileBytes = ingressLimits?.attachments.max_file_bytes ?? MAX_ATTACHMENT_BYTES;
   const maxTextBytes = ingressLimits?.message.max_text_bytes ?? 64 * 1024;
-  const { images, enqueue, remove, clear, restoreReadyImages, encoding, full } =
+  const { images, enqueue, addLocal, remove, clear, restoreReadyImages, encoding: encodingFiles, full } =
     useAttachedImages({ ingressLimits });
+  const encoding = encodingFiles || pathInspection !== null;
   const restoredDraftAttachments = useRef(false);
-  const [draftAttachmentsReady, setDraftAttachmentsReady] = useState(!initialDraft?.files.length);
+  const [draftAttachmentsReady, setDraftAttachmentsReady] = useState(!initialDraft?.attachments.length);
   useLayoutEffect(() => {
     if (restoredDraftAttachments.current) return;
     restoredDraftAttachments.current = true;
-    if (initialDraft?.files.length) enqueue(initialDraft.files, { restoringDraft: true });
+    for (const attachment of initialDraft?.attachments ?? []) {
+      if (attachment instanceof File) enqueue([attachment], { restoringDraft: true });
+      else addLocal(attachment, { restoringDraft: true });
+    }
     setDraftAttachmentsReady(true);
-  }, [enqueue, initialDraft]);
+  }, [enqueue, addLocal, initialDraft]);
 
   const formatRejection = useCallback(
-    (reason: AttachmentError): string => {
+    (reason: Exclude<AttachmentError, "too_large">): string => {
       const key = `thread.composer.imageRejected.${reason}`;
-      const fallback = reason === "too_many_attachments"
+      const fallback = reason === "too_many_videos"
+        ? "Max 1 video per message"
+        : reason === "too_many_attachments"
         ? `Max ${maxAttachments} attachments per message`
         : reason === "empty_file"
           ? "Empty files cannot be attached"
           : reason === "total_too_large"
             ? "Attachments are too large together — remove some or use smaller files"
-            : reason === "too_large"
-              ? "File is too large"
-              : "Unsupported file type";
+            : "Unsupported file type";
       return t(key, { max: maxAttachments, defaultValue: fallback });
     },
     [maxAttachments, t],
+  );
+
+  const formatUploadTooLarge = useCallback(
+    (size: number, maximum: number) => t("thread.composer.imageRejected.too_large", {
+      size: formatBytes(size), max: formatBytes(maximum),
+    }),
+    [t],
   );
 
   const textTooLargeMessage = useCallback(
@@ -1239,17 +1277,20 @@ export function ThreadComposer({
       secondEnterPromptIdRef.current = null;
       const { rejected } = enqueue(files);
       if (rejected.length > 0) {
-        setInlineError(formatRejection(rejected[0].reason));
+        const { reason, file } = rejected[0];
+        setInlineError(reason === "too_large"
+          ? formatUploadTooLarge(file.size, acceptedAttachmentKind(file) === "video" ? MAX_VIDEO_BYTES : maxFileBytes)
+          : formatRejection(reason));
       } else {
         setInlineError(null);
       }
     },
-    [enqueue, formatRejection, interactionDisabled],
+    [enqueue, formatRejection, formatUploadTooLarge, interactionDisabled, maxFileBytes],
   );
 
   const {
     isDragging,
-    onPaste,
+    onPaste: onAttachmentPaste,
     onDragEnter,
     onDragOver,
     onDragLeave,
@@ -1279,8 +1320,8 @@ export function ThreadComposer({
   const normalizedQuotedContext = quotedContext?.trim() || null;
 
   const readyImages = useMemo(
-    () => images.filter((img): img is AttachedImage & { dataUrl: string } =>
-      img.status === "ready" && typeof img.dataUrl === "string",
+    () => images.filter((img) =>
+      img.status === "ready" && (typeof img.dataUrl === "string" || !!img.local),
     ),
     [images],
   );
@@ -1504,6 +1545,50 @@ export function ThreadComposer({
     resetKey: pendingQueueKey,
   });
   const { rawSelection, replace: replaceMentionInput } = mentionInput;
+  const onPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    onAttachmentPaste(event);
+    if (event.defaultPrevented || interactionDisabled || !onInspectAttachment) return;
+    const raw = event.clipboardData.getData("text/plain");
+    const path = pastedFilePath(raw);
+    if (!path) return;
+    event.preventDefault();
+    const { start, end } = rawSelection();
+    const pasted = value.slice(0, start) + raw + value.slice(end);
+    const generation = ++pathCheckGeneration.current;
+    replaceMentionInput(pasted, start + raw.length);
+    setPathInspection({ generation, scope: scopeIdentity, range: new PastedPathRange(pasted, start, start + raw.length) });
+    void onInspectAttachment(path).then((attachment) => {
+      if (generation !== pathCheckGeneration.current) return;
+      setPathInspection((current) => current?.generation === generation ? { ...current, attachment } : current);
+    }).catch((error: unknown) => {
+      if (generation !== pathCheckGeneration.current || pathCheckScope.current !== scopeIdentity) return;
+      setPathInspection(null);
+      if (error instanceof Error && "status" in error && error.status === 404) return;
+      setInlineError(error instanceof Error ? error.message : t("message.attachmentUnavailable"));
+    });
+  }, [interactionDisabled, onAttachmentPaste, onInspectAttachment, rawSelection, replaceMentionInput, scopeIdentity, t, value]);
+
+  useLayoutEffect(() => {
+    if (!pathInspection) return;
+    if (pathInspection.scope !== scopeIdentity || !pathInspection.range.update(value)) {
+      pathCheckGeneration.current += 1;
+      setPathInspection(null);
+      return;
+    }
+    // Let the native IME commit before removing the confirmed path from its text.
+    if (!pathInspection.attachment || mentionInput.isComposing) return;
+    const edited = pathInspection.range.replace("", rawSelection().start);
+    if (edited) {
+      const rejection = addLocal(pathInspection.attachment);
+      if (rejection) setInlineError(formatRejection(rejection));
+      else {
+        replaceMentionInput(edited.value, edited.cursor, { preserveFocus: true });
+        setInlineError(null);
+      }
+    }
+    setPathInspection(null);
+  }, [addLocal, formatRejection, mentionInput.isComposing, pathInspection, rawSelection, replaceMentionInput, scopeIdentity, value]);
+
   const draftText = composerMentionText(mentionInput.segments).raw;
   const sessionDragInsertion = sessionDragPreview
     ? mentionInsertion(
@@ -1544,7 +1629,9 @@ export function ThreadComposer({
     }
     draftStore.set(draftKey, {
       text: draftText,
-      files: images.map((image) => image.file),
+      attachments: images.flatMap((image): ComposerDraft["attachments"] => (
+        image.local ? [image.local] : image.file instanceof File ? [image.file] : []
+      )),
       sessionMentions: activeSessionMentions,
       quotedContext,
     }, persistDraft);
@@ -1990,25 +2077,29 @@ export function ThreadComposer({
       return textTooLargeMessage();
     }
     const attachments = prompt.images ?? [];
-    if (attachments.length > maxAttachments) return formatRejection("too_many_attachments");
-    const sizes = attachments.map(queuedAttachmentBytes);
-    if (sizes.some((size) => size > (ingressLimits?.attachments.max_file_bytes ?? MAX_ATTACHMENT_BYTES))) {
-      return formatRejection("too_large");
+    const videos = attachments.filter((item) => item.kind === "video").length;
+    if (videos > MAX_VIDEOS_PER_MESSAGE) return formatRejection("too_many_videos");
+    if (attachments.length - videos > maxAttachments) return formatRejection("too_many_attachments");
+    const oversized = attachments.find((item) => queuedUploadBytes(item) > (item.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes));
+    if (oversized) {
+      return formatUploadTooLarge(queuedUploadBytes(oversized), oversized.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes);
     }
-    if (sizes.reduce((sum, size) => sum + size, 0) > (ingressLimits?.attachments.max_total_bytes ?? MAX_TOTAL_ATTACHMENT_BYTES)) {
+    const total = attachments.reduce((sum, item) => sum + (item.kind === "video" ? 0 : queuedUploadBytes(item)), 0);
+    if (total > (ingressLimits?.attachments.max_total_bytes ?? MAX_TOTAL_ATTACHMENT_BYTES)) {
       return formatRejection("total_too_large");
     }
     if ((prompt.sessionMentions?.length ?? 0) > SESSION_MENTIONS_LIMIT) {
       return t("thread.composer.queued.tooManyMentions", { max: SESSION_MENTIONS_LIMIT });
     }
     return null;
-  }, [formatRejection, ingressLimits, maxAttachments, maxTextBytes, t, textTooLargeMessage]);
+  }, [formatRejection, formatUploadTooLarge, ingressLimits, maxAttachments, maxFileBytes, maxTextBytes, t, textTooLargeMessage]);
 
   const collectGuidancePrompt = useCallback((): QueuedPrompt => {
     queuedPromptCounterRef.current += 1;
     const prompt: QueuedPrompt = {
       id: `queued-prompt-${Date.now()}-${queuedPromptCounterRef.current}`,
       text: value.trim(),
+      autoSendPageId: getQueuedPromptPageId(),
       images: readyImagesToQueuedImages(readyImages),
       ...(activeTurnId ? { autoAfterTurnId: activeTurnId } : {}),
       ...(normalizedQuotedContext ? { quotedContext: normalizedQuotedContext } : {}),
@@ -2094,7 +2185,7 @@ export function ThreadComposer({
     if (!isStreaming) secondEnterPromptIdRef.current = null;
     // Switching to an idle session is not completion of the previous session's run.
     if (previous.key !== pendingQueueKey) return;
-    if (isStreaming || interactionDisabled || !queuedPrompt || queuedPrompt.autoPaused) return;
+    if (isStreaming || interactionDisabled || !queuedPrompt || !canAutoSendQueuedPrompt(queuedPrompt)) return;
     const waitingTurnCompleted = queuedPromptStorageKey !== null && queuedPrompt.autoAfterTurnId !== undefined
       ? completedTurnIds.includes(queuedPrompt.autoAfterTurnId)
       : previous.isStreaming;
@@ -2118,16 +2209,7 @@ export function ThreadComposer({
     }
     // Keep self-contained local previews across drafts and optimistic bubbles.
     // The client decodes these to HTTP binary; WS messages contain only refs.
-    const payload: SendAttachment[] | undefined =
-      readyImages.length > 0
-        ? readyImages.map((img) => ({
-            media: {
-              data_url: img.dataUrl,
-              name: img.file.name,
-            },
-            preview: { kind: img.kind, url: img.dataUrl, name: img.file.name },
-          }))
-        : undefined;
+    const payload = queuedImagesToSendImages(readyImagesToQueuedImages(readyImages));
     const attachedCliApps = activeCliMentionApps.map(cliAppMentionPayload);
     const attachedMcpPresets = activeMcpPresetMentions.map(mcpPresetMentionPayload);
     const options: SendOptions | undefined =
@@ -2397,6 +2479,9 @@ export function ThreadComposer({
         : t("thread.composer.voice.hint");
   // Touch users need an explicit send action; keep Stop while sending is unavailable.
   const showStopButton = isStreaming && !!onStop && !canSend;
+  const actionState: ComposerActionState = showVoiceButton
+    ? voiceRecorder.state === "transcribing" ? "busy" : voiceRecorder.isRecording ? "recording" : "voice"
+    : showStopButton ? "stop" : modelNeedsSetup ? "setup" : canSend || !isStreaming ? "send" : "busy";
   const relaxedHeroInput = isHero && images.length === 0 && !isStreaming;
   const compactIdle = compactWhenIdle && !compactControls && !isHero && !composerFocused
     && value.length === 0 && images.length === 0 && !inlineError
@@ -2424,17 +2509,15 @@ export function ThreadComposer({
     return () => observer?.disconnect();
   }, [compactControls, compactWhenIdle, modelLabel, voiceRecorder.isRecording, workspaceScope]);
   const accessControl = workspaceScope && !workspaceControlsHidden ? (
-    <WorkspaceAccessToggle
+    <WorkspaceAccessMenu
       scope={workspaceScope}
       disabled={interactionDisabled || workspaceScopeDisabled}
-      isHero={isHero}
       onChange={onWorkspaceScopeChange}
     />
   ) : null;
   const workspaceControl = showProjectPicker ? (
     <WorkspaceProjectPicker
       layoutAnchor={workspacePickerLayoutAnchor}
-      isHero={isHero}
       disabled={interactionDisabled || workspaceScopeDisabled}
       scope={workspaceScope}
       defaultScope={workspaceDefaultScope}
@@ -2464,7 +2547,7 @@ export function ThreadComposer({
       onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
     />
   ) : null;
-  const usageControl = !voiceRecorder.isRecording ? (
+  const usageControl = !voiceRecorder.isRecording && (contextUsage || recentRoundUsage.length) ? (
     <ComposerUsagePopover context={contextUsage} rounds={recentRoundUsage} showLabel={compactControls} bottomSheet={compactControls} />
   ) : null;
   const inputTextClasses = cn(
@@ -2524,8 +2607,10 @@ export function ThreadComposer({
         if (!handleSessionDrop(event)) onDrop(event);
       }}
       className={cn(
-        "relative w-full",
-        isHero ? "px-0" : "px-1 pb-1.5 pt-1 sm:px-0",
+        "thread-composer-form relative w-full [--composer-action-margin:0px]",
+        isHero
+          ? "px-0 [--composer-action-size:2rem] [--composer-footer-inset:0.75rem] sm:[--composer-footer-inset:1rem]"
+          : "px-1 pb-1.5 pt-1 [--composer-action-size:2.25rem] [--composer-footer-inset:0.625rem] sm:px-0 sm:[--composer-footer-inset:0.75rem]",
         compactWhenIdle && "thread-composer-collapsible-layout",
         paletteBeside && "grid grid-cols-2 items-start gap-2 p-0",
       )}
@@ -2565,7 +2650,7 @@ export function ThreadComposer({
           sessionDragPreview && "ring-1 ring-primary/25",
           isDragging && "ring-2 ring-primary/40 motion-reduce:ring-0 motion-reduce:border-primary",
           goalState?.active &&
-            "goal-shell-glow ring-1 ring-sky-400/35 motion-reduce:ring-sky-400/25 dark:ring-sky-400/45",
+            "ring-1 ring-sky-400/35 motion-reduce:ring-sky-400/25 dark:ring-sky-400/45",
         )}
       >
         {queuedPrompt ? (
@@ -2599,7 +2684,9 @@ export function ThreadComposer({
                     current: formatBytes(current),
                   })
                 }
-                formatError={formatRejection}
+                formatError={(reason) => reason === "too_large"
+                  ? formatUploadTooLarge(img.file.size, img.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes)
+                  : formatRejection(reason)}
                 onRemove={() => removeChip(img.id)}
                 onKeyDown={onChipKey(img.id)}
                 registerRef={(el) => {
@@ -2696,13 +2783,13 @@ export function ThreadComposer({
         ) : null}
         <div
           className={cn(
-            "thread-composer-footer flex flex-nowrap items-center motion-safe:transition-[padding-bottom] motion-safe:[transition-duration:220ms] motion-safe:ease-in-out",
+            "thread-composer-footer flex flex-nowrap items-center px-[var(--composer-footer-inset)] motion-safe:transition-[padding-bottom] motion-safe:[transition-duration:220ms] motion-safe:ease-in-out",
             isHero
               ? cn(
-                  "gap-x-1.5 px-3 sm:px-4",
+                  "gap-x-1.5",
                   showProjectPicker && compactControls ? "pb-1.5" : "pb-3.5",
                 )
-              : "gap-x-2 px-2.5 pb-2 sm:px-3",
+              : "gap-x-2 pb-2",
           )}
         >
           <div
@@ -2728,13 +2815,12 @@ export function ThreadComposer({
               onClick={() => fileInputRef.current?.click()}
               className={cn(
                 "thread-composer-action thread-composer-round-action touch-target shrink-0 rounded-xl text-muted-foreground hover:text-foreground",
-                isHero
-                  ? "h-8 w-8"
-                  : "h-9 w-9",
+                "h-[var(--composer-action-size)] w-[var(--composer-action-size)]",
               )}
             >
               <AttachIcon className="h-3.5 w-3.5" />
             </Button>
+            {!mobileWorkspaceControls ? accessControl : null}
             {voiceRecorder.isRecording ? (
               <VoiceRecordingMeter
                 ariaLabel={voiceRecordingStatusLabel}
@@ -2743,12 +2829,7 @@ export function ThreadComposer({
                 isHero={isHero}
                 levels={voiceRecorder.levels}
               />
-            ) : compactControls ? modelControl : (
-              <div className="thread-composer-workspace-group flex min-w-0 items-center gap-0.5">
-                {workspaceControl}
-                {accessControl}
-              </div>
-            )}
+            ) : null}
           </div>
           <div
             className={cn(
@@ -2756,7 +2837,7 @@ export function ThreadComposer({
               isHero ? "gap-1.5" : "gap-2",
             )}
           >
-            {!compactControls ? modelControl : null}
+            {modelControl}
             {!compactControls ? usageControl : null}
             <TooltipProvider>
               <Tooltip>
@@ -2785,31 +2866,18 @@ export function ThreadComposer({
                     }}
                     onClick={showVoiceButton ? voiceRecorder.handleClick : showStopButton ? handleStop : modelNeedsSetup ? onModelBadgeClick : undefined}
                     className={cn(
-                      "thread-composer-action thread-composer-round-action touch-target rounded-full",
-                      showStopButton && !showVoiceButton
-                        ? "border border-border/70 bg-card text-foreground/85 hover:text-foreground disabled:text-muted-foreground/50"
-                        : "border border-foreground bg-foreground text-background disabled:border-foreground disabled:bg-foreground disabled:text-background",
-                      showVoiceButton && voiceRecorder.isRecording && "border-red-500 bg-red-500 text-white hover:bg-red-500 hover:text-white",
+                      "composer-primary-action thread-composer-action thread-composer-round-action touch-target rounded-full bg-clip-padding",
+                      actionState === "stop"
+                        ? "border border-transparent bg-foreground/[0.045] text-foreground/85 hover:bg-foreground/[0.08] hover:text-foreground disabled:text-muted-foreground/50"
+                        : actionState === "voice"
+                          ? "border border-transparent bg-foreground/75 text-background hover:bg-foreground/[0.85] hover:text-background disabled:bg-foreground/[0.12] disabled:text-muted-foreground"
+                          : "border border-transparent bg-foreground text-background hover:bg-foreground/90 hover:text-background disabled:border-foreground disabled:bg-foreground disabled:text-background",
+                      actionState === "send" && "disabled:border-transparent disabled:bg-foreground/[0.12] disabled:text-muted-foreground",
+                      showVoiceButton && voiceRecorder.isRecording && "border-transparent bg-red-500 text-white hover:bg-red-500 hover:text-white",
                       isHero ? "h-8 w-8" : "h-9 w-9",
                     )}
                   >
-                    {showVoiceButton ? (
-                      voiceRecorder.state === "transcribing" ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : voiceRecorder.isRecording ? (
-                        <StopIcon className="h-3.5 w-3.5" fill="currentColor" />
-                      ) : (
-                        <VoiceIcon className="h-4 w-4" />
-                      )
-                    ) : showStopButton ? (
-                      <StopIcon className={cn("fill-current stroke-current", isHero ? "h-3 w-3" : "h-3.5 w-3.5")} />
-                    ) : modelNeedsSetup ? (
-                      <ModelsIcon className="h-4 w-4" />
-                    ) : canSend || !isStreaming ? (
-                      <ArrowUp className="h-4 w-4" />
-                    ) : (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
+                    <ComposerActionIcon state={actionState} />
                   </Button>
                 </TooltipTrigger>
                 {showVoiceButton ? (
@@ -2830,26 +2898,19 @@ export function ThreadComposer({
             </TooltipProvider>
           </div>
         </div>
-        {compactControls && projectPickerAvailable ? (
-          <div
-            className="inline-disclosure"
-            data-composer-workspace-drawer=""
-            data-state={showProjectPicker ? "open" : "closed"}
-            aria-hidden={showProjectPicker ? undefined : true}
-          >
-            <div className="inline-disclosure-clip">
-              <div className="inline-disclosure-content thread-composer-workspace-row flex min-w-0 items-center justify-between gap-2 rounded-b-[28px] bg-muted/45 px-3 py-1.5 dark:bg-white/[0.045] sm:px-4">
-                {workspaceControl}
-                <div className="ml-auto flex min-w-0 justify-end">{accessControl}</div>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
-      {compactControls && (!projectPickerAvailable || usageControl) ? (
-        <div className="thread-composer-meta mx-auto flex w-full max-w-[58rem] items-center justify-between gap-2 px-3">
-          {!projectPickerAvailable ? accessControl : null}
-          <div className="ml-auto">{usageControl}</div>
+      {workspaceControl || mobileWorkspaceControls && accessControl || compactControls && usageControl ? (
+        <div className={cn(
+          "thread-composer-meta mx-auto mt-1 flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pr-2 sm:pr-3",
+          isHero ? "max-w-[58rem]" : "max-w-[49.5rem]",
+          paletteBeside && "col-start-1 row-start-2",
+        )}>
+          {mobileWorkspaceControls && compactControls && usageControl ? <div className="flex w-full justify-end">{usageControl}</div> : null}
+          <div className={cn("thread-composer-workspace-group flex min-w-0 items-center gap-1", mobileWorkspaceControls ? "flex-1" : "flex-auto max-[359px]:flex-wrap")}>
+            {workspaceControl}
+          </div>
+          {!mobileWorkspaceControls && compactControls && usageControl ? <div className="ml-auto shrink-0">{usageControl}</div> : null}
+          {mobileWorkspaceControls && accessControl ? <div className="ml-auto min-w-0 max-w-[55%] shrink">{accessControl}</div> : null}
         </div>
       ) : null}
     </form>
@@ -3365,6 +3426,8 @@ function AttachmentChip({
           <div className="flex h-full w-full items-center justify-center">
             {image.kind === "image" ? (
               <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
+            ) : image.kind === "video" ? (
+              <Video className="h-4 w-4 text-muted-foreground" aria-hidden />
             ) : (
               <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
             )}

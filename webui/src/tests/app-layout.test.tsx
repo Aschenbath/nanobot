@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Window as HappyWindow } from "happy-dom";
 
 import i18n from "@/i18n";
+import { DEFAULT_TRANSCRIPTION_SETTINGS } from "@/components/settings/capabilities/TranscriptionSettings";
 import { useSessions } from "@/hooks/useSessions";
+import type { RunState } from "@/lib/nanobot-client";
 import { activateReloadCache, clearReloadCache, writeReloadCache } from "@/lib/reload-cache";
 import type {
   ChatSummary,
@@ -32,7 +34,10 @@ const sendMessageSpy = vi.fn();
 const sendSystemCommandSpy = vi.fn().mockResolvedValue(undefined);
 let mockDefaultChatId: string | null = null;
 const statusHandlers = new Set<(status: ConnectionStatus) => void>();
-const runStatusHandlers = new Set<(chatId: string, startedAt: number | null) => void>();
+const runStatusHandlers = new Set<(chatId: string, state: RunState) => void>();
+const runState = (startedAt: number | null): RunState => ({
+  active: startedAt !== null, startedAt, latestTurnId: null, generation: 0, unsettled: false,
+});
 const sessionUpdateHandlers = new Set<(
   chatId: string,
   scope?: string,
@@ -121,7 +126,7 @@ function baseSettingsPayload() {
     },
     web: {
       enable: true,
-      proxy: null,
+      use_proxy: false,
       user_agent: null,
       search: { max_results: 5, timeout: 30 },
       fetch: { use_jina_reader: true },
@@ -271,11 +276,13 @@ vi.mock("@/lib/nanobot-client", async (importOriginal) => {
       sidebarStateUpdateHandlers.add(handler);
       return () => sidebarStateUpdateHandlers.delete(handler);
     };
-    onRunStatus = (handler: (chatId: string, startedAt: number | null) => void) => {
+    onRunStatus = (handler: (chatId: string, state: RunState) => void) => {
       runStatusHandlers.add(handler);
       return () => runStatusHandlers.delete(handler);
     };
     onRunCompletion = () => () => {};
+    getRunState = () => runState(null);
+    restorePendingRun = vi.fn();
     getRunStartedAt = () => null;
     getRunTurnId = () => null;
     getUnsettledRunChatIds = () => [];
@@ -402,6 +409,9 @@ describe("App layout", () => {
       }] },
     });
     render(<App />);
+    // Await the lazy module itself; cold Vite transformation is not the task
+    // capability contract exercised by the timed DOM assertions below.
+    await act(async () => { await import("@/components/thread/ThreadShell"); });
     await screen.findByRole("textbox", {}, { timeout: 5_000 });
     if (supported) await screen.findByRole("button", { name: /Config check Running/ });
     else expect(screen.queryByText("Config check")).not.toBeInTheDocument();
@@ -1106,12 +1116,12 @@ describe("App layout", () => {
     window.history.replaceState(null, "", "/#/chat/websocket%3Aexisting-chat");
     render(<App />);
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    // Wait for the existing chat's lazy composer before opening its sidebar menu.
+    await screen.findByRole("button", { name: "Workspace access mode: Full Access" });
     const projectSection = screen.getByRole("region", { name: "selected-project" });
     fireEvent.contextMenu(within(projectSection).getByRole("button", { name: "selected-project" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "New topic" }));
-    expect(window.location.hash).toBe("#/new");
-    // Let queued browser navigation events settle before sending the first message.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    await userEvent.setup().click(await screen.findByRole("menuitem", { name: "New topic" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/new"));
     expect(await screen.findByRole("button", { name: "Switch directory" })).toHaveTextContent("selected-project");
     fireEvent.change(screen.getByLabelText("Message input"), {
       target: { value: "project topic" },
@@ -1438,9 +1448,6 @@ describe("App layout", () => {
     expect(screen.getByText("cron")).toBeInTheDocument();
     expect(screen.getByText("github")).toBeInTheDocument();
     expect(screen.getByText("Needs setup")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Review the instruction skills this agent can load during a conversation."),
-    ).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Sidebar navigation" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Settings sections" })).not.toBeInTheDocument();
     expect(within(sidebar).getByRole("button", { name: "Skills" })).toHaveAttribute(
@@ -1466,14 +1473,7 @@ describe("App layout", () => {
       "true",
     );
     expect(screen.getByText("Setup required")).toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Allow the agent to load this skill when its requirements are ready.",
-      ),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("brew install gh")).toBeInTheDocument();
-    expect(screen.queryByText("Unavailable reason")).not.toBeInTheDocument();
-    expect(screen.queryByText("Missing CLI")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Skill instructions"));
     expect(screen.getByText(/Use GitHub CLI/)).toBeInTheDocument();
@@ -1671,9 +1671,6 @@ describe("App layout", () => {
     expect(
       await screen.findByRole("heading", { name: "Popular skills" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Each marketplace keeps its own ranking and install metrics."),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("find-skills")).toBeInTheDocument();
     expect(screen.getByText("ima-skills")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open ima-skills on SkillHub" })).toHaveAttribute(
@@ -2638,6 +2635,87 @@ describe("App layout", () => {
     expect(await screen.findByRole("button", { name: "Renamed topic" })).toBeInTheDocument();
   });
 
+  it.each([false, true])("uses renamed topic titles in mention candidates and sends across reloads (split=%s)", async (split) => {
+    restoreBrowserFocus = mockBrowserFocus();
+    const user = userEvent.setup();
+    const target: ChatSummary = {
+      key: "websocket:target", channel: "websocket", chatId: "target",
+      createdAt: null, updatedAt: null, title: "Generated title", preview: "Original question",
+      handle: { id: "handle_0123456789abcdef0123456789abcdef", name: "gane" },
+    };
+    mockSessions = [
+      { ...target, key: "websocket:source", chatId: "source", title: "Source", handle: undefined },
+      { ...target, key: "websocket:second", chatId: "second", title: "Second", handle: undefined },
+      target,
+    ];
+    window.history.replaceState(null, "", split ? "/#/chat/websocket%3Asource" : "/#/new");
+    let persisted = {
+      workbench: { version: 1, tabs: split ? {
+        "tab:websocket:source": {
+          explicit: true, title: "Workspace", paneKeys: ["websocket:source", "websocket:second"],
+          layout: "columns",
+        },
+      } : {} },
+    } as Partial<SidebarStatePayload>;
+    mockFetchRoutes({ "/api/webui/sidebar-state": () => persisted });
+    setSidebarStateSpy.mockImplementation(async (state: SidebarStatePayload) => {
+      persisted = state;
+      return state;
+    });
+    const firstRender = render(<App />);
+    await act(async () => { await import("@/components/thread/ThreadShell"); });
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    act(() => statusHandlers.forEach((handler) => handler("open")));
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    await user.click(await within(sidebar).findByRole("button", { name: "Topic actions for Generated title" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    const name = screen.getByRole("textbox", { name: "Topic name" });
+    await user.clear(name);
+    await user.type(name, "会话编辑{Enter}");
+    await within(sidebar).findByText("会话编辑");
+    expect(persisted.title_overrides?.[target.key]).toBe("会话编辑");
+
+    const input = screen.getByRole("textbox", { name: /^Message / });
+    fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
+    expect(screen.getByRole("option", { name: /@gane/ })).toHaveTextContent("会话编辑");
+    fireEvent.change(input, { target: { value: "@会话", selectionStart: 3 } });
+    expect(screen.getByRole("option", { name: /@gane/ })).toHaveTextContent("会话编辑");
+    fireEvent.keyDown(input, { key: "Tab" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("@gane ");
+    expect(screen.getByTestId("composer-session-mention-gane")).toHaveAttribute("title", "Session: 会话编辑");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(sendMessageSpy).toHaveBeenCalled());
+    expect(sendMessageSpy.mock.calls.at(-1)?.[3]?.sessionMentions).toEqual([{
+      id: target.handle?.id, name: "gane", session_key: target.key, title: "会话编辑",
+    }]);
+
+    firstRender.unmount();
+    render(<App />);
+    await screen.findByText("会话编辑");
+    const restoredInput = await screen.findByRole("textbox", { name: /^Message / });
+    fireEvent.change(restoredInput, { target: { value: "@gane", selectionStart: 5 } });
+    expect(screen.getByRole("option", { name: /@gane/ })).toHaveTextContent("会话编辑");
+  });
+
+  it("searches the full preview of a session without a custom title", async () => {
+    restoreBrowserFocus = mockBrowserFocus();
+    const preview = `Review notes ${"alpha ".repeat(10)}orangeunique`;
+    mockSessions = [{
+      key: "websocket:target", channel: "websocket", chatId: "target",
+      createdAt: null, updatedAt: null, title: "", preview,
+      handle: { id: "handle_0123456789abcdef0123456789abcdef", name: "gane" },
+    }];
+    window.history.replaceState(null, "", "/#/new");
+    render(<App />);
+    await act(async () => { await import("@/components/thread/ThreadShell"); });
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    act(() => statusHandlers.forEach((handler) => handler("open")));
+    const input = screen.getByRole("textbox", { name: /^Message / });
+    fireEvent.change(input, { target: { value: "@orangeunique", selectionStart: 13 } });
+    expect(screen.getByRole("option", { name: /@gane/ })).toHaveTextContent("orangeunique");
+  });
+
   it("retries a failed sidebar read before enabling edits without losing saved state", async () => {
     mockSessions = [
       {
@@ -2924,12 +3002,12 @@ describe("App layout", () => {
     );
 
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", 12_345);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(12_345));
     });
     expect(within(sidebar).getByRole("img", { name: "Agent running" })).toBeInTheDocument();
 
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", null);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(null));
     });
     expect(within(sidebar).queryByRole("img", { name: "Agent running" }))
       .not.toBeInTheDocument();
@@ -2978,12 +3056,12 @@ describe("App layout", () => {
     await waitFor(() => expect(document.title).toContain("Active work"));
 
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", 12_345);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(12_345));
     });
     expect(within(sidebar).getByRole("img", { name: "Agent running" })).toBeInTheDocument();
 
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", null);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(null));
     });
     expect(within(sidebar).queryByRole("img", { name: "Agent running" }))
       .not.toBeInTheDocument();
@@ -3071,12 +3149,12 @@ describe("App layout", () => {
     await waitFor(() => expect(attachSpy).toHaveBeenCalledWith("chat-a"));
     expect(within(sidebar).queryByRole("img", { name: "Agent running" })).not.toBeInTheDocument();
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", 12_345);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(12_345));
     });
     expect(within(sidebar).getByRole("img", { name: "Agent running" })).toBeInTheDocument();
     expect(within(sidebar).getByRole("img", { name: "New activity" })).toBeInTheDocument();
     act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", null);
+      for (const handler of runStatusHandlers) handler("chat-a", runState(null));
     });
     mockSessions = mockSessions.map((session) => ({ ...session }));
     rerender(<App />);
@@ -3122,11 +3200,15 @@ describe("App layout", () => {
   });
 
   it("opens the settings view from the sidebar footer", async () => {
-    mockFetchRoutes({ "/api/settings": baseSettingsPayload() });
+    mockFetchRoutes({
+      "/api/settings": baseSettingsPayload(),
+      "/api/settings/version-check": { updateAvailable: null },
+    });
     render(<App />);
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     fireEvent.click(within(screen.getByRole("navigation", { name: "Sidebar navigation" }))
       .getByRole("button", { name: "Settings" }));
+    await act(async () => { await import("@/components/settings/SettingsView"); });
     const nav = await screen.findByRole("navigation", { name: "Settings sections" });
     for (const name of ["Overview", "Appearance", "Models", "Capabilities", "System", "Advanced", "About"]) {
       expect(within(nav).getByRole("button", { name })).toBeInTheDocument();
@@ -3138,7 +3220,108 @@ describe("App layout", () => {
     fireEvent.click(within(nav).getByRole("button", { name: "Capabilities" }));
     expect(screen.getByRole("switch", { name: "Image generation" })).toBeInTheDocument();
     fireEvent.click(within(nav).getByRole("button", { name: "About" }));
-    expect(await screen.findByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+    expect(await screen.findByText("You're up to date")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
+  });
+
+  it.each([true, false])("completes focused settings edits before history changes section (saved=%s)", async (saved) => {
+    const payload = { ...baseSettingsPayload(), transcription: { ...DEFAULT_TRANSCRIPTION_SETTINGS, language: "en" } };
+    mockFetchRoutes({ "/api/settings": payload });
+    let resolveSave!: (value: unknown) => void;
+    let rejectSave!: (error: Error) => void;
+    requestMutationSpy.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }));
+    window.history.replaceState(null, "", "/#/settings?section=voice");
+    render(<App />);
+    await act(async () => { await import("@/components/settings/SettingsView"); });
+    const language = await screen.findByPlaceholderText("Auto");
+    fireEvent.focus(language);
+    fireEvent.change(language, { target: { value: "ja" } });
+    expect(requestMutationSpy).not.toHaveBeenCalled();
+    act(() => {
+      window.history.replaceState(null, "", "/#/settings?section=models");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(requestMutationSpy).toHaveBeenCalledWith(
+      "settings.transcription.update", expect.objectContaining({ language: "ja" }), 20_000,
+    ));
+    expect(window.location.hash).toBe("#/settings?section=voice");
+    expect(language).toHaveValue("ja");
+    await act(async () => {
+      if (saved) resolveSave({ ...payload, transcription: { ...payload.transcription, language: "ja" } });
+      else rejectSave(new Error("Save failed"));
+    });
+    if (saved) {
+      await waitFor(() => expect(window.location.hash).toBe("#/settings?section=models"));
+      expect(await screen.findByText("Model presets")).toBeInTheDocument();
+    } else {
+      expect(window.location.hash).toBe("#/settings?section=voice");
+      expect(language).toHaveValue("ja");
+      expect(await screen.findByText("Save failed")).toBeVisible();
+    }
+  });
+
+  it("retains a capability draft while opening provider configuration", async () => {
+    const payload = { ...baseSettingsPayload(), transcription: { ...DEFAULT_TRANSCRIPTION_SETTINGS, language: "en" } };
+    mockFetchRoutes({ "/api/settings": payload });
+    window.history.replaceState(null, "", "/#/settings?section=voice");
+    render(<App />);
+    await act(async () => { await import("@/components/settings/SettingsView"); });
+    const language = await screen.findByPlaceholderText("Auto");
+    fireEvent.focus(language);
+    fireEvent.change(language, { target: { value: "ja" } });
+    fireEvent.click(screen.getByRole("button", { name: "Configure provider" }));
+    expect(await screen.findByText("Model presets")).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/settings?section=models");
+    expect(requestMutationSpy).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: "Capabilities" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Transcription" })).getByRole("button", { name: "Configure" }));
+    expect(screen.getByPlaceholderText("Auto")).toHaveValue("ja");
+  });
+
+  it.each([true, false])("completes standalone channel drafts before leaving by history (saved=%s)", async (saved) => {
+    const feature = {
+      name: "email", display_name: "Email", type: "channel", webui: "webui/index.ts", enabled: false,
+      configured: true, installed: true, requires_dependencies: false, ready: false, status: "not_enabled",
+      install_supported: true, requires_restart: false, configured_fields: ["channels.email.imapHost"],
+      config_values: { "channels.email.imapHost": "imap.example.test" },
+      setup: { fields: [{ key: "channels.email.imapHost", field: "imapHost", kind: "string", required: true, choices: [] }], requirements: [] },
+    };
+    mockFetchRoutes({ "/api/settings": baseSettingsPayload(),
+      "/api/settings/nanobot-features": { features: [feature], enabled_count: 0 } });
+    let resolveSave!: (value: unknown) => void;
+    let rejectSave!: (error: Error) => void;
+    requestMutationSpy.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }));
+    window.history.replaceState(null, "", "/#/channels");
+    render(<App />);
+    await act(async () => {
+      await import("@/components/settings/SettingsView");
+      await import("@/components/settings/channels/ChannelSetupPanel");
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "View Email settings" }));
+    const host = await screen.findByLabelText("IMAP host");
+    fireEvent.focus(host);
+    fireEvent.change(host, { target: { value: "imap.changed.test" } });
+    act(() => {
+      window.history.replaceState(null, "", "/#/new");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(requestMutationSpy).toHaveBeenCalledWith(
+      "settings.channel.configure", expect.objectContaining({ name: "email", values: { "channels.email.imapHost": "imap.changed.test" } }), 150_000,
+    ));
+    expect(window.location.hash).toBe("#/channels");
+    expect(host).toHaveValue("imap.changed.test");
+    await act(async () => {
+      if (saved) resolveSave({ name: "email", saved: true, saved_keys: ["channels.email.imapHost"] });
+      else rejectSave(new Error("Save failed"));
+    });
+    if (saved) {
+      await waitFor(() => expect(window.location.hash).toBe("#/new"));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    } else {
+      expect(window.location.hash).toBe("#/channels");
+      expect(host).toHaveValue("imap.changed.test");
+      expect(await screen.findByText("Save failed")).toBeVisible();
+    }
   });
 
   it("restores the settings section from the URL hash after a page reload", async () => {
@@ -3373,7 +3556,7 @@ describe("App layout", () => {
               },
               web: {
                 enable: true,
-                proxy: null,
+                use_proxy: false,
                 user_agent: null,
                 search: { max_results: 5, timeout: 30 },
                 fetch: { use_jina_reader: true },

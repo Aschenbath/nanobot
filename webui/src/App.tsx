@@ -78,6 +78,8 @@ import { BrowserNotifications, useBrowserNotificationLifecycle } from "@/compone
 import { ThreadMessageCache } from "@/lib/thread-message-cache";
 import { FilePreviewStore } from "@/hooks/useFilePreviewState";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
+import { useVersionCheck } from "@/providers/VersionCheckProvider";
+import { useUpdateFlow } from "@/providers/UpdateFlowProvider";
 import type {
   BootstrapResponse,
   ChatSummary,
@@ -202,6 +204,11 @@ function defaultShellRoute(): ShellRoute {
 function shellViewForSettingsSection(section: SettingsSectionKey): ShellView {
   if (section === "apps" || section === "automations" || section === "skills" || section === "channels") return section;
   return "settings";
+}
+
+function changesSettingsSurface(current: ShellRoute, next: ShellRoute): boolean {
+  return current.view !== "chat" && current.view !== "remote" &&
+    (current.view !== next.view || current.settingsSection !== next.settingsSection);
 }
 
 function fallbackRestartHash(hash: string): boolean {
@@ -1139,6 +1146,7 @@ export default function App() {
       modelName={state.modelName}
       ingressLimits={state.ingressLimits}
       webuiCapabilities={state.webuiCapabilities}
+      allowUpdateFlow={state.runtimeSurface !== "native"}
     >
       <BrowserNotifications client={state.client} />
       <RemoteInstances><Shell
@@ -1164,6 +1172,8 @@ function Shell({
 }) {
   const { t, i18n } = useTranslation();
   const remoteConnections = useRemoteConnections();
+  const versionCheck = useVersionCheck();
+  const updateFlow = useUpdateFlow();
   const localActive = remoteConnections?.localActive !== false;
   const managingConnections = remoteConnections?.managing === true && !remoteConnections?.activeHostId;
   const { theme, toggle } = useTheme();
@@ -1347,33 +1357,36 @@ function Shell({
     retainedTemporaryChatIdsRef.current = retained;
   }, [temporaryChatIds, threadMessageCache, filePreviewStore, draftStore]);
 
+  const commitNavigation = useCallback((route: ShellRoute, options?: { replace?: boolean }) => {
+    // The visible sidebar always belongs to its existing host. Navigation
+    // dismisses global management without switching to a different host.
+    if (remoteConnectionsRef.current?.managing) remoteConnectionsRef.current.closeManagement();
+    setActiveKey(route.activeKey);
+    setView(route.view);
+    setSettingsInitialSection(route.settingsSection);
+    writeShellRoute({
+      ...route,
+      temporary: route.temporary || Boolean(route.activeKey && temporarySessionsRef.current[route.activeKey]),
+    }, options?.replace);
+  }, []);
   const navigate = useCallback(
     (route: ShellRoute, options?: { replace?: boolean }) => {
-      const leave = () => {
-        // The visible sidebar always belongs to its existing host. Navigation
-        // dismisses global management without switching to a different host.
-        if (remoteConnectionsRef.current?.managing) remoteConnectionsRef.current.closeManagement();
-        setActiveKey(route.activeKey);
-        setView(route.view);
-        setSettingsInitialSection(route.settingsSection);
-        writeShellRoute({
-          ...route,
-          temporary: route.temporary || Boolean(route.activeKey && temporarySessionsRef.current[route.activeKey]),
-        }, options?.replace);
-      };
-      if (currentShellRouteRef.current.view === "settings" && route.view !== "settings" && settingsExitGuardRef.current) {
-        settingsExitGuardRef.current(leave);
+      const leave = () => commitNavigation(route, options);
+      const current = currentShellRouteRef.current;
+      if (changesSettingsSurface(current, route) && settingsExitGuardRef.current) {
+        settingsExitGuardRef.current(leave, { promptRestart: current.view !== route.view });
       } else leave();
     },
-    [],
+    [commitNavigation],
   );
 
   useEffect(() => {
     const applyRoute = () => {
       const route = readShellRoute();
       if (route.view === "remote") setMobileSidebarOpen(false);
-      if (currentShellRouteRef.current.view === "settings" && route.view !== "settings" && settingsExitGuardRef.current) {
-        writeShellRoute(currentShellRouteRef.current, true);
+      const current = currentShellRouteRef.current;
+      if (changesSettingsSurface(current, route) && settingsExitGuardRef.current) {
+        writeShellRoute(current, true);
         settingsExitGuardRef.current(() => {
           setActiveKey(route.activeKey);
           setView(route.view);
@@ -1381,7 +1394,7 @@ function Shell({
           writeShellRoute(route, true);
           setWorkspaceError(null);
           if (route.view === "chat" && !route.activeKey) setDraftWorkspaceScope(null);
-        });
+        }, { promptRestart: current.view !== route.view });
         return;
       }
       setActiveKey(route.activeKey);
@@ -2195,13 +2208,12 @@ function Shell({
 
   const onSettingsSectionChange = useCallback(
     (section: SettingsSectionKey) => {
-      navigate({
-        view: shellViewForSettingsSection(section),
-        activeKey,
-        settingsSection: section,
-      });
+      const route = { view: shellViewForSettingsSection(section), activeKey, settingsSection: section };
+      // The page has completed or retained its outgoing drafts for in-page transitions.
+      if (currentShellRouteRef.current.view === route.view) commitNavigation(route);
+      else navigate(route);
     },
-    [activeKey, navigate],
+    [activeKey, commitNavigation, navigate],
   );
 
   const onBackToChat = useCallback(() => {
@@ -2242,8 +2254,8 @@ function Shell({
   }, [client, onModelNameChange]);
 
   useEffect(() => {
-    return client.onRunStatus((chatId, startedAt) => {
-      if (startedAt != null) {
+    return client.onRunStatus((chatId, state) => {
+      if (state.active) {
         const nextRunning = new Set(runningChatIdsRef.current);
         nextRunning.add(chatId);
         runningChatIdsRef.current = nextRunning;
@@ -2772,6 +2784,12 @@ function Shell({
     onRequestRenameProject,
     onNewChatInProject,
     onOpenSettings,
+    onOpenUpdates: () => onOpenSettings("about"),
+    availableUpdate: localActive && !isNativeRuntime(effectiveRuntimeSurface)
+      && versionCheck.result?.type === "update" && versionCheck.result.latestVersion !== versionCheck.dismissedVersion
+      ? { version: versionCheck.result.latestVersion, onDismiss: versionCheck.dismiss, onRequestUpdate: updateFlow.open,
+        installationMethod: updateFlow.pending ? null : versionCheck.installationMethod }
+      : undefined,
     onOpenApps,
     onOpenAutomations,
     onOpenChannels,
@@ -2985,6 +3003,7 @@ function Shell({
                           <ThreadShell
                             session={activeSession}
                             sessions={sessions}
+                            titleOverrides={sidebarState.title_overrides}
                             title={headerTitle}
                             temporary={temporaryChatRequested}
                             temporaryChatIds={temporaryChatIds}
@@ -3035,6 +3054,7 @@ function Shell({
                         <ThreadShell
                           session={paneSession}
                           sessions={sessions}
+                          titleOverrides={sidebarState.title_overrides}
                           title={pane.title}
                           temporaryChatIds={temporaryChatIds}
                           messageCache={threadMessageCache}

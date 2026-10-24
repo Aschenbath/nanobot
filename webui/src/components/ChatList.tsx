@@ -49,6 +49,7 @@ import {
 import { MAX_WORKBENCH_PANES } from "@/components/workbench/workbench-model";
 import { SidebarTopicRename } from "@/components/SidebarTopicRename";
 import { SkeletonStatus } from "@/components/settings/shared/SkeletonStatus";
+import { LoadingRing } from "@/components/ui/loading-ring";
 import {
   SIDEBAR_SELECTION_ITEM_CLASS,
   SidebarSelectionHighlight,
@@ -831,7 +832,6 @@ export const ChatList = memo(function ChatList({
                     const tabPartiallySelected = !tabSelected && tabDeleteKeys.some((key) => (
                       selectedDeleteKeys.has(key)
                     ));
-                    const projectMode = group.kind === "project";
 
                     if (isWorkbenchTab) {
                       return (
@@ -1042,10 +1042,7 @@ export const ChatList = memo(function ChatList({
                                   partial={tabPartiallySelected}
                                 />
                               ) : null}
-                              <span className={cn(
-                                "relative flex min-w-0 flex-1 items-center overflow-hidden",
-                                projectMode ? "gap-2" : "gap-1.5",
-                              )}>
+                              <span className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                                 <SidebarSessionHandle handle={s.handle} />
                                 <span className="min-w-0 flex-1 truncate font-normal leading-5">
                                   {title}
@@ -1917,7 +1914,7 @@ function SessionActivityIndicator({
           aria-label={label}
           className="grid h-4 w-4 shrink-0 place-items-center"
         >
-          <span className="h-3 w-3 animate-spin rounded-full border border-blue-500/25 border-t-blue-500 [animation-duration:1.4s] motion-reduce:animate-none dark:border-blue-400/25 dark:border-t-blue-400" />
+          <LoadingRing className="h-3 w-3 text-sidebar-muted-foreground" />
         </span>
       </HoverHint>
     );

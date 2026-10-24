@@ -45,6 +45,7 @@ INTERNAL_CHANNEL_FIELDS = {
         "allowFrom",
         "host",
         "maxMessageBytes",
+        "mcpAppsEnabled",
         "path",
         "pingIntervalS",
         "pingTimeoutS",
@@ -130,7 +131,7 @@ def test_webui_forms_have_writable_mattermost_and_whatsapp_contracts() -> None:
     assert whatsapp is not None
     assert mattermost.route_field_types["serverUrl"] == "string"
     assert mattermost.route_field_types["token"] == "secret"
-    assert whatsapp.route_field_types["proxy"] == "string"
+    assert whatsapp.route_field_types["useProxy"] == "bool"
     assert whatsapp.route_field_types["allowFrom"] == "list"
     assert whatsapp.route_field_types["groupPolicy"] == (
         "enum",

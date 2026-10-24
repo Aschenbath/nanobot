@@ -14,9 +14,10 @@ from mcp.server.lowlevel import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.shared.memory import create_client_server_memory_streams
 
-from nanobot.agent.tools.mcp import MCPToolWrapper, connect_mcp_servers
+from nanobot.agent.tools.mcp import MCPProvider, MCPToolWrapper
 from nanobot.agent.tools.mcp_apps import MCPAppServer
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.config.network import NetworkConfig
 from nanobot.config.schema import MCPServerConfig
 
 _URI = "ui://weather/dashboard"
@@ -226,9 +227,14 @@ async def test_discovery_bridge_uses_real_mcp_session_allowlist_and_connection_l
 
     monkeypatch.setattr("mcp.client.stdio.stdio_client", memory_stdio)
     registry = ToolRegistry()
-    connections = await connect_mcp_servers({
+    servers = {
         "weather": MCPServerConfig(command="synthetic", enabled_tools=["dashboard", "filter"]),
-    }, registry, mcp_apps_enabled=apps_enabled)
+    }
+    provider = MCPProvider(
+        servers, registry, server_loader=lambda: (servers, NetworkConfig()),
+    )
+    provider.mcp_apps_enabled = apps_enabled
+    await provider.connect()
     try:
         wrapper = registry.get("mcp_weather_dashboard")
         assert isinstance(wrapper, MCPToolWrapper)
@@ -240,8 +246,19 @@ async def test_discovery_bridge_uses_real_mcp_session_allowlist_and_connection_l
         with pytest.raises(PermissionError):
             await app.call_tool("not_enabled", {})
         assert calls == [("filter", {"region": "north"})]
+        servers = {
+            "weather": MCPServerConfig(
+                command="synthetic-reloaded", enabled_tools=["dashboard", "filter"],
+            ),
+        }
+        assert (await provider.reload())["ok"] is True
+        with pytest.raises(RuntimeError, match="closed"):
+            await app.read_resource()
+        reloaded = registry.get("mcp_weather_dashboard")
+        assert isinstance(reloaded, MCPToolWrapper)
+        app = reloaded.open_app(authorize=AsyncMock(return_value=True))
+        assert (await app.read_resource()).html == "<h1>Weather</h1>"
     finally:
-        for connection in connections.values():
-            await connection.aclose()
+        await provider.aclose()
     with pytest.raises(RuntimeError, match="closed"):
         await app.read_resource()
