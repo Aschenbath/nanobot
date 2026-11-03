@@ -60,7 +60,7 @@ def test_verified_handoff_only_offers_bootstrap_supported_by_candidate(tmp_path,
     monkeypatch.setattr(release_candidate, "verify_candidate", lambda *args, **kwargs: manifest)
     guide = tmp_path / "install.md"
     release_candidate.write_install_guide(root, artifacts, guide, source_commit=manifest.source_commit)
-    text = guide.read_text()
+    text = guide.read_text(encoding="utf-8")
     assert ("## Automatic platform selection" in text) == recognized
     if recognized:
         digest = hashlib.sha256(payload).hexdigest()
