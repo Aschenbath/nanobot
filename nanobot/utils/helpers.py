@@ -165,6 +165,31 @@ _THINKING_TAG_PREFIX = "|".join(
     )
 )
 _PARTIAL_THINKING_TAG = rf"</?(?:{_THINKING_TAG_PREFIX})>?"
+# A fenced code block (``` or ~~~), including an unclosed fence running to
+# the end of the text. The closing fence must use the same character as the
+# opening one.
+_FENCED_CODE_BLOCK = re.compile(
+    r"^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n(?:.*?^[ \t]{0,3}\1[ \t]*$|.*\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_THINKING_BLOCK = re.compile(rf"<(?P<tag>{_THINKING_TAG})>[\s\S]*?</(?P=tag)>")
+
+
+def _remove_thinking_blocks(text: str) -> str:
+    """Remove well-formed thinking blocks outside fenced code blocks.
+
+    Thinking tags inside a fenced code block are literal text (for example
+    an XML example in a Markdown code fence), not model reasoning, so the
+    fenced spans are left untouched.
+    """
+    parts: list[str] = []
+    pos = 0
+    for match in _FENCED_CODE_BLOCK.finditer(text):
+        parts.append(_THINKING_BLOCK.sub("", text[pos : match.start()]))
+        parts.append(match.group(0))
+        pos = match.end()
+    parts.append(_THINKING_BLOCK.sub("", text[pos:]))
+    return "".join(parts)
 
 
 def strip_think(text: str) -> str:
@@ -174,7 +199,9 @@ def strip_think(text: str) -> str:
 
     Covers:
       1. Well-formed `<think>...</think>`, `<thinking>...</thinking>`,
-         and `<thought>...</thought>` blocks.
+         and `<thought>...</thought>` blocks. Blocks inside Markdown
+         fenced code blocks are literal examples, not reasoning, and are
+         kept.
       2. Streaming prefixes where the block is never closed.
       3. *Malformed* opening tags missing the `>` — e.g. `<think广场…`. The
          model sometimes emits the tag name directly followed by user-facing
@@ -195,7 +222,7 @@ def strip_think(text: str) -> str:
     """
     if "<" not in text:
         return text.strip()
-    text = re.sub(rf"<(?P<tag>{_THINKING_TAG})>[\s\S]*?</(?P=tag)>", "", text)
+    text = _remove_thinking_blocks(text)
     text = re.sub(rf"^\s*<{_THINKING_TAG}>[\s\S]*$", "", text)
     # Self-closing `<thinking/>` is an empty marker, not user-visible text.
     text = re.sub(rf"^\s*<{_INLINE_SELF_CLOSING_THINKING_TAG}/>\s*", "", text)

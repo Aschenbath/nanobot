@@ -318,3 +318,23 @@ class TestStripReasoningTags:
 
     def test_non_string_reasoning_ignored(self):
         assert strip_reasoning_tags(object()) == ""
+
+
+class TestStripThinkFencedCodeBlocks:
+    """Thinking tags inside Markdown fenced code blocks are literal text."""
+
+    def test_closed_pair_inside_fence_is_kept(self):
+        text = "Example XML:\n```xml\n<think>keep this literal example</think>\n```"
+        assert strip_think(text) == text
+
+    def test_block_outside_fence_still_stripped(self):
+        text = "<think>reasoning</think>Look:\n```\n<think>example</think>\n```\nDone"
+        assert strip_think(text) == "Look:\n```\n<think>example</think>\n```\nDone"
+
+    def test_tilde_fence_is_kept(self):
+        text = "~~~\n<thought>example</thought>\n~~~"
+        assert strip_think(text) == text
+
+    def test_unclosed_fence_is_kept(self):
+        text = "Example:\n```\n<think>example</think>\nprint('hi')"
+        assert strip_think(text) == text
